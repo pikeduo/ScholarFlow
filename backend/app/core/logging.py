@@ -3,7 +3,7 @@
 import logging  # 使用 Python 标准日志框架。
 from logging.handlers import RotatingFileHandler  # 防止日志文件无限增长。
 
-from app.core.config import settings  # 读取日志目录和级别配置。
+from backend.app.core.config import settings  # 读取日志目录和级别配置。
 
 
 def configure_logging() -> logging.Logger:

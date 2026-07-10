@@ -6,10 +6,10 @@ from collections.abc import AsyncIterator  # 标注异步生命周期迭代器�
 from fastapi import FastAPI  # 提供 ASGI Web 应用框架。
 from sqlalchemy.exc import SQLAlchemyError  # 捕获数据库初始化异常。
 
-from app.api.router import api_router  # 导入版本化 API 路由聚合器。
-from app.core.config import settings  # 读取集中式应用配置。
-from app.core.logging import logger  # 使用统一控制台和文件日志器。
-from app.repositories.database import initialize_database  # 初始化 SQLite 元数据。
+from backend.app.api.router import api_router  # 导入版本化 API 路由聚合器。
+from backend.app.core.config import settings  # 读取集中式应用配置。
+from backend.app.core.logging import logger  # 使用统一控制台和文件日志器。
+from backend.app.repositories.database import initialize_database  # 初始化 SQLite 元数据。
 
 
 @asynccontextmanager

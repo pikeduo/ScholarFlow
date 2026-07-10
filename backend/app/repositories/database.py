@@ -6,8 +6,8 @@ from sqlalchemy import create_engine  # 创建 SQLAlchemy 数据库引擎。
 from sqlalchemy.engine import Engine  # 标注数据库引擎返回类型。
 from sqlalchemy.orm import DeclarativeBase, sessionmaker  # 定义模型基类与会话工厂。
 
-from app.core.config import settings  # 读取数据库地址配置。
-from app.core.logging import logger  # 记录数据库初始化状态。
+from backend.app.core.config import settings  # 读取数据库地址配置。
+from backend.app.core.logging import logger  # 记录数据库初始化状态。
 
 
 def _prepare_sqlite_directory(database_url: str) -> None:

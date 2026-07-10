@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient  # 通过 ASGI 测试客户端调用接口。
 
-from app.main import app  # 导入待测 FastAPI 应用实例。
+from backend.app.main import app  # 导入待测 FastAPI 应用实例。
 
 
 def test_health_endpoint_returns_service_metadata() -> None:

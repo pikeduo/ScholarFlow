@@ -5,7 +5,7 @@ from typing import Literal  # 限制健康状态返回值范围。
 from fastapi import APIRouter  # 声明 HTTP 路由。
 from pydantic import BaseModel  # 定义稳定的响应数据模型。
 
-from app.core.config import settings  # 读取应用版本展示配置。
+from backend.app.core.config import settings  # 读取应用版本展示配置。
 
 
 class HealthResponse(BaseModel):
