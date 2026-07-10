@@ -1,0 +1,9 @@
+# ScholarFlow 后端运行时依赖清单（Python 3.12）。
+# Web API 与数据校验。
+fastapi==0.139.0
+# ASGI 服务启动器。
+uvicorn==0.50.2
+# 环境变量配置读取。
+pydantic-settings==2.14.2
+# SQLite 数据访问层。
+SQLAlchemy==2.0.51

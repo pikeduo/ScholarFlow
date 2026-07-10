@@ -1,0 +1,13 @@
+:root { /* 定义全局色彩与字体基础。 */
+  color: #0f172a; /* 设置默认前景文字颜色。 */
+  background: #f8fafc; /* 设置低对比度的页面背景。 */
+  font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif; /* 优先使用常见中文系统字体。 */
+}
+
+* { /* 统一元素盒模型计算方式。 */
+  box-sizing: border-box; /* 将内边距和边框纳入元素尺寸。 */
+}
+
+body { /* 清除浏览器默认外边距。 */
+  margin: 0; /* 让根组件完全控制页面留白。 */
+}
