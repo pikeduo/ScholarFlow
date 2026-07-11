@@ -7,3 +7,5 @@ uvicorn==0.50.2
 pydantic-settings==2.14.2
 # SQLite 数据访问层。
 SQLAlchemy==2.0.51
+# 异步学术数据源 HTTP 客户端。
+httpx==0.28.1

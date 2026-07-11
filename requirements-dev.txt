@@ -2,5 +2,3 @@
 -r requirements.txt
 # Python 测试框架。
 pytest==9.0.2
-# FastAPI TestClient 使用的 HTTP 客户端。
-httpx==0.28.1

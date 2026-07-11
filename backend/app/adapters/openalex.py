@@ -2,6 +2,10 @@
 
 from collections.abc import Mapping  # 安全识别嵌套 JSON 对象。
 
+import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
+
+from backend.app.core.config import Settings, settings  # 读取 OpenAlex 地址、密钥和超时配置。
+from backend.app.core.logging import logger  # 记录不含敏感信息的调用统计和错误。
 from backend.app.models.paper import Paper, PaperAuthor  # 复用统一的论文领域模型。
 from backend.app.models.query import QuerySchema  # 读取结构化检索约束。
 
@@ -22,6 +26,10 @@ OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
 
 class OpenAlexMappingError(ValueError):
     """表示 OpenAlex 响应缺少生成统一论文所必需的数据。"""
+
+
+class OpenAlexClientError(RuntimeError):
+    """表示 OpenAlex HTTP 调用或响应结构不可用。"""
 
 
 def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
@@ -49,6 +57,77 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
     if query.year_range:  # 仅在用户明确指定年份范围时添加 API 过滤。
         params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 年份范围过滤语法。
     return params  # 排除尚未解析为来源 ID 的 venue 和后续本地处理的 exclude 条件。
+
+
+class OpenAlexClient:
+    """封装 OpenAlex /works 请求、响应校验和论文映射。
+
+    参数：
+        settings_override：测试或多环境场景下可替换的配置对象。
+        transport：可选 HTTP 传输层，仅用于无网络单元测试或定制网络策略。
+    """
+
+    def __init__(
+        self,
+        settings_override: Settings | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        """保存客户端配置与可选的 HTTP 传输层。"""
+        self._settings = settings_override or settings  # 默认复用经过环境变量校验的全局配置。
+        self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
+
+    async def search_works(self, query: QuerySchema) -> list[Paper]:
+        """请求 OpenAlex /works 并返回成功映射的论文列表。
+
+        参数：
+            query：包含搜索词和过滤条件的结构化查询。
+        返回：
+            list[Paper]：已规范化且跳过无效单条响应的论文列表。
+        异常：
+            OpenAlexClientError：网络、HTTP 状态或响应结构异常时抛出。
+            ValueError：缺少 API 密钥或检索词时由配置/参数构造器抛出。
+        """
+        params = build_openalex_work_params(query)  # 先生成不含密钥的安全请求参数。
+        params["api_key"] = self._settings.require_openalex_api_key()  # 在真正请求前注入并校验密钥。
+        try:  # 捕获 HTTP 层异常并转换为不会暴露 URL 参数的领域错误。
+            async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
+                base_url=self._settings.openalex_api_base_url,  # 使用集中配置的 OpenAlex 地址。
+                timeout=self._settings.openalex_timeout_seconds,  # 使用集中配置的请求超时。
+                transport=self._transport,  # 在测试时使用本地 MockTransport。
+            ) as client:
+                response = await client.get("/works", params=params)  # 请求论文列表端点。
+                response.raise_for_status()  # 将非成功 HTTP 状态转换为异常。
+                payload = response.json()  # 解码 JSON 响应供后续结构校验。
+        except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
+            logger.error("OpenAlex 请求失败，状态码=%d", error.response.status_code)  # 输出可观测但不含敏感信息的错误。
+            raise OpenAlexClientError(f"OpenAlex 请求失败（HTTP {error.response.status_code}）") from None  # 隐藏原始请求 URL。
+        except httpx.RequestError as error:  # 捕获超时、连接和传输错误。
+            logger.error("OpenAlex 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
+            raise OpenAlexClientError("OpenAlex 网络请求失败") from None  # 避免异常链泄露请求参数。
+        except ValueError:  # 保留 JSON 解码错误给下方统一响应结构处理。
+            logger.error("OpenAlex 响应不是有效 JSON")  # 记录不包含响应正文的解析错误。
+            raise OpenAlexClientError("OpenAlex 响应格式无效") from None  # 返回稳定的领域错误。
+
+        response_data = _as_mapping(payload)  # 确认响应根对象是 JSON 映射。
+        results = response_data.get("results") if response_data else None  # 读取 OpenAlex 列表响应的结果数组。
+        if not isinstance(results, list):  # 缺少结果数组代表 API 响应结构与预期不符。
+            logger.error("OpenAlex 响应缺少 results 数组")  # 记录可定位的结构异常。
+            raise OpenAlexClientError("OpenAlex 响应缺少 results 数组")  # 阻止错误数据进入后续排序流程。
+
+        papers: list[Paper] = []  # 保存成功映射的统一论文。
+        skipped_count = 0  # 统计字段不完整而被跳过的单条 Work 数。
+        for result in results:  # 按 OpenAlex 返回顺序处理 Work 记录。
+            work = _as_mapping(result)  # 确认单条结果具有对象结构。
+            if work is None:  # 非对象结果无法映射为论文。
+                skipped_count += 1  # 记录异常条目数量。
+                continue  # 继续处理其余结果。
+            try:  # 单条 Work 失败不应丢弃整页有效结果。
+                papers.append(map_openalex_work_to_paper(work))  # 映射并保存有效论文。
+            except OpenAlexMappingError:  # 仅跳过缺失必要字段的 Work。
+                skipped_count += 1  # 记录映射失败数量。
+
+        logger.info("OpenAlex 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(results), len(papers), skipped_count)  # 记录检索阶段统计。
+        return papers  # 返回可供去重服务处理的规范化论文列表。
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
