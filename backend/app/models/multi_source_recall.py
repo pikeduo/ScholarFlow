@@ -24,6 +24,12 @@ class MultiSourceRecallResult(BaseModel):
         semantic_ranking_error：语义模型不可用时的安全降级摘要。
         cross_encoder_truncated_count：Cross Encoder 重排候选截断数量。
         cross_encoder_ranking_error：Cross Encoder 模型不可用时的安全降级摘要。
+        llm_truncated_count：LLM 核验通过但超出最终结果上限的候选数量。
+        llm_rejected_count：LLM 明确判定不满足硬约束的候选数量。
+        llm_ranking_error：LLM 不可用时的安全降级摘要。
+        llm_model_name：实际或配置使用的 LLM 名称。
+        llm_prompt_tokens：本次 LLM 精排输入 Token 数量。
+        llm_completion_tokens：本次 LLM 精排输出 Token 数量。
         work_family_count：融合结果中可识别版本族的唯一数量。
     """
 
@@ -40,4 +46,10 @@ class MultiSourceRecallResult(BaseModel):
     semantic_ranking_error: str | None = None  # 保存语义模型不可用时不含内部细节的降级摘要。
     cross_encoder_truncated_count: int = Field(default=0, ge=0)  # 保存 Cross Encoder 重排候选截断数量。
     cross_encoder_ranking_error: str | None = None  # 保存 Cross Encoder 模型不可用时不含内部细节的降级摘要。
+    llm_truncated_count: int = Field(default=0, ge=0)  # 保存核验通过但超出最终结果数量的候选数。
+    llm_rejected_count: int = Field(default=0, ge=0)  # 保存明确不满足语义硬约束的候选数。
+    llm_ranking_error: str | None = None  # 保存 LLM 不可用时不含内部细节的降级摘要。
+    llm_model_name: str | None = None  # 保存实际或配置使用的 LLM 名称供运行审计。
+    llm_prompt_tokens: int = Field(default=0, ge=0)  # 保存本阶段输入 Token 数量。
+    llm_completion_tokens: int = Field(default=0, ge=0)  # 保存本阶段输出 Token 数量。
     work_family_count: int = Field(default=0, ge=0)  # 保存融合论文中唯一版本族标识的数量。

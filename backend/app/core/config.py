@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     semantic_scholar_enabled: bool = False  # 必须由用户在密钥获批后显式启用，默认不进入动态路由。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。
     semantic_scholar_requests_per_second: float = Field(default=1.0, gt=0, le=10)  # 配置来源级请求起始频率上限。
+    deepseek_api_base_url: str = Field(default="https://api.deepseek.com", pattern=r"^https://")  # 限制 DeepSeek 使用官方或兼容的 HTTPS 端点。
+    deepseek_api_key: SecretStr | None = None  # 保存不可写入日志或 API 响应的 DeepSeek 密钥。
+    deepseek_model: str = Field(default="deepseek-v4-flash", min_length=1)  # 默认使用规划指定的低成本 Flash 模型。
+    deepseek_timeout_seconds: float = Field(default=60.0, gt=0, le=300)  # 为最多二十四篇论文的批量 JSON 核验预留响应时间。
+    deepseek_max_output_tokens: int = Field(default=12000, ge=1000, le=50000)  # 限制结构化精排响应规模并避免 JSON 中途截断。
 
     @model_validator(mode="after")
     def resolve_project_relative_paths(self) -> "Settings":
@@ -102,6 +107,20 @@ class Settings(BaseSettings):
             return None  # 让调用前配置校验给出稳定提示。
         return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
 
+    @field_validator("deepseek_api_key", mode="before")
+    @classmethod
+    def normalize_deepseek_api_key(cls, value: object) -> object:
+        """将空白 DeepSeek API 密钥统一视为未配置。
+
+        参数：
+            value：环境变量或构造参数提供的原始密钥值。
+        返回：
+            object：规范化后的密钥值或空值。
+        """
+        if isinstance(value, str) and not value.strip():  # 避免将空字符串误认为有效 Bearer 认证信息。
+            return None  # 让 LLM 适配器在调用前返回稳定配置错误。
+        return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
+
     def require_openalex_api_key(self) -> str:
         """返回已配置的 OpenAlex API 密钥。
 
@@ -125,6 +144,18 @@ class Settings(BaseSettings):
         if self.tavily_api_key is None:  # 在网络请求前提前发现缺失配置。
             raise ValueError("未配置 SCHOLARFLOW_TAVILY_API_KEY")  # 提供不泄露敏感值的明确错误。
         return self.tavily_api_key.get_secret_value()  # 仅在实际认证请求层解封装密钥。
+
+    def require_deepseek_api_key(self) -> str:
+        """返回已配置的 DeepSeek API 密钥。
+
+        返回：
+            str：仅供 LLM 适配器 Authorization 请求头使用的密钥文本。
+        异常：
+            ValueError：尚未配置密钥时抛出，避免发出必然失败的请求。
+        """
+        if self.deepseek_api_key is None:  # 在外部模型调用前提前发现缺失配置。
+            raise ValueError("未配置 SCHOLARFLOW_DEEPSEEK_API_KEY")  # 提供不泄露敏感值的明确错误。
+        return self.deepseek_api_key.get_secret_value()  # 仅在适配器真正发请求时解封装密钥。
 
 
 @lru_cache

@@ -79,13 +79,13 @@ async def search_multi_source(
     query: QueryIntent,
     coordinator: Annotated[MultiSourceRecallCoordinator, Depends(get_multi_source_recall_coordinator)],
 ) -> MultiSourceRecallResult:
-    """按 QueryIntent 动态调用学术来源，融合论文并返回独立网页补充发现。
+    """按 QueryIntent 完成多源召回、分层排序与核验，并返回独立网页补充发现。
 
     参数：
         query：由调用方或 Query Agent 提供的完整、已校验检索意图。
         coordinator：可由测试替换的多源召回与融合协调器。
     返回：
-        MultiSourceRecallResult：包含融合论文、来源数量、降级信息和独立网页发现。
+        MultiSourceRecallResult：包含最终证据化论文、来源数量、排序统计、降级信息和独立网页发现。
     异常：
         HTTPException：协调器出现未预期内部故障时返回不泄露细节的 503 响应。
     """

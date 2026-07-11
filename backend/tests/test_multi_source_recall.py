@@ -8,6 +8,7 @@ from backend.app.models.paper import PaperRecord, PaperSourceRecord  # 构造统
 from backend.app.models.query_intent import QueryIntent  # 构造协调器所需查询意图。
 from backend.app.models.semantic_ranking import SemanticRankingResult  # 构造不加载模型的语义粗排替身结果。
 from backend.app.models.cross_encoder_ranking import CrossEncoderRankingResult  # 构造不加载模型的 Cross Encoder 替身结果。
+from backend.app.models.llm_ranking import LlmRankingResult  # 构造不访问外部 API 的 LLM 精排替身结果。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 导入待测多源召回协调服务。
 from backend.app.services.source_router import SourceRouter  # 使用实际确定性路由器生成执行计划。
 
@@ -58,6 +59,14 @@ class _PassthroughCrossEncoderReranker:
         return CrossEncoderRankingResult(papers=papers, input_count=len(papers), truncated_count=0, model_name="test-reranker")  # 构造无需模型的稳定精排结果。
 
 
+class _PassthroughLlmReranker:
+    """在协调器测试中保留候选顺序，避免访问 DeepSeek API。"""
+
+    async def rerank(self, papers: list[PaperRecord], _: QueryIntent) -> LlmRankingResult:
+        """返回未截断候选，模拟 LLM 核验阶段已成功完成。"""
+        return LlmRankingResult(papers=papers, input_count=len(papers), model_name="test-llm", prompt_tokens=12, completion_tokens=4)  # 构造无需网络和密钥且含成本统计的稳定最终结果。
+
+
 def _build_query_intent(domains: list[str] | None = None, requires_web_evidence: bool = False) -> QueryIntent:
     """构造可用于多源召回协调测试的最小有效查询意图。"""
     return QueryIntent(  # 构造无需 LLM 或网络的查询规划结果。
@@ -101,6 +110,7 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
         },
         semantic_ranker=_PassthroughSemanticRanker(),  # 注入离线语义替身避免测试加载模型。
         cross_encoder_reranker=_PassthroughCrossEncoderReranker(),  # 注入离线 Cross Encoder 替身避免测试加载模型。
+        llm_reranker=_PassthroughLlmReranker(),  # 注入离线 LLM 替身避免测试访问 DeepSeek。
     )
     result = asyncio.run(  # 执行不访问网络的多源协调流程。
         coordinator.recall(_build_query_intent(domains=["machine learning"], requires_web_evidence=True))  # 路由 AI 领域并显式启用网页补充。
@@ -112,6 +122,8 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     assert result.source_errors == {}  # 验证全部替身成功时不存在降级错误。
     assert result.raw_paper_count == 4  # 验证来源数量统计与融合前原始论文数量分离保存。
     assert result.merged_paper_count == 0  # 验证不同论文不会被错误合并。
+    assert result.llm_model_name == "test-llm"  # 验证协调器透传实际 LLM 名称。
+    assert result.llm_prompt_tokens == 12 and result.llm_completion_tokens == 4  # 验证协调器透传 LLM Token 统计。
 
 
 def test_coordinator_degrades_single_academic_source_without_discarding_other_results() -> None:
@@ -129,6 +141,7 @@ def test_coordinator_degrades_single_academic_source_without_discarding_other_re
         },
         semantic_ranker=_PassthroughSemanticRanker(),  # 注入离线语义替身避免测试加载模型。
         cross_encoder_reranker=_PassthroughCrossEncoderReranker(),  # 注入离线 Cross Encoder 替身避免测试加载模型。
+        llm_reranker=_PassthroughLlmReranker(),  # 注入离线 LLM 替身避免测试访问 DeepSeek。
     )
     result = asyncio.run(coordinator.recall(_build_query_intent()))  # 执行不访问网络的核心双源协调流程。
     assert [paper.source for paper in result.papers] == ["openalex"]  # 验证失败来源不会丢弃主源已返回论文。
@@ -144,6 +157,7 @@ def test_coordinator_reports_unregistered_selected_source_without_raising() -> N
         academic_adapters={},  # 故意留空以模拟应用装配遗漏。
         semantic_ranker=_PassthroughSemanticRanker(),  # 注入离线语义替身保持测试无模型依赖。
         cross_encoder_reranker=_PassthroughCrossEncoderReranker(),  # 注入离线 Cross Encoder 替身保持测试无模型依赖。
+        llm_reranker=_PassthroughLlmReranker(),  # 注入离线 LLM 替身避免测试访问 DeepSeek。
     )
     result = asyncio.run(coordinator.recall(_build_query_intent()))  # 执行并触发未注册来源降级。
     assert result.papers == []  # 验证没有适配器时不会虚构论文结果。
@@ -179,6 +193,7 @@ def test_coordinator_fuses_cross_source_duplicate_before_returning_result() -> N
         },
         semantic_ranker=_PassthroughSemanticRanker(),  # 注入离线语义替身避免测试加载模型。
         cross_encoder_reranker=_PassthroughCrossEncoderReranker(),  # 注入离线 Cross Encoder 替身避免测试加载模型。
+        llm_reranker=_PassthroughLlmReranker(),  # 注入离线 LLM 替身避免测试访问 DeepSeek。
     )
 
     result = asyncio.run(coordinator.recall(_build_query_intent()))  # 执行不访问网络的召回和融合流程。
@@ -196,6 +211,7 @@ def test_coordinator_filters_fused_papers_before_returning_result() -> None:
         academic_adapters={"openalex": _StubAcademicAdapter("openalex", [_build_paper("openalex", "missing-term")])},  # 返回不含必须词的论文。
         semantic_ranker=_PassthroughSemanticRanker(),  # 注入离线语义替身避免测试加载模型。
         cross_encoder_reranker=_PassthroughCrossEncoderReranker(),  # 注入离线 Cross Encoder 替身避免测试加载模型。
+        llm_reranker=_PassthroughLlmReranker(),  # 注入离线 LLM 替身避免测试访问 DeepSeek。
     )
     query = QueryIntent(  # 构造带必须词硬约束的检索意图。
         original_query="Transformer forecasting",  # 提供原始查询。

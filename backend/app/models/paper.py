@@ -1,7 +1,7 @@
 """定义跨学术数据源统一使用的论文领域模型。"""
 
 from datetime import datetime  # 记录来源拉取和规范化元数据的更新时间。
-from typing import Literal  # 限制论文数据的已知来源范围。
+from typing import Literal  # 限制论文数据来源、类型与核验状态的已知范围。
 
 from pydantic import BaseModel, Field  # 提供论文数据校验与字段约束。
 
@@ -91,6 +91,10 @@ class PaperRecord(Paper):
         rrf_score：基于各来源原始排名计算的融合分数。
         semantic_score：BGE-M3 密集向量计算的查询相关性分数。
         cross_encoder_score：Cross Encoder 计算的查询-论文精细相关性分数。
+        llm_relevance_score：LLM 对当前查询与论文相关性的归一化精排分数。
+        constraint_status：LLM 经本地证据守卫后的硬约束核验状态。
+        constraint_evidence：可在论文公开元数据中逐字定位的证据片段。
+        recommendation_reason：有可信证据支撑的面向用户推荐理由。
         text_hash：用于判断摘要或标题变化的文本哈希。
         embedding_model_version：生成向量时使用的模型版本。
         updated_at：规范化记录最近更新时间。
@@ -108,6 +112,10 @@ class PaperRecord(Paper):
     rrf_score: float = Field(default=0.0, ge=0.0)  # 保存融合阶段计算的非负 Reciprocal Rank Fusion 分数。
     semantic_score: float | None = None  # 保存语义粗排阶段的可选相关性分数，模型降级时保持空值。
     cross_encoder_score: float | None = None  # 保存 Cross Encoder 重排阶段的可选精细相关性分数，模型降级时保持空值。
+    llm_relevance_score: float | None = Field(default=None, ge=0.0, le=1.0)  # 保存 LLM 最终精排的批内归一化相关性分数。
+    constraint_status: Literal["satisfied", "uncertain", "not_satisfied"] | None = None  # 保存证据守卫后的约束核验三态结果。
+    constraint_evidence: list[str] = Field(default_factory=list)  # 保存能在公开论文元数据中定位的核验证据。
+    recommendation_reason: str | None = None  # 仅在存在可信证据时保存 LLM 生成的推荐理由。
     text_hash: str | None = None  # 保存向量更新判断使用的标题摘要哈希。
     embedding_model_version: str | None = None  # 保存当前向量对应的模型版本。
     updated_at: datetime | None = None  # 保存规范化记录的最近更新时间。
