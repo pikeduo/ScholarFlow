@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
     openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
     openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。
+    arxiv_api_base_url: str = Field(default="https://export.arxiv.org/api", pattern=r"^https://")  # 限制 arXiv 使用 HTTPS API 地址。
+    arxiv_timeout_seconds: float = Field(default=15.0, gt=0, le=120)  # 为 Atom XML 响应保留略长的单次请求超时。
+    arxiv_requests_per_second: float = Field(default=1 / 3, gt=0, le=1)  # 默认遵守官方建议的连续请求至少间隔三秒。
     semantic_scholar_api_base_url: str = Field(default="https://api.semanticscholar.org/graph/v1", pattern=r"^https://")  # 限制 Semantic Scholar 使用 HTTPS Graph API 地址。
     semantic_scholar_api_key: SecretStr | None = None  # 保存可选且不可写入日志的 Semantic Scholar API 密钥。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。

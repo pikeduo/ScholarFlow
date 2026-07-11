@@ -24,6 +24,24 @@ def test_settings_rejects_missing_openalex_api_key_when_required() -> None:
         settings.require_openalex_api_key()  # 模拟未来适配器在请求前读取密钥。
 
 
+def test_settings_preserves_arxiv_connection_configuration() -> None:
+    """arXiv 无密钥配置应保留 HTTPS 地址、超时与三秒间隔基线。"""
+    settings = Settings(  # 构造不读取用户本地 .env 的 arXiv 隔离配置。
+        _env_file=None,  # 禁止测试读取用户本地配置值。
+        arxiv_timeout_seconds=20,  # 提供有效的自定义超时。
+        arxiv_requests_per_second=1 / 3,  # 提供官方建议对应的请求频率。
+    )
+    assert settings.arxiv_api_base_url == "https://export.arxiv.org/api"  # 验证默认 API 地址。
+    assert settings.arxiv_timeout_seconds == 20  # 验证超时配置被正确保存。
+    assert settings.arxiv_requests_per_second == 1 / 3  # 验证来源级频率配置被正确保存。
+
+
+def test_settings_rejects_excessive_arxiv_rps() -> None:
+    """arXiv 请求频率不得超过一秒一次，以避免违反来源使用建议。"""
+    with pytest.raises(ValueError, match="less than or equal to 1"):  # 断言超过配置上限时返回数值校验错误。
+        Settings(_env_file=None, arxiv_requests_per_second=2)  # 构造超过来源保护阈值的无效频率。
+
+
 def test_settings_allows_optional_semantic_scholar_key_and_preserves_rps() -> None:
     """Semantic Scholar 匿名访问配置应保留 1 RPS 来源级限制。"""
     settings = Settings(  # 构造不读取用户本地 .env 的匿名访问配置。
