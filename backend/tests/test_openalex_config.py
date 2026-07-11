@@ -60,6 +60,26 @@ def test_settings_rejects_excessive_dblp_rps() -> None:
         Settings(_env_file=None, dblp_requests_per_second=6)  # 构造超过保守来源保护阈值的无效频率。
 
 
+def test_settings_accepts_tavily_connection_configuration() -> None:
+    """有效 Tavily 密钥、来源级频率和补充结果上限应被配置模型保留。"""
+    settings = Settings(  # 构造不读取用户本地 .env 的 Tavily 隔离配置。
+        _env_file=None,  # 禁止测试读取用户本地配置值。
+        tavily_api_key="test-api-key",  # 提供不具备真实权限的测试密钥。
+        tavily_requests_per_second=1,  # 提供有效来源级请求频率。
+        tavily_max_results=5,  # 提供有效补充结果数量上限。
+    )
+    assert settings.tavily_api_base_url == "https://api.tavily.com"  # 验证默认 Tavily API 地址。
+    assert settings.require_tavily_api_key() == "test-api-key"  # 验证有效密钥仅在适配器请求层按需读取。
+    assert settings.tavily_max_results == 5  # 验证补充结果数量上限被正确保存。
+
+
+def test_settings_rejects_missing_tavily_api_key_when_required() -> None:
+    """Tavily 适配器请求前应拒绝未配置或空白的 API 密钥。"""
+    settings = Settings(_env_file=None, tavily_api_key="   ")  # 构造仅包含空白 Tavily 密钥的配置。
+    with pytest.raises(ValueError, match="SCHOLARFLOW_TAVILY_API_KEY"):  # 断言错误明确指出缺失环境变量。
+        settings.require_tavily_api_key()  # 模拟补充发现适配器在请求前读取密钥。
+
+
 def test_settings_allows_optional_semantic_scholar_key_and_preserves_rps() -> None:
     """Semantic Scholar 匿名访问配置应保留 1 RPS 来源级限制。"""
     settings = Settings(  # 构造不读取用户本地 .env 的匿名访问配置。

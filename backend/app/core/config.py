@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     dblp_api_base_url: str = Field(default="https://dblp.org/search/publ", pattern=r"^https://")  # 限制 DBLP 使用 HTTPS 出版物搜索地址。
     dblp_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 DBLP 单次请求等待时间。
     dblp_requests_per_second: float = Field(default=1.0, gt=0, le=5)  # 设置保守的 DBLP 来源级请求频率上限。
+    tavily_api_base_url: str = Field(default="https://api.tavily.com", pattern=r"^https://")  # 限制 Tavily 使用 HTTPS API 地址。
+    tavily_api_key: SecretStr | None = None  # 保存不可写入日志的 Tavily API 密钥。
+    tavily_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Tavily 单次请求等待时间。
+    tavily_requests_per_second: float = Field(default=1.0, gt=0, le=5)  # 配置 Tavily 来源级请求频率上限。
+    tavily_max_results: int = Field(default=5, ge=1, le=20)  # 限制补充发现数量避免挤占主论文来源预算。
     semantic_scholar_api_base_url: str = Field(default="https://api.semanticscholar.org/graph/v1", pattern=r"^https://")  # 限制 Semantic Scholar 使用 HTTPS Graph API 地址。
     semantic_scholar_api_key: SecretStr | None = None  # 保存可选且不可写入日志的 Semantic Scholar API 密钥。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。
@@ -82,6 +87,20 @@ class Settings(BaseSettings):
             return None  # 允许客户端按官方匿名访问策略决定是否携带请求头。
         return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
 
+    @field_validator("tavily_api_key", mode="before")
+    @classmethod
+    def normalize_tavily_api_key(cls, value: object) -> object:
+        """将空白 Tavily API 密钥统一视为未配置。
+
+        参数：
+            value：环境变量或构造参数提供的原始密钥值。
+        返回：
+            object：规范化后的密钥值或空值。
+        """
+        if isinstance(value, str) and not value.strip():  # 避免将空字符串误认为可用于 Bearer 认证。
+            return None  # 让调用前配置校验给出稳定提示。
+        return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
+
     def require_openalex_api_key(self) -> str:
         """返回已配置的 OpenAlex API 密钥。
 
@@ -93,6 +112,18 @@ class Settings(BaseSettings):
         if self.openalex_api_key is None:  # 在网络请求前提前发现缺失配置。
             raise ValueError("未配置 SCHOLARFLOW_OPENALEX_API_KEY")  # 提供不泄露敏感值的明确错误。
         return self.openalex_api_key.get_secret_value()  # 仅在调用方真正需要时解封装密钥。
+
+    def require_tavily_api_key(self) -> str:
+        """返回已配置的 Tavily API 密钥。
+
+        返回：
+            str：仅供 Tavily HTTP Authorization 请求头使用的密钥文本。
+        异常：
+            ValueError：尚未配置密钥时抛出，避免发出必然失败的请求。
+        """
+        if self.tavily_api_key is None:  # 在网络请求前提前发现缺失配置。
+            raise ValueError("未配置 SCHOLARFLOW_TAVILY_API_KEY")  # 提供不泄露敏感值的明确错误。
+        return self.tavily_api_key.get_secret_value()  # 仅在实际认证请求层解封装密钥。
 
 
 @lru_cache

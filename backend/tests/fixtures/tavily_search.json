@@ -1,0 +1,12 @@
+{
+  "query": "Transformer forecasting",
+  "results": [
+    {
+      "title": "Transformer Forecasting Benchmark",
+      "url": "https://example.org/transformer-forecasting",
+      "content": "A benchmark overview for transformer-based time-series forecasting.",
+      "score": 0.92
+    }
+  ],
+  "response_time": "0.31"
+}

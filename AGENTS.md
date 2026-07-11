@@ -14,7 +14,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 当前可用检索源以 OpenAlex 为主；Semantic Scholar 已保留适配器实现，但在 API Key 获批前不纳入默认调用链。AI/计算机领域优先按需接入 arXiv、DBLP；Tavily 仅作为补充发现与网页证据来源，不能替代学术来源的论文身份与引用元数据。不要无条件调用所有数据源。
 - 持久化使用 SQLite，短期缓存、限流和工作流临时状态使用 Redis；语义向量索引使用 FAISS。
 - 排序遵循“规则过滤 → BGE-M3 粗排 → Cross Encoder 重排 → LLM 精排与理由生成”的分层设计。初期不得以模型微调或强化学习替代该方案。
-- 核心领域契约为 `QueryIntent`、`PaperRecord`、`SearchRunState` 与 `SearchResult`。Python 模块可渐进兼容演进，但不得在没有迁移计划时随意改写已有公开字段。去重优先级为 DOI、arXiv ID、PMID、来源平台 ID、标题+年份+作者。
+- 核心领域契约为 `QueryIntent`、`PaperRecord`、`SearchRunState` 与 `SearchResult`；补充网页发现使用独立的 `SupplementalDiscoveryItem`，不得伪装为论文记录。Python 模块可渐进兼容演进，但不得在没有迁移计划时随意改写已有公开字段。去重优先级为 DOI、arXiv ID、PMID、来源平台 ID、标题+年份+作者。
 - 前端优先实现“文献搜索”和“我的文献库”两大模块。搜索结果应能呈现查询解析、搜索过程、论文列表、推荐理由、收藏能力，以及引文关系图、技术路线分类等可视化入口。
 - 图谱体验可参考 PaperGraph：以论文为节点、以引文或语义关系为边，支持按关系、聚类或时间维度理解文献；但必须先完成可用的检索与文献库闭环。
 
@@ -31,7 +31,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 密钥、令牌、数据库地址和模型配置必须从环境变量或配置文件读取。提交 `.env.example`，不得提交真实密钥、令牌、用户数据、下载模型、数据库、缓存文件或运行日志。
 - 每次新增或修改 `.env.example` 字段时，必须只比较 `.env` 的字段名并补齐缺失项；不得读取、输出、删除或覆盖 `.env` 中已有值，且不得将 `.env` 纳入 Git 暂存或提交。
 - OpenAlex 适配器使用 `SCHOLARFLOW_OPENALEX_API_BASE_URL`、`SCHOLARFLOW_OPENALEX_API_KEY` 和 `SCHOLARFLOW_OPENALEX_TIMEOUT_SECONDS` 配置；调用前必须通过配置方法校验 API 密钥，日志中不得输出该密钥。
-- 每个来源适配器必须独立封装认证、字段映射、分页、超时、重试、限流、错误映射与健康状态；Tavily 的结果必须显式标注为补充来源，并在返回前映射到统一论文契约或作为不可合并的发现项处理。LangGraph 只依赖统一适配器协议，不得依赖供应商字段。
+- 每个来源适配器必须独立封装认证、字段映射、分页、超时、重试、限流、错误映射与健康状态；Tavily 必须实现独立的 `WebDiscoveryAdapter` 并返回不可合并的 `SupplementalDiscoveryItem`，不得进入论文去重、引用关系或学术元数据排序。LangGraph 只依赖统一适配器协议，不得依赖供应商字段。
 - 检索迭代必须设置停止条件：目标数量已满足、连续一轮无新增高质量论文、约束已覆盖，或 API/Token 预算达到上限。
 
 ## 3. Python 依赖与运行规则
