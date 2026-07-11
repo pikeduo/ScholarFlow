@@ -47,7 +47,7 @@ def test_client_implements_unified_adapter_and_maps_search_response() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         """校验请求参数和请求头并返回本地成功响应。"""
-        assert request.url.path == "/paper/search"  # 验证客户端调用官方论文搜索端点。
+        assert request.url.path == "/graph/v1/paper/search"  # 验证基地址版本前缀与论文搜索端点被正确拼接。
         assert request.url.params["query"] == "forecasting Transformer ETT"  # 验证查询意图按确定顺序转换为全文搜索词。
         assert request.url.params["limit"] == "5"  # 验证目标结果数量映射为来源单页限制。
         assert request.headers["x-api-key"] == "test-api-key"  # 验证密钥仅在认证请求头中注入。
