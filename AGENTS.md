@@ -11,7 +11,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 前端使用 Vue 3，后端使用 Python 与 FastAPI。
 - 检索编排使用轻量多 Agent + LangGraph 工作流，保持 Query、Search、Analysis、Ranking 与 Knowledge Management 职责分离。
 - Codex 仅用于受控开发辅助，不得成为生产运行链路、产品功能或部署依赖。
-- 当前可用检索源以 OpenAlex 为主；Semantic Scholar 已保留适配器实现，但在 API Key 获批前不纳入默认调用链。AI/计算机领域优先按需接入 arXiv、DBLP；Tavily 仅作为补充发现与网页证据来源，不能替代学术来源的论文身份与引用元数据。不要无条件调用所有数据源。
+- 当前核心检索源为 OpenAlex 与 Semantic Scholar；Semantic Scholar 已获批并启用，必须遵守每秒最多一次请求的来源级限制。AI/计算机领域优先按需接入 arXiv、DBLP；Tavily 仅作为补充发现与网页证据来源，不能替代学术来源的论文身份与引用元数据。不要无条件调用所有数据源。
 - 持久化使用 SQLite，短期缓存、限流和工作流临时状态使用 Redis；语义向量索引使用 FAISS。
 - 排序遵循“规则过滤 → BGE-M3 粗排 → Cross Encoder 重排 → LLM 精排与理由生成”的分层设计。初期不得以模型微调或强化学习替代该方案。
 - 核心领域契约为 `QueryIntent`、`PaperRecord`、`SearchRunState` 与 `SearchResult`；补充网页发现使用独立的 `SupplementalDiscoveryItem`，不得伪装为论文记录。Python 模块可渐进兼容演进，但不得在没有迁移计划时随意改写已有公开字段。去重优先级为 DOI、arXiv ID、PMID、来源平台 ID、标题+年份+作者。
@@ -21,7 +21,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 ## 2. 实施与规划规则
 
 - 按阶段交付，优先顺序为：基础工程 → 多源检索与规范化/去重 → 排序系统 → 搜索页与文献库/图谱 → 缓存、成本统计与策略优化。
-- 当前实施顺序为：核心领域契约、OpenAlex、arXiv、DBLP 与 Tavily 适配器及动态来源路由均已完成；下一步先实现多源召回协调与 `PaperRecord` 规范化/去重，再进入复杂排序或图谱开发。OpenAlex 始终为主源；AI/计算机领域按需加入 arXiv 与 DBLP；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用；Semantic Scholar 仅在 API Key 获批、已配置且 `SCHOLARFLOW_SEMANTIC_SCHOLAR_ENABLED=true` 时接回路由。每个来源先实现 `search`，再增加详情、引用和被引能力。
+- 当前实施顺序为：核心领域契约、OpenAlex、Semantic Scholar、arXiv、DBLP 与 Tavily 适配器、动态来源路由和多源召回协调均已完成；下一步实现 `PaperRecord` 规范化融合、身份去重、版本族关联与 RRF，再进入复杂排序或图谱开发。OpenAlex 与已启用的 Semantic Scholar 为核心源；AI/计算机领域按需加入 arXiv 与 DBLP；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用。每个来源先实现 `search`，再增加详情、引用和被引能力。
 - 一次变更以一个可验收的功能闭环为边界，可合并 2–4 个紧密相关的小任务（如实现、测试及必要配置/文档）；完成后立即停止并等待用户确认下一步。不得将无关模块、多个开发阶段或复杂基础设施一次性混入同一变更。
 - 规划完成后，必须在交付说明中明确写出“下一步规划”，并检查本文件是否仍准确；若架构、目录、命令、依赖管理或协作流程发生变化，必须同时更新 `AGENTS.md`，否则说明“AGENTS.md 无需更新”。
 - 每次交付说明必须列出本轮新增或更新的文件，并使用可点击的本地文件链接；说明每个文件的主要变更，方便用户直接审阅。
@@ -29,7 +29,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 新模块先定义清晰的输入、输出、错误边界和可替换接口；第三方 API、模型、存储与缓存必须放在适配层或配置层，禁止散落在业务逻辑中。
 - 学术搜索 API 先封装为 `adapters/` 中可替换、可单测的客户端方法；仅当 LangGraph 工作流需要自主选择数据源时，才将客户端方法包装为 Agent Tool，Tool 不得直接承载 HTTP、鉴权或响应解析细节。
 - 密钥、令牌、数据库地址和模型配置必须从环境变量或配置文件读取。提交 `.env.example`，不得提交真实密钥、令牌、用户数据、下载模型、数据库、缓存文件或运行日志。
-- 每次新增或修改 `.env.example` 字段时，必须只比较 `.env` 的字段名并补齐缺失项；不得读取、输出、删除或覆盖 `.env` 中已有值，且不得将 `.env` 纳入 Git 暂存或提交。
+- `.env` 必须与 `.env.example` 保持相同字段名、字段顺序、注释结构及非密钥默认值；仅 API Key、令牌等真实敏感值可以不同。每次新增或修改 `.env.example` 时，必须同步检查 `.env` 的结构并补齐缺失项；不得读取、输出、删除或覆盖 `.env` 中已有敏感值，且不得将 `.env` 纳入 Git 暂存或提交。
 - OpenAlex 适配器使用 `SCHOLARFLOW_OPENALEX_API_BASE_URL`、`SCHOLARFLOW_OPENALEX_API_KEY` 和 `SCHOLARFLOW_OPENALEX_TIMEOUT_SECONDS` 配置；调用前必须通过配置方法校验 API 密钥，日志中不得输出该密钥。
 - 每个来源适配器必须独立封装认证、字段映射、分页、超时、重试、限流、错误映射与健康状态；Tavily 必须实现独立的 `WebDiscoveryAdapter` 并返回不可合并的 `SupplementalDiscoveryItem`，不得进入论文去重、引用关系或学术元数据排序。LangGraph 只依赖统一适配器协议，不得依赖供应商字段。
 - 检索迭代必须设置停止条件：目标数量已满足、连续一轮无新增高质量论文、约束已覆盖，或 API/Token 预算达到上限。
