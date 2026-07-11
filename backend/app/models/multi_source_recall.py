@@ -18,6 +18,8 @@ class MultiSourceRecallResult(BaseModel):
         source_errors：来源调用失败或未注册时的安全错误摘要。
         raw_paper_count：各学术来源返回并进入融合前的原始论文数量。
         merged_paper_count：被合并到其他身份组的重复来源记录数量。
+        filtered_paper_count：融合后因确定性规则被移除的论文数量。
+        filter_reason_counts：按首个未通过规则汇总的移除数量。
         work_family_count：融合结果中可识别版本族的唯一数量。
     """
 
@@ -28,4 +30,6 @@ class MultiSourceRecallResult(BaseModel):
     source_errors: dict[str, str] = Field(default_factory=dict)  # 保存不含密钥、路径和响应正文的来源错误摘要。
     raw_paper_count: int = Field(default=0, ge=0)  # 保存跨来源融合前的原始学术论文数量。
     merged_paper_count: int = Field(default=0, ge=0)  # 保存因身份融合而被合并的重复来源记录数量。
+    filtered_paper_count: int = Field(default=0, ge=0)  # 保存融合后因确定性规则被移除的论文数量。
+    filter_reason_counts: dict[str, int] = Field(default_factory=dict)  # 保存按首个失败规则汇总的安全过滤统计。
     work_family_count: int = Field(default=0, ge=0)  # 保存融合论文中唯一版本族标识的数量。

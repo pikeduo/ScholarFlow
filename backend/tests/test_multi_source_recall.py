@@ -161,3 +161,24 @@ def test_coordinator_fuses_cross_source_duplicate_before_returning_result() -> N
     assert len(result.papers) == 1  # 验证重复论文不会透传到多源结果。
     assert result.merged_paper_count == 1  # 验证返回合并掉的一条重复来源记录。
     assert [source_record.source for source_record in result.papers[0].source_records] == ["openalex", "semantic_scholar"]  # 验证融合结果保留完整来源溯源。
+
+
+def test_coordinator_filters_fused_papers_before_returning_result() -> None:
+    """协调器应在融合后应用 QueryIntent 硬约束并返回可解释过滤统计。"""
+    coordinator = MultiSourceRecallCoordinator(  # 构造仅使用 OpenAlex 离线替身的最小协调器。
+        source_router=SourceRouter(Settings(_env_file=None)),  # 使用固定选择 OpenAlex 的隔离路由器。
+        academic_adapters={"openalex": _StubAcademicAdapter("openalex", [_build_paper("openalex", "missing-term")])},  # 返回不含必须词的论文。
+    )
+    query = QueryIntent(  # 构造带必须词硬约束的检索意图。
+        original_query="Transformer forecasting",  # 提供原始查询。
+        normalized_query="Transformer forecasting",  # 提供规范化查询。
+        query_language="en",  # 标记查询语言。
+        must_include=["transformer"],  # 要求论文标题或摘要包含指定方法词。
+    )
+
+    result = asyncio.run(coordinator.recall(query))  # 执行离线召回、融合和规则过滤。
+
+    assert result.raw_paper_count == 1  # 验证论文已进入融合与过滤流程。
+    assert result.papers == []  # 验证不满足必须词的论文不会进入最终候选。
+    assert result.filtered_paper_count == 1  # 验证过滤统计记录一条移除。
+    assert result.filter_reason_counts == {"must_include": 1}  # 验证返回稳定且可展示的过滤原因。

@@ -9,6 +9,7 @@ from backend.app.models.discovery import SupplementalDiscoveryItem  # 区分不�
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造协调阶段统一输出。
 from backend.app.models.paper import PaperRecord  # 保存进入后续规范化阶段的论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收已完成查询规划的统一意图。
+from backend.app.services.multi_source_filtering import MultiSourcePaperFilter  # 在语义排序前应用多源确定性规则过滤。
 from backend.app.services.paper_fusion import PaperFusionService  # 在协调器边界执行跨来源身份融合与 RRF 计算。
 from backend.app.services.source_router import SourceRouter  # 使用确定性来源路由规则生成执行计划。
 
@@ -21,6 +22,7 @@ class MultiSourceRecallCoordinator:
         academic_adapters：按来源名称注册的学术搜索适配器。
         web_discovery_adapters：按来源名称注册的补充网页发现适配器。
         paper_fusion_service：可替换的跨来源身份融合和 RRF 服务。
+        paper_filter：可替换的融合论文确定性规则过滤服务。
     """
 
     def __init__(
@@ -29,12 +31,14 @@ class MultiSourceRecallCoordinator:
         academic_adapters: Mapping[str, AcademicSearchAdapter],
         web_discovery_adapters: Mapping[str, WebDiscoveryAdapter] | None = None,
         paper_fusion_service: PaperFusionService | None = None,
+        paper_filter: MultiSourcePaperFilter | None = None,
     ) -> None:
         """保存路由器和只读适配器注册表，避免协调器绑定具体供应商实现。"""
         self._source_router = source_router  # 保存可测试的来源路由策略。
         self._academic_adapters = dict(academic_adapters)  # 复制注册表避免调用期间外部修改来源映射。
         self._web_discovery_adapters = dict(web_discovery_adapters or {})  # 保存可选网页发现注册表并默认空映射。
         self._paper_fusion_service = paper_fusion_service or PaperFusionService()  # 默认使用统一融合策略并允许测试替换。
+        self._paper_filter = paper_filter or MultiSourcePaperFilter()  # 默认在排序前应用 QueryIntent 硬约束过滤。
 
     async def recall(self, query: QueryIntent) -> MultiSourceRecallResult:
         """按路由计划并发召回学术论文和补充网页发现项。
@@ -72,16 +76,19 @@ class MultiSourceRecallCoordinator:
             if error_message is not None:  # 网页来源故障也允许整体学术检索继续。
                 source_errors[source_name] = error_message  # 保存安全可展示的网页来源错误摘要。
         fusion_result = self._paper_fusion_service.fuse(recalled_papers)  # 在 API 边界前统一执行身份解析、字段融合、版本族与 RRF。
-        logger.info("多源召回完成：原始论文=%d，融合论文=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。
+        filter_result = self._paper_filter.filter(fusion_result.papers, query)  # 在进入语义排序前应用可解释的确定性规则过滤。
+        logger.info("多源召回完成：原始论文=%d，融合论文=%d，过滤=%d，最终候选=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, filter_result.filtered_count, len(filter_result.papers), len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。
         return MultiSourceRecallResult(  # 构造供后续规范化、去重与运行状态更新使用的结果。
             route_plan=route_plan,  # 保留本轮真实执行的来源选择计划。
-            papers=fusion_result.papers,  # 返回已经融合且携带 RRF 与版本族标识的论文记录。
+            papers=filter_result.papers,  # 返回已融合且通过确定性过滤的论文记录。
             discoveries=discoveries,  # 返回不可合并的补充网页发现项。
             source_counts=source_counts,  # 返回每个已选来源的成功结果数。
             source_errors=source_errors,  # 返回来源级安全降级错误摘要。
             raw_paper_count=fusion_result.input_count,  # 返回融合前的原始学术论文数量。
             merged_paper_count=fusion_result.merged_count,  # 返回被身份融合合并的重复记录数量。
-            work_family_count=fusion_result.work_family_count,  # 返回可识别版本族的唯一数量。
+            filtered_paper_count=filter_result.filtered_count,  # 返回融合后被规则过滤移除的论文数量。
+            filter_reason_counts=filter_result.filter_reason_counts,  # 返回按首个失败规则汇总的过滤统计。
+            work_family_count=filter_result.work_family_count,  # 返回最终候选中可识别版本族的唯一数量。
         )
 
     async def _recall_academic_source(
