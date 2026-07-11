@@ -1,11 +1,13 @@
 """定义跨学术数据源统一使用的论文领域模型。"""
 
+from datetime import datetime  # 记录来源拉取和规范化元数据的更新时间。
 from typing import Literal  # 限制论文数据的已知来源范围。
 
 from pydantic import BaseModel, Field  # 提供论文数据校验与字段约束。
 
 
 PaperSource = Literal["openalex", "semantic_scholar", "arxiv", "dblp", "pubmed", "manual"]  # 标记可追溯的论文来源。
+PaperType = Literal["article", "conference", "preprint", "review"]  # 标记统一论文可识别的基础类型。
 
 
 class PaperAuthor(BaseModel):
@@ -20,6 +22,24 @@ class PaperAuthor(BaseModel):
     name: str = Field(min_length=1)  # 要求作者名称不可为空。
     orcid: str | None = None  # 保留可用于跨源作者匹配的 ORCID。
     institution: str | None = None  # 保留数据源提供的作者机构名称。
+
+
+class PaperSourceRecord(BaseModel):
+    """保存单个外部来源对论文的原始命中与溯源信息。
+
+    属性：
+        source：提供本条元数据的外部来源。
+        external_id：来源内稳定论文标识。
+        raw_rank：论文在该来源原始结果中的名次。
+        matched_subqueries：命中该论文的子查询文本列表。
+        fetched_at：从来源成功获取元数据的时间。
+    """
+
+    source: PaperSource  # 标记当前元数据记录的来源。
+    external_id: str = Field(min_length=1)  # 确保每条溯源记录具有来源内稳定标识。
+    raw_rank: int | None = Field(default=None, ge=1)  # 保留可选的来源原始排名。
+    matched_subqueries: list[str] = Field(default_factory=list)  # 保存用于 RRF 和可解释性的命中子查询。
+    fetched_at: datetime | None = None  # 保留来源拉取时间，缺失时不虚构时间戳。
 
 
 class Paper(BaseModel):
@@ -52,3 +72,35 @@ class Paper(BaseModel):
     citation_count: int = Field(default=0, ge=0)  # 禁止出现无意义的负引用数。
     references: list[str] = Field(default_factory=list)  # 保存可用于引文图谱的引用标识。
     source: PaperSource  # 强制记录元数据来源便于溯源和纠错。
+
+
+class PaperRecord(Paper):
+    """扩展 Paper 的多源规范化记录，供融合、持久化和排序阶段使用。
+
+    属性：
+        keywords：来源返回或后续提取的关键词。
+        paper_type：论文基础类型。
+        openalex_id：OpenAlex 来源标识。
+        semantic_scholar_id：Semantic Scholar 来源标识。
+        dblp_key：DBLP 来源标识。
+        is_open_access：来源声明的开放获取状态。
+        open_access_url：可公开访问的合法链接。
+        source_records：所有来源命中与原始排名记录。
+        work_family_id：预印本、会议版与期刊版的版本族标识。
+        text_hash：用于判断摘要或标题变化的文本哈希。
+        embedding_model_version：生成向量时使用的模型版本。
+        updated_at：规范化记录最近更新时间。
+    """
+
+    keywords: list[str] = Field(default_factory=list)  # 保存可用于展示和向量编码的关键词。
+    paper_type: PaperType | None = None  # 保留可选的来源论文类型。
+    openalex_id: str | None = None  # 保留 OpenAlex 的稳定来源标识。
+    semantic_scholar_id: str | None = None  # 保留 Semantic Scholar 的稳定来源标识。
+    dblp_key: str | None = None  # 保留 DBLP 的稳定来源标识。
+    is_open_access: bool | None = None  # 保留来源无法确认时的三态开放获取信息。
+    open_access_url: str | None = None  # 保存经来源提供的合法开放访问链接。
+    source_records: list[PaperSourceRecord] = Field(default_factory=list)  # 保存多源命中和原始排名的溯源记录。
+    work_family_id: str | None = None  # 关联预印本、会议版与期刊版的版本族。
+    text_hash: str | None = None  # 保存向量更新判断使用的标题摘要哈希。
+    embedding_model_version: str | None = None  # 保存当前向量对应的模型版本。
+    updated_at: datetime | None = None  # 保存规范化记录的最近更新时间。
