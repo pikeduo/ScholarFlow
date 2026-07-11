@@ -3,10 +3,52 @@
 from collections.abc import Mapping  # 安全识别嵌套 JSON 对象。
 
 from backend.app.models.paper import Paper, PaperAuthor  # 复用统一的论文领域模型。
+from backend.app.models.query import QuerySchema  # 读取结构化检索约束。
+
+
+OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
+    "id",  # 获取来源内稳定论文标识。
+    "doi",  # 获取跨来源 DOI 标识。
+    "title",  # 获取论文标题。
+    "publication_year",  # 获取年份过滤和展示字段。
+    "cited_by_count",  # 获取基础质量信号。
+    "abstract_inverted_index",  # 获取可还原的摘要。
+    "authorships",  # 获取作者和机构信息。
+    "primary_location",  # 获取期刊或会议名称。
+    "referenced_works",  # 获取引文图谱关系。
+    "ids",  # 兼容嵌套外部标识。
+)
 
 
 class OpenAlexMappingError(ValueError):
     """表示 OpenAlex 响应缺少生成统一论文所必需的数据。"""
+
+
+def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
+    """将结构化查询转换为 OpenAlex /works 的纯请求参数。
+
+    参数：
+        query：已经通过 QuerySchema 校验的检索约束。
+    返回：
+        dict[str, str | int]：不含密钥、可直接传给未来 HTTP 客户端的参数。
+    异常：
+        ValueError：没有可用于 OpenAlex 全文搜索的关键词时抛出。
+    """
+    search_terms: list[str] = []  # 按确定顺序收集可送入全文搜索的关键词。
+    for terms in (query.topic, query.method, query.dataset, query.domain, query.must_include):  # 合并可表达研究意图的字段。
+        search_terms.extend(term.strip() for term in terms if term.strip())  # 去除空白项并保留用户语义顺序。
+    if not search_terms:  # OpenAlex 搜索必须有至少一个明确检索词。
+        raise ValueError("QuerySchema 至少需要一个主题、方法、数据集、领域或必须包含关键词")  # 避免发起无约束高成本搜索。
+
+    params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
+        "search": " ".join(search_terms),  # 使用 OpenAlex 全文搜索表达结构化意图。
+        "sort": "relevance_score:desc",  # 优先返回与搜索词最相关的论文。
+        "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
+        "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段。
+    }
+    if query.year_range:  # 仅在用户明确指定年份范围时添加 API 过滤。
+        params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 年份范围过滤语法。
+    return params  # 排除尚未解析为来源 ID 的 venue 和后续本地处理的 exclude 条件。
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
