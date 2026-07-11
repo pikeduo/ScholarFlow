@@ -17,12 +17,14 @@ def test_paper_model_preserves_normalized_metadata() -> None:
         venue="NeurIPS",  # 提供发表会议。
         doi="10.1000/example",  # 提供 DOI 标识。
         arxiv_id="2501.00001",  # 提供预印本标识。
+        pmid="12345678",  # 提供 PubMed 标识。
         citation_count=12,  # 提供非负引用计数。
         references=["https://openalex.org/W456"],  # 提供引用关系标识。
         source="openalex",  # 标记当前元数据来源。
     )
     assert paper.paper_id == "https://openalex.org/W123"  # 验证论文标识被保留。
     assert paper.authors[0].name == "张三"  # 验证嵌套作者模型被正确解析。
+    assert paper.pmid == "12345678"  # 验证 PubMed 标识被正确保存。
     assert paper.citation_count == 12  # 验证引用数被正确保存。
 
 

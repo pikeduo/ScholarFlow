@@ -34,6 +34,7 @@ class Paper(BaseModel):
         venue：发表期刊或会议，数据源缺失时为空。
         doi：数字对象标识符，数据源缺失时为空。
         arxiv_id：arXiv 标识符，数据源缺失时为空。
+        pmid：PubMed 标识符，数据源缺失时为空。
         citation_count：数据源报告的被引次数。
         references：该论文引用的上游论文标识列表。
         source：提供当前元数据的数据源。
@@ -47,6 +48,7 @@ class Paper(BaseModel):
     venue: str | None = None  # 保留可选的期刊或会议名称。
     doi: str | None = None  # 保留后续 DOI 优先去重所需原始标识。
     arxiv_id: str | None = None  # 保留后续预印本识别所需标识。
+    pmid: str | None = None  # 保留医学文献跨来源去重所需 PubMed 标识。
     citation_count: int = Field(default=0, ge=0)  # 禁止出现无意义的负引用数。
     references: list[str] = Field(default_factory=list)  # 保存可用于引文图谱的引用标识。
     source: PaperSource  # 强制记录元数据来源便于溯源和纠错。

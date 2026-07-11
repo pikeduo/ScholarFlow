@@ -26,6 +26,7 @@ def test_mapper_normalizes_openalex_work_to_paper() -> None:
     assert paper.authors[0].name == "Ada Lovelace"  # 验证嵌套作者名称映射。
     assert paper.authors[0].institution == "ScholarFlow Laboratory"  # 验证首个作者机构映射。
     assert paper.venue == "NeurIPS"  # 验证主发布位置的来源名称映射。
+    assert paper.pmid == "https://pubmed.ncbi.nlm.nih.gov/12345678/"  # 验证 ids 中的 PubMed 标识映射。
     assert paper.references == ["https://openalex.org/W0987654321"]  # 验证引用 Work ID 映射。
 
 

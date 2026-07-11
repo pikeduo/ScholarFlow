@@ -24,6 +24,16 @@ def test_deduplication_ignores_arxiv_version_suffix() -> None:
     assert [paper.paper_id for paper in deduplicated_papers] == ["A1"]  # 验证版本后缀不会产生重复记录。
 
 
+def test_deduplication_normalizes_pmid_url_and_prefix() -> None:
+    """表示形式不同但核心相同的 PMID 应只保留首次论文。"""
+    papers = [  # 构造 DOI 和 arXiv 均缺失但 PMID 相同的跨来源论文。
+        Paper(paper_id="P1", title="医学论文", pmid="https://pubmed.ncbi.nlm.nih.gov/12345678/", source="pubmed"),  # 使用 PubMed URL 形式。
+        Paper(paper_id="O1", title="医学论文的另一元数据", pmid="PMID:12345678", source="openalex"),  # 使用 PMID 前缀形式。
+    ]
+    deduplicated_papers = deduplicate_papers(papers)  # 执行 PMID 优先去重。
+    assert [paper.paper_id for paper in deduplicated_papers] == ["P1"]  # 验证只保留首次 PMID 记录。
+
+
 def test_deduplication_uses_source_id_before_title_fallback() -> None:
     """缺少稳定跨源标识时应先识别同源平台 ID，再使用标题回退键。"""
     papers = [  # 构造同源重复和跨源标题重复记录。

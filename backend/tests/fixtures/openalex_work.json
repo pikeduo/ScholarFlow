@@ -1,6 +1,9 @@
 {
   "id": "https://openalex.org/W1234567890",
   "doi": "https://doi.org/10.1000/scholarflow",
+  "ids": {
+    "pmid": "https://pubmed.ncbi.nlm.nih.gov/12345678/"
+  },
   "title": "Large Language Models for Forecasting",
   "publication_year": 2025,
   "cited_by_count": 42,

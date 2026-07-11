@@ -287,6 +287,7 @@ def map_openalex_work_to_paper(work: Mapping[str, object]) -> Paper:
         year=publication_year if isinstance(publication_year, int) and not isinstance(publication_year, bool) else None,  # 忽略无效年份类型。
         venue=_extract_venue(work),  # 提取主发布位置的期刊或会议名称。
         doi=_optional_text(work.get("doi")) or (_optional_text(identifiers.get("doi")) if identifiers else None),  # 兼容顶层与 ids 中的 DOI。
+        pmid=_optional_text(identifiers.get("pmid")) if identifiers else None,  # 保留 ids 中可选的 PubMed 标识。
         citation_count=max(cited_by_count, 0) if isinstance(cited_by_count, int) and not isinstance(cited_by_count, bool) else 0,  # 防御异常负数或类型。
         references=_extract_references(work),  # 保留 OpenAlex 提供的被引 Work ID。
         source="openalex",  # 标记统一模型的当前数据源。

@@ -33,6 +33,21 @@ def _normalize_arxiv_id(arxiv_id: str) -> str:
     return re.sub(r"v\d+$", "", normalized_id)  # 将同一预印本的不同版本视为同一记录。
 
 
+def _normalize_pmid(pmid: str) -> str:
+    """将 PMID URL 或展示前缀转换为可比较的稳定标识。
+
+    参数：
+        pmid：数据源返回的原始 PubMed 标识文本。
+    返回：
+        str：移除常见 URL、前缀和末尾斜杠后的 PMID。
+    """
+    normalized_pmid = pmid.strip().casefold()  # 移除空白并消除 PMID 大小写差异。
+    for prefix in ("https://pubmed.ncbi.nlm.nih.gov/", "http://pubmed.ncbi.nlm.nih.gov/", "pmid:"):  # 兼容 PubMed URL 与常见展示前缀。
+        if normalized_pmid.startswith(prefix):  # 仅移除实际存在的展示前缀。
+            normalized_pmid = normalized_pmid.removeprefix(prefix)  # 保留用于跨源比较的 PMID 核心标识。
+    return normalized_pmid.rstrip("/")  # 忽略 URL 末尾无语义的斜杠。
+
+
 def _build_title_key(paper: Paper) -> str:
     """构造仅用于缺少稳定标识时的保守标题回退键。
 
@@ -48,7 +63,7 @@ def _build_title_key(paper: Paper) -> str:
 
 
 def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
-    """按 DOI、arXiv、同源平台 ID、标题回退键的顺序保留首次出现的论文。
+    """按 DOI、arXiv、PMID、同源平台 ID、标题回退键的顺序保留首次出现的论文。
 
     参数：
         papers：按数据源召回顺序排列的规范化论文列表。
@@ -58,6 +73,7 @@ def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
     retained_papers: list[Paper] = []  # 保存每个身份组首次出现的论文。
     seen_dois: set[str] = set()  # 记录已经保留的 DOI。
     seen_arxiv_ids: set[str] = set()  # 记录已经保留的 arXiv 标识。
+    seen_pmids: set[str] = set()  # 记录已经保留的 PubMed 标识。
     seen_source_ids: set[str] = set()  # 记录同一来源内已经保留的平台标识。
     seen_title_keys: set[str] = set()  # 记录缺少稳定标识论文的标题回退键。
     duplicate_count = 0  # 统计被过滤的重复论文数量。
@@ -80,6 +96,15 @@ def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
             seen_arxiv_ids.add(arxiv_key)  # 标记当前 arXiv 标识已保留。
             retained_papers.append(paper)  # 保留首次出现的预印本记录。
             continue  # arXiv 记录不使用低优先级字段再次判断。
+
+        if paper.pmid:  # 无 DOI 和 arXiv 时使用 PubMed 标识匹配医学文献。
+            pmid_key = _normalize_pmid(paper.pmid)  # 忽略 PubMed URL 和 PMID 展示前缀。
+            if pmid_key in seen_pmids:  # 相同 PMID 表示同一篇医学文献。
+                duplicate_count += 1  # 累加 PMID 重复计数。
+                continue  # 跳过后续 PMID 重复记录。
+            seen_pmids.add(pmid_key)  # 标记当前 PMID 已保留。
+            retained_papers.append(paper)  # 保留首次出现的 PubMed 记录。
+            continue  # PMID 记录不使用低优先级字段再次判断。
 
         source_key = f"{paper.source}:{paper.paper_id.strip()}"  # 构造同源平台内的稳定标识。
         if source_key in seen_source_ids:  # 同一来源的相同平台 ID 必然指向同一记录。
