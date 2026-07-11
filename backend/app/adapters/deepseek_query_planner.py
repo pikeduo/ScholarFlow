@@ -2,13 +2,14 @@
 
 import json  # 序列化不含密钥的用户请求。
 from datetime import date  # 向模型提供当前日期以解释“最新”等相对时间。
+from time import perf_counter  # 使用单调时钟统计外部查询规划耗时。
 from typing import Protocol  # 定义可由测试替换的查询规划边界。
 
 import httpx  # 复用已有异步 HTTP 客户端。
 from pydantic import BaseModel, Field, ValidationError, field_validator  # 先规范化供应商常见变体，再严格校验领域输出。
 
 from backend.app.core.config import Settings, settings  # 读取集中 DeepSeek 配置和召回上限。
-from backend.app.models.natural_search import NaturalSearchRequest  # 接收自然语言搜索请求。
+from backend.app.models.natural_search import NaturalSearchRequest, QueryPlanningResult  # 接收自然语言请求并返回带用量的规划结果。
 from backend.app.models.query_intent import PaperType, QueryIntent, QueryLanguage, QuerySubquery  # 构造完整领域契约。
 
 
@@ -19,8 +20,8 @@ class QueryPlanningError(RuntimeError):
 class QueryPlanningClient(Protocol):
     """定义自然语言查询规划客户端协议。"""
 
-    async def plan(self, request: NaturalSearchRequest) -> QueryIntent:
-        """将自然语言问题转换为可执行 QueryIntent。"""
+    async def plan(self, request: NaturalSearchRequest) -> QueryPlanningResult:
+        """将自然语言问题转换为带调用统计的可执行计划。"""
         ...
 
 
@@ -113,8 +114,8 @@ class DeepSeekQueryPlanningClient:
         self._config = config  # 延迟到调用时解封装 API Key。
         self._transport = transport  # 允许测试使用 MockTransport。
 
-    async def plan(self, request: NaturalSearchRequest) -> QueryIntent:
-        """调用 DeepSeek 并将显式用户约束覆盖到模型规划结果。"""
+    async def plan(self, request: NaturalSearchRequest) -> QueryPlanningResult:
+        """调用 DeepSeek，并返回显式约束优先的计划及安全用量统计。"""
         try:  # 在外部调用前校验密钥。
             api_key = self._config.require_deepseek_api_key()  # 仅在请求层使用真实密钥。
         except ValueError as exc:  # 缺少密钥时不退回低质量整句搜索。
@@ -132,6 +133,7 @@ class DeepSeekQueryPlanningClient:
             "stream": False,  # 等待完整计划后统一校验。
         }
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}  # 密钥仅进入请求头。
+        started_at = perf_counter()  # 从实际外部请求前开始统计规划链路耗时。
         try:  # 净化网络、状态和 JSON 解析异常。
             async with httpx.AsyncClient(base_url=self._config.deepseek_api_base_url.rstrip("/"), timeout=self._config.deepseek_timeout_seconds, transport=self._transport) as client:  # 使用集中端点。
                 response = await client.post("/chat/completions", headers=headers, json=body)  # 调用聊天完成接口。
@@ -141,7 +143,7 @@ class DeepSeekQueryPlanningClient:
             planned = _PlannedQuery.model_validate_json(content)  # 严格校验查询计划。
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:  # 覆盖全部外部边界异常。
             raise QueryPlanningError("DeepSeek 查询规划失败") from exc  # 不泄露响应正文或内部 URL。
-        return QueryIntent(  # 用模型语义字段和用户显式覆盖构造最终计划。
+        intent = QueryIntent(  # 用模型语义字段和用户显式覆盖构造最终计划。
             original_query=request.query,  # 原始问题始终来自用户。
             normalized_query=planned.normalized_query,  # 使用英文简洁检索式召回。
             query_language=planned.query_language,
@@ -165,6 +167,17 @@ class DeepSeekQueryPlanningClient:
             requires_web_evidence=request.requires_web_evidence,
             complexity_score=planned.complexity_score,
         )
+        usage = response_data.get("usage") if isinstance(response_data, dict) else None  # 安全读取供应商可选用量对象。
+        usage_data = usage if isinstance(usage, dict) else {}  # 缺少用量时使用零值保持接口稳定。
+        model_name = response_data.get("model") if isinstance(response_data, dict) else None  # 读取实际响应模型而非假定配置值。
+        duration_ms = max(0, round((perf_counter() - started_at) * 1000))  # 转换为便于日志和前端展示的毫秒数。
+        return QueryPlanningResult(  # 将意图和观测数据作为一个原子结果返回服务层。
+            query_intent=intent,  # 保存可直接进入多源协调器的计划。
+            model_name=model_name if isinstance(model_name, str) else self._config.deepseek_model,  # 响应缺失时回退到配置模型名。
+            prompt_tokens=_safe_token_count(usage_data.get("prompt_tokens")),  # 非法或缺失计数安全归零。
+            completion_tokens=_safe_token_count(usage_data.get("completion_tokens")),  # 非法或缺失计数安全归零。
+            duration_ms=duration_ms,  # 保存完整请求与解析耗时。
+        )
 
 
 _SYSTEM_PROMPT = """你是学术检索 Query Agent。只输出 JSON，不输出 Markdown 或思维过程。将中文或英文问题解析为结构化计划；所有用于学术 API 的主题、方法、任务、数据集、领域和 normalized_query 必须使用规范、简洁的英文术语。不要把“优先”误作硬约束。paper_types 只能使用 article、conference、preprint、review。complexity_score 必须是 0 到 1。subqueries 最多三条英文查询，每条必须包含 query、language='en' 和 purpose，purpose 只能是 method、dataset、citation。输出字段必须包含 normalized_query、query_language、research_topics、methods、tasks、datasets、authors、institutions、venues、paper_types、year_range、must_include、should_include、exclude、domains、complexity_score、subqueries。"""  # 定义稳定查询规划边界。
@@ -181,3 +194,10 @@ def _merge_terms(first: list[str], second: list[str]) -> list[str]:
             merged.append(normalized)  # 保存原始展示形式。
             seen.add(key)  # 标记已出现。
     return merged  # 返回稳定列表。
+
+
+def _safe_token_count(value: object) -> int:
+    """将供应商用量字段转换为非负整数，异常值安全归零。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):  # 排除布尔值、文本和空值。
+        return 0  # 保持公共响应中的计数稳定。
+    return max(0, int(value))  # 防止异常负数污染成本统计。

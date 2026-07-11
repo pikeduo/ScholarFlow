@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 H
 from backend.app.api.routes.search import get_multi_source_recall_coordinator, get_query_planning_service  # 覆盖生产协调器与查询规划依赖。
 from backend.app.main import app  # 导入待测 FastAPI 应用实例。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造稳定的多源响应结果。
+from backend.app.models.natural_search import QueryPlanningResult  # 构造带用量统计的查询规划结果。
 from backend.app.models.paper import PaperRecord  # 构造融合论文响应数据。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计来源路由计划。
 from backend.app.models.query_intent import QueryIntent  # 构造自然语言入口规划结果。
@@ -34,9 +35,10 @@ class FakeMultiSourceRecallCoordinator:
 class FakeQueryPlanningService:
     """为自然语言接口返回固定英文 QueryIntent。"""
 
-    async def plan(self, request: object) -> QueryIntent:
-        """返回不访问 DeepSeek 的固定查询计划。"""
-        return QueryIntent(original_query="中文查询", normalized_query="vision language model medical report generation", query_language="zh", research_topics=["vision-language model"], tasks=["medical report generation"], target_paper_count=20, source_recall_count=50)  # 构造英文检索计划。
+    async def plan(self, request: object) -> QueryPlanningResult:
+        """返回不访问 DeepSeek 的固定查询计划及调用统计。"""
+        intent = QueryIntent(original_query="中文查询", normalized_query="vision language model medical report generation", query_language="zh", research_topics=["vision-language model"], tasks=["medical report generation"], target_paper_count=20, source_recall_count=50)  # 构造英文检索计划。
+        return QueryPlanningResult(query_intent=intent, model_name="deepseek-v4-flash", prompt_tokens=120, completion_tokens=80, duration_ms=450)  # 构造固定观测数据。
 
 
 @pytest.fixture
@@ -93,7 +95,12 @@ def test_natural_search_endpoint_plans_query_before_recall(api_client: TestClien
     response = api_client.post("/api/v1/search/natural", json={"query": "检索视觉语言模型在医学影像报告生成中的研究"})  # 提交自然语言请求。
 
     assert response.status_code == 200  # 验证新入口成功响应。
-    assert response.json()["papers"][0]["paper_id"] == "W1"  # 验证规划后进入既有检索链路。
+    payload = response.json()  # 解析自然入口公共响应。
+    assert payload["papers"][0]["paper_id"] == "W1"  # 验证规划后进入既有检索链路。
+    assert payload["query_planning_model_name"] == "deepseek-v4-flash"  # 验证规划模型统计附加到响应。
+    assert payload["query_planning_prompt_tokens"] == 120  # 验证输入 Token 统计可供前端展示。
+    assert payload["query_planning_completion_tokens"] == 80  # 验证输出 Token 统计可供前端展示。
+    assert payload["query_planning_duration_ms"] == 450  # 验证规划耗时可供前端展示。
 
 
 def test_multi_source_search_endpoint_rejects_invalid_query_intent(api_client: TestClient) -> None:

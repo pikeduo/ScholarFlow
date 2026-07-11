@@ -39,12 +39,13 @@ def test_query_planner_generates_english_intent_and_preserves_explicit_constrain
         """验证 JSON Output 请求并返回离线规划。"""
         body = json.loads(request.content.decode("utf-8"))  # 使用显式 UTF-8 读取请求。
         assert body["response_format"] == {"type": "json_object"}  # 验证启用结构化输出。
-        return httpx.Response(200, json={"choices": [{"message": {"content": planned_json}}]}, request=request)  # 返回固定规划。
+        return httpx.Response(200, json={"model": "deepseek-v4-flash", "usage": {"prompt_tokens": 321, "completion_tokens": 123}, "choices": [{"message": {"content": planned_json}}]}, request=request)  # 返回固定规划及用量统计。
 
     config = Settings(_env_file=None, deepseek_api_key="test-key", academic_source_recall_limit=50)  # 注入无权限测试密钥和召回规模。
     client = DeepSeekQueryPlanningClient(config=config, transport=httpx.MockTransport(handler))  # 构造离线客户端。
     request = NaturalSearchRequest(query="检索视觉语言模型在医学影像报告生成中的最新研究，优先包含公开数据集", year_range=(2023, 2026), exclude=["survey"])  # 提供显式覆盖。
-    intent = asyncio.run(client.plan(request))  # 执行不访问网络的规划。
+    planning_result = asyncio.run(client.plan(request))  # 执行不访问网络的规划。
+    intent = planning_result.query_intent  # 提取可执行意图供语义字段断言。
 
     assert intent.normalized_query.startswith("vision language models")  # 验证学术 API 使用英文检索式。
     assert intent.tasks == ["medical image report generation"]  # 验证目标任务被独立提取。
@@ -52,6 +53,9 @@ def test_query_planner_generates_english_intent_and_preserves_explicit_constrain
     assert intent.year_range == (2023, 2026)  # 验证显式年份覆盖模型推断。
     assert intent.exclude == ["survey"]  # 验证显式排除条件被保留。
     assert intent.source_recall_count == 50 and intent.target_paper_count == 20  # 验证召回规模与最终数量已分离。
+    assert planning_result.model_name == "deepseek-v4-flash"  # 验证实际响应模型名称被保留。
+    assert planning_result.prompt_tokens == 321 and planning_result.completion_tokens == 123  # 验证查询规划 Token 用量被保留。
+    assert planning_result.duration_ms >= 0  # 验证单调时钟耗时以非负毫秒返回。
 
 
 def test_query_planner_normalizes_real_model_output_variants() -> None:
@@ -85,7 +89,8 @@ def test_query_planner_normalizes_real_model_output_variants() -> None:
     config = Settings(_env_file=None, deepseek_api_key="test-key", academic_source_recall_limit=50)  # 构造隔离配置。
     client = DeepSeekQueryPlanningClient(config=config, transport=transport)  # 构造不访问网络的规划客户端。
 
-    intent = asyncio.run(client.plan(NaturalSearchRequest(query="使用大语言模型进行多变量时间序列预测")))  # 执行规范化与严格领域校验。
+    planning_result = asyncio.run(client.plan(NaturalSearchRequest(query="使用大语言模型进行多变量时间序列预测")))  # 执行规范化与严格领域校验。
+    intent = planning_result.query_intent  # 提取规范化后的领域契约。
 
     assert intent.paper_types == ["article"]  # 验证 research article 映射为核心枚举。
     assert intent.complexity_score == 0.6  # 验证五级复杂度转换为 0–1。

@@ -118,12 +118,18 @@ async def search_natural(
 ) -> MultiSourceRecallResult:
     """先解析自然语言查询，再执行现有多源召回和分层排序链路。"""
     try:  # 查询规划失败时拒绝退回整句低质量搜索。
-        query_intent = await planner.plan(request)  # 生成英文检索式、结构化约束和动态领域。
+        planning_result = await planner.plan(request)  # 生成英文检索式、结构化约束和可观测调用统计。
     except QueryPlanningError:  # 适配层已净化密钥、URL 和响应正文。
         logger.exception("自然语言查询规划失败")  # 在受控日志保留完整堆栈。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回稳定错误。
     try:  # 复用已具备单源降级的多源协调器。
-        return await coordinator.recall(query_intent)  # 执行结构化检索计划。
+        recall_result = await coordinator.recall(planning_result.query_intent)  # 执行结构化检索计划。
+        return recall_result.model_copy(update={  # 将 Query Agent 统计附加到自然入口响应，直接意图重搜保持零值。
+            "query_planning_model_name": planning_result.model_name,  # 回显实际规划模型名称。
+            "query_planning_prompt_tokens": planning_result.prompt_tokens,  # 回显本次规划输入 Token。
+            "query_planning_completion_tokens": planning_result.completion_tokens,  # 回显本次规划输出 Token。
+            "query_planning_duration_ms": planning_result.duration_ms,  # 回显本次规划耗时。
+        })
     except Exception:  # 隔离无法形成稳定响应的未预期错误。
         logger.exception("自然语言多源检索失败")  # 记录完整堆栈且不输出查询正文。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多源论文检索服务暂时不可用，请稍后重试") from None  # 返回稳定错误。

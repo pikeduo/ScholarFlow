@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field, model_validator  # 校验用户查询和显式覆盖条件。
 
 from backend.app.models.query_intent import SearchMode  # 复用稳定搜索模式枚举。
+from backend.app.models.query_intent import QueryIntent  # 保存查询规划生成的完整下游契约。
 
 
 class NaturalSearchRequest(BaseModel):
@@ -24,3 +25,13 @@ class NaturalSearchRequest(BaseModel):
         if self.year_range and self.year_range[0] > self.year_range[1]:  # 防止产生不可执行年份条件。
             raise ValueError("year_range 的起始年份不能晚于结束年份")  # 返回稳定输入错误。
         return self  # 返回通过校验的请求。
+
+
+class QueryPlanningResult(BaseModel):
+    """保存 Query Agent 的结构化意图及本次调用统计。"""
+
+    query_intent: QueryIntent  # 保存已通过领域校验、可直接执行的查询计划。
+    model_name: str | None = None  # 保存供应商实际返回的模型名称供审计。
+    prompt_tokens: int = Field(default=0, ge=0)  # 保存查询规划输入 Token 数量。
+    completion_tokens: int = Field(default=0, ge=0)  # 保存查询规划输出 Token 数量。
+    duration_ms: int = Field(default=0, ge=0)  # 保存从发起请求到完成解析的毫秒耗时。

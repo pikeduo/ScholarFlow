@@ -36,6 +36,10 @@ class MultiSourceRecallResult(BaseModel):
 
     route_plan: SourceRoutePlan  # 保留实际执行的来源选择与预先降级说明。
     query_intent: QueryIntent | None = None  # 自然入口回显真实执行的结构化查询，旧接口保持兼容空值。
+    query_planning_model_name: str | None = None  # 保存自然入口 Query Agent 实际模型名称，直接意图重搜时为空。
+    query_planning_prompt_tokens: int = Field(default=0, ge=0)  # 保存查询规划输入 Token 数量。
+    query_planning_completion_tokens: int = Field(default=0, ge=0)  # 保存查询规划输出 Token 数量。
+    query_planning_duration_ms: int = Field(default=0, ge=0)  # 保存查询规划请求与解析耗时。
     papers: list[PaperRecord] = Field(default_factory=list)  # 保存按首次身份组顺序排列的融合论文记录。
     discoveries: list[SupplementalDiscoveryItem] = Field(default_factory=list)  # 保存独立于论文集合的网页发现结果。
     source_counts: dict[str, int] = Field(default_factory=dict)  # 保存每个来源的成功结果数。

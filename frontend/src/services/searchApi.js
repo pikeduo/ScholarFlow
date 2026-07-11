@@ -1,0 +1,158 @@
+/** 表示多源搜索请求或响应无法完成的公共前端错误。 */
+export class SearchApiError extends Error { // 继承标准错误以便页面统一捕获。
+  constructor(message, status = null) { // 接收可展示消息和可选 HTTP 状态码。
+    super(message) // 保存错误消息供界面展示。
+    this.name = 'SearchApiError' // 提供稳定错误类型名称便于调试。
+    this.status = status // 保存状态码但不暴露后端内部响应。
+  }
+}
+
+const DEFAULT_API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/$/, '') // 默认依赖 Vite 代理，也允许部署时指定 API 根地址。
+
+/** 将逗号或换行分隔的用户条件转换为去重后的字符串列表。 */
+export function splitTerms(value) { // 接收表单中的自由文本条件。
+  const seen = new Set() // 记录大小写无关的已出现词项。
+  return String(value || '') // 将空值安全转换为空字符串。
+    .split(/[,，\n]/) // 同时支持中英文逗号与换行。
+    .map((term) => term.trim()) // 清除每个词项首尾空白。
+    .filter((term) => { // 移除空值和重复条件。
+      const key = term.toLocaleLowerCase() // 使用大小写无关键比较英文条件。
+      if (!term || seen.has(key)) return false // 跳过无效或重复词项。
+      seen.add(key) // 标记当前词项已接受。
+      return true // 保留首次出现的有效条件。
+    })
+}
+
+/** 根据查询字符粗略判断后端 QueryIntent 所需语言枚举。 */
+export function detectQueryLanguage(queryText) { // 接收用户原始查询。
+  const hasChinese = /[\u3400-\u9fff]/u.test(queryText) // 判断是否包含中日韩统一表意字符。
+  const hasLatin = /[a-z]/iu.test(queryText) // 判断是否包含拉丁字母。
+  if (hasChinese && hasLatin) return 'mixed' // 同时存在两类字符时标记中英混合。
+  return hasChinese ? 'zh' : 'en' // 其余情况按中文或英文返回稳定枚举。
+}
+
+/** 将搜索页表单转换为后端稳定 QueryIntent 契约。 */
+export function createQueryIntent(form) { // 接收页面维护的响应式表单快照。
+  const queryText = String(form.queryText || '').trim() // 规范化必填自然语言查询。
+  if (!queryText) throw new SearchApiError('请输入需要检索的研究问题') // 在发出请求前给出明确校验消息。
+  const startYear = form.startYear ? Number(form.startYear) : null // 将可选起始年份转换为数字。
+  const endYear = form.endYear ? Number(form.endYear) : null // 将可选结束年份转换为数字。
+  if ((startYear && !endYear) || (!startYear && endYear)) throw new SearchApiError('年份范围需要同时填写起始和结束年份') // 防止提交语义不完整的年份约束。
+  if (startYear && endYear && startYear > endYear) throw new SearchApiError('起始年份不能晚于结束年份') // 与后端年份校验保持一致。
+  const mustInclude = splitTerms(form.mustInclude) // 提前规范化必须词用于冲突校验和请求映射。
+  const shouldInclude = splitTerms(form.shouldInclude) // 提前规范化软偏好用于冲突校验和请求映射。
+  const exclude = splitTerms(form.exclude) // 提前规范化排除词用于冲突校验和请求映射。
+  const excludedKeys = new Set(exclude.map((term) => term.toLocaleLowerCase())) // 构造大小写无关的排除词集合。
+  if ([...mustInclude, ...shouldInclude].some((term) => excludedKeys.has(term.toLocaleLowerCase()))) throw new SearchApiError('必须或优先条件不能同时出现在排除条件中') // 在请求前阻止相互矛盾的约束。
+  return { // 返回可直接序列化的 QueryIntent。
+    original_query: queryText, // 保留用户原始查询供界面回显。
+    normalized_query: queryText.replace(/\s+/g, ' '), // 合并连续空白形成稳定检索文本。
+    query_language: detectQueryLanguage(queryText), // 提供跨语言排序所需语言标识。
+    research_topics: [queryText], // 在 Query Agent 接入前将完整研究问题作为主题召回入口。
+    must_include: mustInclude, // 映射必须满足条件。
+    should_include: shouldInclude, // 映射优先满足条件。
+    exclude, // 映射排除条件。
+    year_range: startYear && endYear ? [startYear, endYear] : null, // 仅在完整填写时提交闭区间。
+    target_paper_count: 20, // 与当前 LLM 最终结果上限保持一致。
+    search_mode: form.searchMode === 'deep' ? 'deep' : 'standard', // 限制为后端支持的两种模式。
+    domains: splitTerms(form.domains), // 提供动态 arXiv 与 DBLP 路由依据。
+    requires_web_evidence: Boolean(form.requiresWebEvidence), // 仅在用户明确选择时启用网页补充发现。
+  }
+}
+
+/** 将表单转换为后端自然语言查询规划入口请求。 */
+export function createNaturalSearchRequest(form) { // 复用已有表单校验但不再由前端伪造 QueryIntent。
+  const intent = createQueryIntent(form) // 校验查询、年份和条件冲突。
+  return { // 只提交用户真正输入的内容，由后端 Query Agent 提取语义字段。
+    query: intent.original_query, // 保存原始自然语言问题。
+    search_mode: intent.search_mode, // 保存搜索模式。
+    year_range: intent.year_range, // 保存显式年份覆盖。
+    must_include: intent.must_include, // 保存显式必须条件。
+    should_include: intent.should_include, // 保存显式偏好条件。
+    exclude: intent.exclude, // 保存显式排除条件。
+    domains: intent.domains, // 保存用户显式领域提示。
+    requires_web_evidence: intent.requires_web_evidence, // 保存网页证据开关。
+    target_paper_count: 20, // 保持最终最多二十篇。
+  }
+}
+
+/** 调用多源检索接口并返回结构化结果。 */
+export async function searchPapers(form, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许测试注入离线 fetch 替身。
+  const naturalRequest = createNaturalSearchRequest(form) // 在网络调用前生成自然语言规划请求。
+  return postSearch('/api/v1/search/natural', naturalRequest, fetchImpl, apiBaseUrl) // 调用先规划再检索的自然语言入口。
+}
+
+/** 校验并复制用户编辑后的 QueryIntent，避免直接修改上一轮响应。 */
+export function validateQueryIntent(intent) { // 接收查询解析面板提交的完整意图。
+  if (!intent || typeof intent !== 'object') throw new SearchApiError('查询解析结果不完整') // 拒绝空对象或错误类型。
+  const nextIntent = structuredCloneSafe(intent) // 创建独立副本以保护上一轮结果。
+  nextIntent.original_query = String(nextIntent.original_query || '').trim() // 保留原始问题作为检索审计上下文。
+  nextIntent.normalized_query = String(nextIntent.normalized_query || '').trim().replace(/\s+/g, ' ') // 规范化英文检索式空白。
+  if (!nextIntent.original_query || !nextIntent.normalized_query) throw new SearchApiError('原始问题和英文检索式不能为空') // 防止提交无法审计或无法召回的计划。
+  const targetCount = Number(nextIntent.target_paper_count || 20) // 读取最终结果上限。
+  const sourceCount = Number(nextIntent.source_recall_count || targetCount) // 读取每来源召回上限。
+  if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 20) throw new SearchApiError('最终结果数量必须在 1 到 20 之间') // 与后端产品上限保持一致。
+  if (!Number.isInteger(sourceCount) || sourceCount < targetCount || sourceCount > 100) throw new SearchApiError('来源召回数量必须不少于最终结果且不超过 100') // 保证候选充足且符合后端成本上限。
+  nextIntent.target_paper_count = targetCount // 写回已校验整数。
+  nextIntent.source_recall_count = sourceCount // 写回已校验整数。
+  if (nextIntent.year_range !== null && nextIntent.year_range !== undefined) { // 仅在用户设置年份时校验闭区间。
+    if (!Array.isArray(nextIntent.year_range) || nextIntent.year_range.length !== 2) throw new SearchApiError('年份范围需要同时填写起始和结束年份') // 拒绝不完整区间。
+    const [startYear, endYear] = nextIntent.year_range.map(Number) // 转换编辑框文本为数字。
+    if (!Number.isInteger(startYear) || !Number.isInteger(endYear) || startYear > endYear) throw new SearchApiError('起始年份不能晚于结束年份') // 拒绝非法或倒置年份。
+    nextIntent.year_range = [startYear, endYear] // 写回稳定数字闭区间。
+  }
+  const mustInclude = Array.isArray(nextIntent.must_include) ? nextIntent.must_include : [] // 读取必须条件。
+  const shouldInclude = Array.isArray(nextIntent.should_include) ? nextIntent.should_include : [] // 读取偏好条件。
+  const exclude = Array.isArray(nextIntent.exclude) ? nextIntent.exclude : [] // 读取排除条件。
+  const paperTypes = Array.isArray(nextIntent.paper_types) ? nextIntent.paper_types : [] // 读取论文类型筛选条件。
+  const allowedPaperTypes = new Set(['article', 'conference', 'preprint', 'review']) // 与后端稳定枚举保持一致。
+  if (paperTypes.some((paperType) => !allowedPaperTypes.has(String(paperType)))) throw new SearchApiError('论文类型仅支持 article、conference、preprint 或 review') // 在请求前给出可编辑错误。
+  const excludedKeys = new Set(exclude.map((term) => String(term).trim().toLocaleLowerCase())) // 建立大小写无关排除集合。
+  if ([...mustInclude, ...shouldInclude].some((term) => excludedKeys.has(String(term).trim().toLocaleLowerCase()))) throw new SearchApiError('必须或优先条件不能同时出现在排除条件中') // 阻止逻辑冲突。
+  return nextIntent // 返回可直接发送到后端的独立完整意图。
+}
+
+/** 使用已编辑 QueryIntent 直接重搜，从而跳过 Query Agent 调用。 */
+export async function searchWithIntent(intent, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许测试注入离线 fetch。
+  const validatedIntent = validateQueryIntent(intent) // 在网络调用前验证完整编辑结果。
+  return postSearch('/api/v1/search/multi-source', validatedIntent, fetchImpl, apiBaseUrl) // 直接进入多源检索与排序链路。
+}
+
+/** 提交统一搜索请求并校验 MultiSourceRecallResult 最小契约。 */
+async function postSearch(path, requestBody, fetchImpl, apiBaseUrl) { // 复用自然入口和直接意图入口的错误边界。
+  if (typeof fetchImpl !== 'function') throw new SearchApiError('当前环境不支持网络请求') // 在旧环境给出可理解错误。
+  let response // 保存 HTTP 响应供后续状态处理。
+  try { // 将浏览器网络错误转换为稳定前端错误。
+    response = await fetchImpl(`${apiBaseUrl}${path}`, { // 调用指定的稳定搜索入口。
+      method: 'POST', // 使用 POST 提交结构化复杂查询。
+      headers: { 'Content-Type': 'application/json' }, // 明确发送 UTF-8 JSON 请求。
+      body: JSON.stringify(requestBody), // 序列化自然请求或已编辑 QueryIntent。
+    })
+  } catch { // 捕获断网、代理或后端未启动错误。
+    throw new SearchApiError('无法连接检索服务，请确认后端已启动') // 不向页面暴露浏览器底层错误细节。
+  }
+  if (!response.ok) { // 非成功状态不得被当作搜索结果渲染。
+    let message = '论文检索暂时不可用，请稍后重试' // 提供安全默认消息。
+    try { // 优先读取 FastAPI 已净化的公共错误说明。
+      const errorBody = await response.json() // 解析后端 JSON 错误响应。
+      if (typeof errorBody.detail === 'string') message = errorBody.detail // 只接受可展示字符串字段。
+    } catch { // 非 JSON 错误响应继续使用默认消息。
+      // 无需处理响应正文，避免将代理页面或内部堆栈展示给用户。
+    }
+    throw new SearchApiError(message, response.status) // 携带状态码供未来埋点但页面只展示安全消息。
+  }
+  try { // 防止成功状态携带无效 JSON 时页面崩溃。
+    const result = await response.json() // 解析后端稳定 MultiSourceRecallResult。
+    if (!result || !Array.isArray(result.papers) || typeof result.route_plan !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 验证页面渲染依赖的最小响应结构。
+    return result // 返回已通过最小契约检查的结果。
+  } catch (error) { // 将响应解析失败转换为统一错误。
+    if (error instanceof SearchApiError) throw error // 保留本地最小契约检查给出的明确消息。
+    throw new SearchApiError('检索服务返回了无法解析的结果') // 提示用户重试且不泄露原始正文。
+  }
+}
+
+/** 在浏览器与 Node 测试环境中安全深复制纯 JSON 查询意图。 */
+function structuredCloneSafe(value) { // 接收仅包含 JSON 类型的 API 响应对象。
+  if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value) // 优先使用原生结构化复制。
+  return JSON.parse(JSON.stringify(value)) // 旧环境回退到 JSON 深复制。
+}
