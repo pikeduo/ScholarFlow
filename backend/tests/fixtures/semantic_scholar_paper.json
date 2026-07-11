@@ -1,0 +1,32 @@
+{
+  "paperId": "S2-paper-123",
+  "externalIds": {
+    "DOI": "10.1000/semantic-scholar",
+    "ArXiv": "2501.00001",
+    "PubMed": "12345678",
+    "DBLP": "conf/acl/Example25"
+  },
+  "title": "Semantic Scholar Forecasting Paper",
+  "abstract": "A forecasting method evaluated on ETT.",
+  "authors": [
+    {
+      "authorId": "S2-author-1",
+      "name": "Grace Hopper"
+    }
+  ],
+  "year": 2025,
+  "venue": "ACL",
+  "citationCount": 17,
+  "references": [
+    {
+      "paperId": "S2-reference-456"
+    }
+  ],
+  "isOpenAccess": true,
+  "openAccessPdf": {
+    "url": "https://example.org/paper.pdf"
+  },
+  "publicationTypes": [
+    "Conference"
+  ]
+}

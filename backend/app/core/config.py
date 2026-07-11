@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
     openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
     openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。
+    semantic_scholar_api_base_url: str = Field(default="https://api.semanticscholar.org/graph/v1", pattern=r"^https://")  # 限制 Semantic Scholar 使用 HTTPS Graph API 地址。
+    semantic_scholar_api_key: SecretStr | None = None  # 保存可选且不可写入日志的 Semantic Scholar API 密钥。
+    semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。
+    semantic_scholar_requests_per_second: float = Field(default=1.0, gt=0, le=10)  # 配置来源级请求起始频率上限。
 
     @model_validator(mode="after")
     def resolve_project_relative_paths(self) -> "Settings":
@@ -56,6 +60,20 @@ class Settings(BaseSettings):
         """
         if isinstance(value, str) and not value.strip():  # 避免将空字符串误认为有效密钥。
             return None  # 让缺失密钥在实际调用前得到明确提示。
+        return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
+
+    @field_validator("semantic_scholar_api_key", mode="before")
+    @classmethod
+    def normalize_semantic_scholar_api_key(cls, value: object) -> object:
+        """将空白 Semantic Scholar API 密钥统一视为未配置。
+
+        参数：
+            value：环境变量或构造参数提供的原始密钥值。
+        返回：
+            object：规范化后的密钥值或空值。
+        """
+        if isinstance(value, str) and not value.strip():  # 避免将空字符串误认为有效认证信息。
+            return None  # 允许客户端按官方匿名访问策略决定是否携带请求头。
         return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
 
     def require_openalex_api_key(self) -> str:

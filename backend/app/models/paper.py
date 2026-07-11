@@ -22,6 +22,7 @@ class PaperAuthor(BaseModel):
     name: str = Field(min_length=1)  # 要求作者名称不可为空。
     orcid: str | None = None  # 保留可用于跨源作者匹配的 ORCID。
     institution: str | None = None  # 保留数据源提供的作者机构名称。
+    source_author_ids: dict[str, str] = Field(default_factory=dict)  # 保留各来源提供的平台作者标识。
 
 
 class PaperSourceRecord(BaseModel):
