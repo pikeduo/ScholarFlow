@@ -1,6 +1,7 @@
 """验证 OpenAlex 搜索 HTTP 接口的成功、校验和服务失败边界。"""
 
 from collections.abc import Iterator  # 标注测试夹具的生成器返回类型。
+from unittest.mock import patch  # 替换测试场景中的日志调用而不影响生产代码。
 
 import pytest  # 提供测试夹具与异常断言工具。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 HTTP 响应。
@@ -84,6 +85,8 @@ def test_openalex_search_endpoint_hides_client_error(api_client: TestClient) -> 
     """适配层失败时路由应返回不含底层细节的服务不可用响应。"""
     failing_service = FakeOpenAlexSearchService(error=OpenAlexClientError("OpenAlex 网络请求失败"))  # 构造已净化的外部错误。
     app.dependency_overrides[get_openalex_search_service] = lambda: failing_service  # 注入会失败的服务替身。
-    response = api_client.post("/api/v1/search/openalex", json={"topic": ["forecasting"]})  # 提交合法查询以触发服务调用。
+    with patch("backend.app.api.routes.search.logger.exception") as log_exception:  # 拦截预期错误的输出，同时保留日志调用验证。
+        response = api_client.post("/api/v1/search/openalex", json={"topic": ["forecasting"]})  # 提交合法查询以触发服务调用。
     assert response.status_code == 503  # 验证外部服务失败转换为稳定 HTTP 状态。
     assert response.json()["detail"] == "OpenAlex 搜索服务暂时不可用，请稍后重试"  # 验证不会暴露网络或配置细节。
+    log_exception.assert_called_once_with("OpenAlex 搜索接口调用失败")  # 验证生产路由仍会记录完整错误堆栈。
