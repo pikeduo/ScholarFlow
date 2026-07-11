@@ -95,6 +95,7 @@ class MultiSourceRecallCoordinator:
         logger.info("多源召回完成：原始论文=%d，融合论文=%d，过滤=%d，语义截断=%d，交叉编码截断=%d，LLM淘汰=%d，LLM截断=%d，最终结果=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, filter_result.filtered_count, ranking_result.truncated_count, cross_encoder_result.truncated_count, llm_result.rejected_count, llm_result.truncated_count, len(llm_result.papers), len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。
         return MultiSourceRecallResult(  # 构造供后续规范化、去重与运行状态更新使用的结果。
             route_plan=route_plan,  # 保留本轮真实执行的来源选择计划。
+            query_intent=query,  # 回显实际执行的结构化查询供前端解释检索行为。
             papers=llm_result.papers,  # 返回已完成分层排序、约束核验和理由生成的最终论文记录。
             discoveries=discoveries,  # 返回不可合并的补充网页发现项。
             source_counts=source_counts,  # 返回每个已选来源的成功结果数。

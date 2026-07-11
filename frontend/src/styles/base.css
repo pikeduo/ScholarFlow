@@ -1,7 +1,9 @@
-:root { /* 定义全局色彩与字体基础。 */
-  color: #0f172a; /* 设置默认前景文字颜色。 */
-  background: #f8fafc; /* 设置低对比度的页面背景。 */
+:root { /* 定义全局色彩、字体与渲染基础。 */
+  color: #17324d; /* 设置符合品牌的默认前景文字颜色。 */
+  background: #f8fafc; /* 设置低对比度页面背景。 */
   font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif; /* 优先使用常见中文系统字体。 */
+  font-synthesis: none; /* 避免浏览器伪造粗体或斜体影响中文显示。 */
+  text-rendering: optimizeLegibility; /* 优化长标题和正文的字形渲染。 */
 }
 
 * { /* 统一元素盒模型计算方式。 */
@@ -10,4 +12,26 @@
 
 body { /* 清除浏览器默认外边距。 */
   margin: 0; /* 让根组件完全控制页面留白。 */
+  min-width: 320px; /* 避免极窄视口破坏表单布局。 */
+  min-height: 100vh; /* 保证全局背景覆盖视口。 */
+}
+
+button,
+input,
+textarea { /* 让表单控件继承应用字体。 */
+  font-family: inherit; /* 避免系统控件字体与正文不一致。 */
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible { /* 为键盘用户提供统一焦点提示。 */
+  outline: 3px solid rgba(46, 111, 149, 0.28); /* 使用高可见品牌色外圈。 */
+  outline-offset: 3px; /* 避免外圈遮挡控件边缘。 */
+}
+
+::selection { /* 设置文本选择颜色。 */
+  color: #102a43; /* 保持选择后文字可读。 */
+  background: #cce2eb; /* 使用品牌浅蓝选择背景。 */
 }

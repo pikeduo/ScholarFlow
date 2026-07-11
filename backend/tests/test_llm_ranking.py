@@ -88,6 +88,16 @@ def test_rerank_returns_empty_result_without_calling_llm() -> None:
     assert result.ranking_error is None  # 验证空结果不是模型错误。
 
 
+def test_rerank_rejects_low_relevance_paper_without_negative_evidence() -> None:
+    """低相关候选应直接退出最终结果，避免零分论文显示为待核验。"""
+    paper = _paper("a", 0.9)  # 构造上游排序候选。
+    assessment = LlmPaperAssessment(paper_id="a", relevance_score=0.0, constraint_status="uncertain", evidence=[], recommendation_reason="相关性不足")  # 构造零分且无否定证据的核验结果。
+    result = asyncio.run(LlmPaperReranker(client=_StubAssessmentClient([assessment]), minimum_relevance_score=0.2).rerank([paper], _query()))  # 执行最低相关度过滤。
+
+    assert result.papers == []  # 验证零分论文不再透传到前端。
+    assert result.rejected_count == 1  # 验证低相关淘汰进入统计。
+
+
 def test_rerank_rejects_invalid_result_limit() -> None:
     """最终结果上限不能为零或负数。"""
     with pytest.raises(ValueError, match="result_limit"):  # 断言服务装配时给出稳定配置错误。

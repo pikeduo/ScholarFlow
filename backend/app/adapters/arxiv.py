@@ -47,7 +47,7 @@ def build_arxiv_search_params(query: QueryIntent) -> dict[str, str | int]:
     return {  # 返回官方 Query API 使用的单页参数。
         "search_query": " AND ".join(clauses),  # 使用 AND 保持结构化条件的确定性语义。
         "start": 0,  # 首版仅请求每次搜索的第一页。
-        "max_results": query.target_paper_count,  # 将目标结果规模映射为来源单页返回上限。
+        "max_results": query.source_recall_count or query.target_paper_count,  # 使用独立来源召回规模并兼容旧调用。
         "sortBy": "relevance",  # 保留来源默认的相关性排序供后续融合使用。
         "sortOrder": "descending",  # 使用官方支持的降序排序取值。
     }

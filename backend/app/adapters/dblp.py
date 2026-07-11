@@ -40,7 +40,7 @@ def build_dblp_search_params(query: QueryIntent) -> dict[str, str | int]:
     return {  # 返回 DBLP 官方出版物搜索 API 所需的单页参数。
         "q": search_text,  # 使用来源默认的出版物关键词搜索语义。
         "format": "json",  # 请求方便安全映射的官方 JSON 响应格式。
-        "h": query.target_paper_count,  # 将目标结果数量映射为来源最大命中数。
+        "h": query.source_recall_count or query.target_paper_count,  # 使用独立来源召回规模并兼容旧调用。
         "f": 0,  # 首版仅请求每次搜索结果的第一页。
     }
 

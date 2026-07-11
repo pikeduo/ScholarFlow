@@ -50,7 +50,7 @@ def build_semantic_scholar_search_params(query: QueryIntent) -> dict[str, str | 
     search_text = " ".join(search_terms) or query.normalized_query.strip()  # 缺少显式词时回退到必填的规范化查询文本。
     return {  # 返回官方 /paper/search 端点所需的单页参数。
         "query": search_text,  # 使用不支持特殊语法的纯文本查询。
-        "limit": query.target_paper_count,  # 限制首版单页返回规模以控制成本。
+        "limit": query.source_recall_count or query.target_paper_count,  # 使用独立来源召回规模并兼容旧调用。
         "fields": ",".join(SEMANTIC_SCHOLAR_PAPER_FIELDS),  # 限制响应字段减少带宽和解析成本。
     }
 

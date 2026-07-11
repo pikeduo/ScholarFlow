@@ -18,3 +18,6 @@ data/
 # 前端依赖与构建产物。
 frontend/node_modules/
 frontend/dist/
+
+# 文档
+/ScholarWeave_Project_Plan_v1.1.md

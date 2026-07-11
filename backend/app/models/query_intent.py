@@ -46,9 +46,9 @@ class QueryIntent(BaseModel):
         exclude：必须排除的关键词。
         subqueries：可迭代执行的子查询计划。
         target_paper_count：期望返回的最终论文数量。
+        source_recall_count：每个学术来源请求的候选数量，未设置时兼容使用最终数量。
         search_mode：标准或深度搜索模式。
         domains：用于动态选择第三来源的领域标签。
-        requires_web_evidence：是否需要补充网页发现证据，默认关闭。
         requires_web_evidence：是否需要补充网页发现证据，默认关闭。
         complexity_score：供模型路由与预算守卫使用的复杂度评分。
     """
@@ -70,9 +70,9 @@ class QueryIntent(BaseModel):
     exclude: list[str] = Field(default_factory=list)  # 保存必须排除的关键词。
     subqueries: list[QuerySubquery] = Field(default_factory=list)  # 保存可执行的子查询计划。
     target_paper_count: int = Field(default=20, ge=1, le=100)  # 限制最终结果规模以控制成本。
+    source_recall_count: int | None = Field(default=None, ge=1, le=100)  # 将来源召回规模与最终展示数量分离。
     search_mode: SearchMode = "standard"  # 默认使用成本更低的标准检索模式。
     domains: list[str] = Field(default_factory=list)  # 保存用于动态来源路由的领域标签。
-    requires_web_evidence: bool = False  # 仅在需要网页补充证据时允许 Tavily 进入路由计划。
     requires_web_evidence: bool = False  # 仅在需要网页补充证据时允许 Tavily 进入路由计划。
     complexity_score: float = Field(default=0.0, ge=0.0, le=1.0)  # 限制模型路由评分为闭区间。
 
@@ -87,6 +87,8 @@ class QueryIntent(BaseModel):
         """
         if self.year_range and self.year_range[0] > self.year_range[1]:  # 防止产生无法执行的倒置年份区间。
             raise ValueError("year_range 的起始年份不能晚于结束年份")  # 返回可供 API 层展示的稳定错误。
+        if self.source_recall_count is not None and self.source_recall_count < self.target_paper_count:  # 来源候选不应少于最终目标。
+            raise ValueError("source_recall_count 不能小于 target_paper_count")  # 防止配置主动压缩召回。
         must_terms = {term.strip().casefold() for term in self.must_include if term.strip()}  # 规范化硬约束用于冲突比较。
         should_terms = {term.strip().casefold() for term in self.should_include if term.strip()}  # 规范化软偏好用于冲突比较。
         excluded_terms = {term.strip().casefold() for term in self.exclude if term.strip()}  # 规范化排除词用于冲突比较。

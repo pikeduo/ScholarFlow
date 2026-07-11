@@ -76,7 +76,7 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
         "sort": "relevance_score:desc",  # 保持来源按相关性优先的原始排名。
-        "per_page": query.target_paper_count,  # 将目标结果数限制为单页返回上限。
+        "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
     }
     if query.year_range:  # 用户明确给出年份范围时才添加来源过滤条件。

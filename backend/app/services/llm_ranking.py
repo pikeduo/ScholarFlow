@@ -2,6 +2,7 @@
 
 from backend.app.adapters.deepseek_llm import DeepSeekPaperAssessmentClient, LlmAssessmentError, PaperAssessmentClient  # 依赖可替换的 LLM 适配器协议。
 from backend.app.core.logging import logger  # 记录精排数量、Token 与安全降级状态。
+from backend.app.core.config import settings  # 读取最终最低相关度配置。
 from backend.app.models.llm_ranking import ConstraintMatchStatus, LlmPaperAssessment, LlmRankingResult  # 构造最终精排结果并校验状态。
 from backend.app.models.paper import PaperRecord  # 接收和更新 Cross Encoder 候选论文。
 from backend.app.models.query_intent import QueryIntent  # 接收目标结果数量和结构化约束。
@@ -13,13 +14,14 @@ DEFAULT_FINAL_RESULT_LIMIT = 20  # 标准搜索最终最多返回二十篇论文
 class LlmPaperReranker:
     """核验 Cross Encoder 候选、绑定公开证据并生成最终论文结果。"""
 
-    def __init__(self, client: PaperAssessmentClient | None = None, result_limit: int = DEFAULT_FINAL_RESULT_LIMIT, model_name: str = "deepseek-v4-flash") -> None:
+    def __init__(self, client: PaperAssessmentClient | None = None, result_limit: int = DEFAULT_FINAL_RESULT_LIMIT, model_name: str = "deepseek-v4-flash", minimum_relevance_score: float = settings.llm_minimum_relevance_score) -> None:
         """保存可替换客户端、最终上限和降级时使用的模型标识。"""
         if result_limit < 1:  # 无效上限会使正常候选被全部丢弃。
             raise ValueError("result_limit 必须大于零")  # 在服务装配阶段尽早暴露配置错误。
         self._client = client or DeepSeekPaperAssessmentClient()  # 默认使用 DeepSeek，测试可注入完全离线替身。
         self._result_limit = result_limit  # 保存系统级最终结果硬上限。
         self._model_name = model_name  # 保存 API 不可用时仍可观测的配置模型名。
+        self._minimum_relevance_score = minimum_relevance_score  # 保存最终结果最低相关度，零分候选不再透传。
 
     async def rerank(self, papers: list[PaperRecord], query: QueryIntent) -> LlmRankingResult:
         """调用 LLM 核验候选并返回最多目标数量的证据化结果。"""
@@ -43,6 +45,9 @@ class LlmPaperReranker:
             if assessment is None:  # 部分输出或 ID 缺失时按不确定处理。
                 assessed_papers.append(paper.model_copy(update={"constraint_status": "uncertain"}))  # 不虚构分数、证据或理由。
                 continue  # 继续处理其余有效核验项。
+            if assessment.relevance_score < self._minimum_relevance_score:  # 低相关论文无需依赖否定证据即可退出推荐集合。
+                rejected_count += 1  # 将低相关淘汰计入最终核验统计。
+                continue  # 避免零分或近零分论文展示为“需要进一步核验”。
             valid_evidence = _validated_evidence(paper, assessment.evidence)  # 只保留能在公开元数据中逐字定位的片段。
             status = _safe_status(assessment.constraint_status, valid_evidence)  # 无有效证据时禁止声称硬约束已满足。
             if status == "not_satisfied":  # LLM 明确发现规则过滤无法识别的语义硬约束失败。

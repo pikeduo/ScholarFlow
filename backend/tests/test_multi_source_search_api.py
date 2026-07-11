@@ -6,11 +6,12 @@ from unittest.mock import patch  # 替换预期错误日志调用而不影响生
 import pytest  # 提供测试夹具与异常断言工具。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 HTTP 响应。
 
-from backend.app.api.routes.search import get_multi_source_recall_coordinator  # 覆盖生产环境多源协调器依赖。
+from backend.app.api.routes.search import get_multi_source_recall_coordinator, get_query_planning_service  # 覆盖生产协调器与查询规划依赖。
 from backend.app.main import app  # 导入待测 FastAPI 应用实例。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造稳定的多源响应结果。
 from backend.app.models.paper import PaperRecord  # 构造融合论文响应数据。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计来源路由计划。
+from backend.app.models.query_intent import QueryIntent  # 构造自然语言入口规划结果。
 
 
 class FakeMultiSourceRecallCoordinator:
@@ -30,6 +31,14 @@ class FakeMultiSourceRecallCoordinator:
         return self._result  # 返回预设的可序列化融合结果。
 
 
+class FakeQueryPlanningService:
+    """为自然语言接口返回固定英文 QueryIntent。"""
+
+    async def plan(self, request: object) -> QueryIntent:
+        """返回不访问 DeepSeek 的固定查询计划。"""
+        return QueryIntent(original_query="中文查询", normalized_query="vision language model medical report generation", query_language="zh", research_topics=["vision-language model"], tasks=["medical report generation"], target_paper_count=20, source_recall_count=50)  # 构造英文检索计划。
+
+
 @pytest.fixture
 def api_client() -> Iterator[TestClient]:
     """提供不触发应用生命周期且会清理多源依赖覆盖的本地 HTTP 客户端。"""
@@ -37,6 +46,7 @@ def api_client() -> Iterator[TestClient]:
     yield client  # 交给测试用例发起不访问网络的 HTTP 请求。
     client.close()  # 释放测试客户端持有的本地资源。
     app.dependency_overrides.pop(get_multi_source_recall_coordinator, None)  # 防止替身污染后续测试。
+    app.dependency_overrides.pop(get_query_planning_service, None)  # 清理查询规划替身。
 
 
 def _build_result() -> MultiSourceRecallResult:
@@ -73,6 +83,17 @@ def test_multi_source_search_endpoint_returns_fused_result(api_client: TestClien
     assert payload["papers"][0]["rrf_score"] == 0.02  # 验证 RRF 融合分数对前端可见。
     assert payload["raw_paper_count"] == 1  # 验证返回融合前召回统计。
     assert payload["route_plan"]["academic_sources"] == ["openalex"]  # 验证返回可审计来源计划。
+
+
+def test_natural_search_endpoint_plans_query_before_recall(api_client: TestClient) -> None:
+    """自然语言入口应先生成 QueryIntent，再复用多源协调器返回结果。"""
+    app.dependency_overrides[get_query_planning_service] = lambda: FakeQueryPlanningService()  # 注入离线 Query Agent。
+    app.dependency_overrides[get_multi_source_recall_coordinator] = lambda: FakeMultiSourceRecallCoordinator(result=_build_result())  # 注入离线协调器。
+
+    response = api_client.post("/api/v1/search/natural", json={"query": "检索视觉语言模型在医学影像报告生成中的研究"})  # 提交自然语言请求。
+
+    assert response.status_code == 200  # 验证新入口成功响应。
+    assert response.json()["papers"][0]["paper_id"] == "W1"  # 验证规划后进入既有检索链路。
 
 
 def test_multi_source_search_endpoint_rejects_invalid_query_intent(api_client: TestClient) -> None:

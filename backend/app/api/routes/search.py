@@ -12,11 +12,14 @@ from backend.app.adapters.semantic_scholar import SemanticScholarClient  # 装�
 from backend.app.adapters.tavily import TavilyClient  # 装配仅用于独立网页补充发现的适配器。
 from backend.app.core.logging import logger  # 记录服务不可用时的完整错误堆栈。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 声明多源检索的稳定融合响应模型。
+from backend.app.models.natural_search import NaturalSearchRequest  # 接收前端自然语言问题和显式约束。
 from backend.app.models.query import QuerySchema  # 接收 FastAPI 自动校验的结构化检索请求。
 from backend.app.models.query_intent import QueryIntent  # 接收已规划完成的多源检索意图。
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
+from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
+from backend.app.adapters.deepseek_query_planner import QueryPlanningError  # 将查询规划故障转换为稳定 HTTP 错误。
 from backend.app.services.source_router import SourceRouter  # 使用确定性规则选择本次可调用的数据源。
 
 
@@ -49,6 +52,12 @@ def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
         },
         web_discovery_adapters={"tavily": TavilyClient()},  # 注册独立网页补充来源且永不进入论文融合。
     )
+
+
+@lru_cache(maxsize=1)
+def get_query_planning_service() -> QueryPlanningService:
+    """构造并复用自然语言查询规划服务。"""
+    return QueryPlanningService()  # 复用 DeepSeek 配置且不在构造时发起请求。
 
 
 @router.post("/openalex", response_model=SearchResult, status_code=status.HTTP_200_OK, summary="检索 OpenAlex 论文")
@@ -99,3 +108,22 @@ async def search_multi_source(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="多源论文检索服务暂时不可用，请稍后重试",
         ) from None
+
+
+@router.post("/natural", response_model=MultiSourceRecallResult, status_code=status.HTTP_200_OK, summary="按自然语言检索多源论文")
+async def search_natural(
+    request: NaturalSearchRequest,
+    planner: Annotated[QueryPlanningService, Depends(get_query_planning_service)],
+    coordinator: Annotated[MultiSourceRecallCoordinator, Depends(get_multi_source_recall_coordinator)],
+) -> MultiSourceRecallResult:
+    """先解析自然语言查询，再执行现有多源召回和分层排序链路。"""
+    try:  # 查询规划失败时拒绝退回整句低质量搜索。
+        query_intent = await planner.plan(request)  # 生成英文检索式、结构化约束和动态领域。
+    except QueryPlanningError:  # 适配层已净化密钥、URL 和响应正文。
+        logger.exception("自然语言查询规划失败")  # 在受控日志保留完整堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回稳定错误。
+    try:  # 复用已具备单源降级的多源协调器。
+        return await coordinator.recall(query_intent)  # 执行结构化检索计划。
+    except Exception:  # 隔离无法形成稳定响应的未预期错误。
+        logger.exception("自然语言多源检索失败")  # 记录完整堆栈且不输出查询正文。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多源论文检索服务暂时不可用，请稍后重试") from None  # 返回稳定错误。

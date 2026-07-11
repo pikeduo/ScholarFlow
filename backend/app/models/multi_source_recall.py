@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field  # 提供多源协调结果的结构化校
 
 from backend.app.models.discovery import SupplementalDiscoveryItem  # 保存不可合并的补充网页发现结果。
 from backend.app.models.paper import PaperRecord  # 保存可进入后续规范化与去重阶段的论文记录。
+from backend.app.models.query_intent import QueryIntent  # 回显自然语言解析后的实际执行计划。
 from backend.app.models.source_routing import SourceRoutePlan  # 关联当前召回使用的可审计来源计划。
 
 
@@ -34,6 +35,7 @@ class MultiSourceRecallResult(BaseModel):
     """
 
     route_plan: SourceRoutePlan  # 保留实际执行的来源选择与预先降级说明。
+    query_intent: QueryIntent | None = None  # 自然入口回显真实执行的结构化查询，旧接口保持兼容空值。
     papers: list[PaperRecord] = Field(default_factory=list)  # 保存按首次身份组顺序排列的融合论文记录。
     discoveries: list[SupplementalDiscoveryItem] = Field(default_factory=list)  # 保存独立于论文集合的网页发现结果。
     source_counts: dict[str, int] = Field(default_factory=dict)  # 保存每个来源的成功结果数。

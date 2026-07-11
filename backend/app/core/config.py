@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     deepseek_model: str = Field(default="deepseek-v4-flash", min_length=1)  # 默认使用规划指定的低成本 Flash 模型。
     deepseek_timeout_seconds: float = Field(default=60.0, gt=0, le=300)  # 为最多二十四篇论文的批量 JSON 核验预留响应时间。
     deepseek_max_output_tokens: int = Field(default=12000, ge=1000, le=50000)  # 限制结构化精排响应规模并避免 JSON 中途截断。
+    academic_source_recall_limit: int = Field(default=50, ge=20, le=100)  # 自然语言搜索时每个学术来源的候选召回上限。
+    llm_minimum_relevance_score: float = Field(default=0.2, ge=0.0, le=1.0)  # 最终结果最低 LLM 相关度，阻止零分论文透传。
 
     @model_validator(mode="after")
     def resolve_project_relative_paths(self) -> "Settings":

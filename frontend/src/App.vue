@@ -1,51 +1,169 @@
 <script setup>
-// 当前根组件只承担应用入口展示；搜索、文献库与图谱功能将在后续阶段拆分为独立页面。
+import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可用的文献搜索页面。
 </script>
 
 <template>
-  <main class="app-shell">
-    <section class="hero" aria-labelledby="app-title">
-      <p class="eyebrow">ACADEMIC SEARCH AGENT</p>
-      <h1 id="app-title">ScholarFlow</h1>
-      <p class="description">面向复杂科研查询的智能论文搜索与推荐系统</p>
-      <p class="status">基础工程已就绪，下一步将接入多源论文检索。</p>
-    </section>
-  </main>
+  <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
+  <div class="app-frame">
+    <header class="topbar">
+      <a class="brand" href="#main-content" aria-label="ScholarWeave 文献搜索首页">
+        <span class="brand-mark" aria-hidden="true">研</span>
+        <span class="brand-copy">
+          <strong>ScholarWeave</strong>
+          <small>研索</small>
+        </span>
+      </a>
+      <nav class="primary-nav" aria-label="主要功能">
+        <a class="nav-link is-active" href="#main-content" aria-current="page">文献搜索</a>
+        <span class="nav-link is-disabled" aria-disabled="true">我的文献库 <small>即将开放</small></span>
+      </nav>
+      <span class="system-status"><i aria-hidden="true"></i> 多源检索链路就绪</span>
+    </header>
+    <main id="main-content">
+      <SearchPage />
+    </main>
+  </div>
 </template>
 
 <style scoped>
-.app-shell { /* 为页面提供居中的全屏基础布局。 */
-  display: grid; /* 使用网格快速实现水平和垂直居中。 */
-  min-height: 100vh; /* 确保页面至少填满浏览器可视区域。 */
-  place-items: center; /* 将首屏内容置于页面中央。 */
-  padding: 2rem; /* 为窄屏设备保留安全边距。 */
+.app-frame { /* 建立固定顶栏与可滚动内容区。 */
+  min-height: 100vh; /* 保证短内容时背景仍覆盖完整视口。 */
 }
 
-.hero { /* 限制首屏内容宽度以保证阅读舒适。 */
-  max-width: 42rem; /* 防止描述文本过长影响扫读。 */
+.topbar { /* 提供产品标识、一级导航和系统状态。 */
+  position: sticky; /* 滚动长结果列表时保持导航可用。 */
+  top: 0; /* 将顶栏固定在视口顶部。 */
+  z-index: 20; /* 避免结果卡片覆盖顶栏。 */
+  display: flex; /* 横向排列品牌、导航和状态。 */
+  min-height: 4.5rem; /* 保留舒适点击区域。 */
+  align-items: center; /* 垂直居中顶栏内容。 */
+  gap: 2.5rem; /* 拉开品牌与导航层级。 */
+  padding: 0.75rem clamp(1rem, 4vw, 4rem); /* 在宽窄屏之间平滑调整边距。 */
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22); /* 用轻边框分隔页面内容。 */
+  background: rgba(248, 250, 252, 0.92); /* 保持滚动时内容隐约可见。 */
+  backdrop-filter: blur(16px); /* 提升半透明顶栏的阅读清晰度。 */
 }
 
-.eyebrow { /* 标记应用的学术检索定位。 */
-  color: #4761b5; /* 使用沉稳蓝色建立信息层级。 */
-  font-size: 0.75rem; /* 弱化辅助标签避免抢占标题注意力。 */
-  font-weight: 700; /* 保持小字号下的清晰度。 */
-  letter-spacing: 0.12em; /* 增加英文标签可读性。 */
+.brand { /* 将品牌标识作为可访问的跳转链接。 */
+  display: inline-flex; /* 横向组合图形和双语名称。 */
+  align-items: center; /* 对齐品牌图形与文字。 */
+  gap: 0.75rem; /* 控制标识与名称间距。 */
+  color: inherit; /* 继承全局深色文字。 */
+  text-decoration: none; /* 移除链接默认下划线。 */
 }
 
-h1 { /* 突出产品主名称。 */
-  margin: 0.5rem 0; /* 控制标题与上下内容的间距。 */
-  color: #172554; /* 使用深蓝色传达科研产品的稳定感。 */
-  font-size: clamp(2.75rem, 8vw, 5rem); /* 在不同屏幕宽度下保持合适标题大小。 */
+.brand-mark { /* 使用文字图章建立简单且无需图片的品牌识别。 */
+  display: grid; /* 居中单个中文字符。 */
+  width: 2.5rem; /* 固定图章宽度。 */
+  height: 2.5rem; /* 固定图章高度。 */
+  place-items: center; /* 将“研”字完全居中。 */
+  border-radius: 0.8rem; /* 使用柔和圆角匹配产品视觉。 */
+  color: #ffffff; /* 提升图章文字对比度。 */
+  background: linear-gradient(145deg, #173f7a, #2e6f95); /* 以深海蓝突出科研定位。 */
+  box-shadow: 0 8px 18px rgba(23, 63, 122, 0.2); /* 增加轻微浮层感。 */
+  font-family: "STKaiti", "KaiTi", serif; /* 使用书卷感字体强化中文品牌。 */
+  font-size: 1.2rem; /* 保证图章内字符清晰。 */
 }
 
-.description { /* 显示产品核心价值说明。 */
-  margin: 0; /* 移除浏览器默认段落间距。 */
-  color: #334155; /* 使用中性深灰提升长文本可读性。 */
-  font-size: 1.125rem; /* 让核心说明比辅助文字更醒目。 */
+.brand-copy { /* 纵向排列英文品牌与中文名。 */
+  display: grid; /* 使用网格形成紧凑双行。 */
+  line-height: 1.05; /* 减少双行之间空隙。 */
 }
 
-.status { /* 呈现当前实现阶段，避免将占位页面误解为完整功能。 */
-  margin-top: 1.5rem; /* 与产品说明拉开层级间距。 */
-  color: #64748b; /* 降低阶段性提示的视觉优先级。 */
+.brand-copy strong { /* 突出英文产品名。 */
+  color: #102a43; /* 使用高对比海军蓝。 */
+  font-family: Georgia, "Times New Roman", serif; /* 使用学术出版风格衬线字体。 */
+  font-size: 1.05rem; /* 控制品牌不挤占导航空间。 */
+}
+
+.brand-copy small { /* 标注中文产品名。 */
+  margin-top: 0.25rem; /* 与英文名称建立清晰间距。 */
+  color: #718096; /* 降低辅助名称权重。 */
+  font-size: 0.72rem; /* 保持双语层级。 */
+  letter-spacing: 0.22em; /* 增加中文短词的视觉呼吸。 */
+}
+
+.primary-nav { /* 承载两个首版一级模块。 */
+  display: flex; /* 横向排列导航项。 */
+  align-self: stretch; /* 让活动态底线贴近顶栏底部。 */
+  align-items: center; /* 垂直居中导航文字。 */
+  gap: 0.35rem; /* 保持导航项之间紧凑关联。 */
+}
+
+.nav-link { /* 统一活动与禁用导航的基础样式。 */
+  position: relative; /* 为活动态底线提供定位上下文。 */
+  display: inline-flex; /* 对齐标题和即将开放标签。 */
+  height: 100%; /* 扩大导航点击区域。 */
+  align-items: center; /* 垂直居中文字。 */
+  gap: 0.45rem; /* 分隔导航标题和辅助标签。 */
+  padding: 0 1rem; /* 提供足够横向点击空间。 */
+  color: #64748b; /* 默认使用次级文字色。 */
+  font-size: 0.9rem; /* 保持顶栏导航紧凑。 */
+  font-weight: 600; /* 提升导航辨识度。 */
+  text-decoration: none; /* 移除链接默认下划线。 */
+}
+
+.nav-link.is-active { /* 标记当前文献搜索模块。 */
+  color: #173f7a; /* 使用品牌主色突出活动状态。 */
+}
+
+.nav-link.is-active::after { /* 绘制活动模块底线。 */
+  position: absolute; /* 相对导航项定位到底部。 */
+  right: 1rem; /* 与文字右边界对齐。 */
+  bottom: -0.75rem; /* 贴合顶栏下边缘。 */
+  left: 1rem; /* 与文字左边界对齐。 */
+  height: 2px; /* 使用细线保持克制。 */
+  border-radius: 999px; /* 让底线端点圆润。 */
+  background: #2e6f95; /* 使用品牌强调色。 */
+  content: ""; /* 创建纯装饰伪元素。 */
+}
+
+.nav-link.is-disabled { /* 弱化尚未实现的文献库入口。 */
+  cursor: not-allowed; /* 告知用户当前不可点击。 */
+  opacity: 0.58; /* 降低视觉优先级。 */
+}
+
+.nav-link small { /* 显示功能阶段标签。 */
+  padding: 0.15rem 0.35rem; /* 形成紧凑胶囊。 */
+  border-radius: 999px; /* 使用完整圆角。 */
+  background: #e2e8f0; /* 以中性底色提示未开放。 */
+  font-size: 0.62rem; /* 避免辅助标签抢占导航。 */
+}
+
+.system-status { /* 展示后端功能状态。 */
+  display: inline-flex; /* 横向对齐状态点与文字。 */
+  align-items: center; /* 垂直居中状态点。 */
+  gap: 0.45rem; /* 分隔状态点和说明。 */
+  margin-left: auto; /* 将状态推至顶栏右侧。 */
+  color: #52716b; /* 使用低饱和绿色表达可用。 */
+  font-size: 0.78rem; /* 将状态保持为辅助信息。 */
+}
+
+.system-status i { /* 绘制服务状态点。 */
+  width: 0.45rem; /* 固定圆点尺寸。 */
+  height: 0.45rem; /* 保持圆形比例。 */
+  border-radius: 50%; /* 将方块变为圆点。 */
+  background: #38a169; /* 使用绿色表达已连接能力。 */
+  box-shadow: 0 0 0 4px rgba(56, 161, 105, 0.12); /* 增加可辨识的柔和外圈。 */
+}
+
+@media (max-width: 720px) { /* 针对手机收敛顶栏信息密度。 */
+  .topbar { /* 调整窄屏顶栏。 */
+    gap: 0.75rem; /* 缩小品牌与导航间距。 */
+  }
+
+  .brand-copy,
+  .system-status,
+  .nav-link small { /* 隐藏窄屏非核心信息。 */
+    display: none; /* 为查询和结果内容保留空间。 */
+  }
+
+  .primary-nav { /* 将导航推到右侧。 */
+    margin-left: auto; /* 使用剩余空间分隔品牌标识。 */
+  }
+
+  .nav-link { /* 缩小窄屏导航内边距。 */
+    padding: 0 0.55rem; /* 避免导航发生换行。 */
+  }
 }
 </style>
