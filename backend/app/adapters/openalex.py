@@ -6,8 +6,10 @@ import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
 from backend.app.core.config import Settings, settings  # 读取 OpenAlex 地址、密钥和超时配置。
 from backend.app.core.logging import logger  # 记录不含敏感信息的调用统计和错误。
-from backend.app.models.paper import Paper, PaperAuthor  # 复用统一的论文领域模型。
+from backend.app.adapters.base import AcademicSearchAdapter  # 声明当前客户端满足统一学术来源协议。
+from backend.app.models.paper import Paper, PaperAuthor, PaperRecord, PaperSourceRecord  # 复用基础模型与多源溯源模型。
 from backend.app.models.query import QuerySchema  # 读取结构化检索约束。
+from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一检索意图。
 
 
 OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
@@ -59,7 +61,30 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
     return params  # 排除尚未解析为来源 ID 的 venue 和后续本地处理的 exclude 条件。
 
 
-class OpenAlexClient:
+def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
+    """将 QueryIntent 转换为 OpenAlex /works 的统一适配器请求参数。
+
+    参数：
+        query：已由查询规划节点校验的统一检索意图。
+    返回：
+        dict[str, str | int]：不含密钥、可直接传给 OpenAlex 的请求参数。
+    """
+    search_terms: list[str] = []  # 按来源无关的确定顺序收集可全文检索的约束词。
+    for terms in (query.research_topics, query.methods, query.tasks, query.datasets, query.must_include):  # 合并主题、方法、任务、数据集与硬约束。
+        search_terms.extend(term.strip() for term in terms if term.strip())  # 丢弃空白词并保留规划节点给出的顺序。
+    search_text = " ".join(search_terms) or query.normalized_query  # 缺少拆分词时退回已校验的规范化查询。
+    params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
+        "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
+        "sort": "relevance_score:desc",  # 保持来源按相关性优先的原始排名。
+        "per_page": query.target_paper_count,  # 将目标结果数限制为单页返回上限。
+        "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
+    }
+    if query.year_range:  # 用户明确给出年份范围时才添加来源过滤条件。
+        params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 支持的发表年份范围语法。
+    return params  # 不将来源无法可靠表达的排除词伪装成服务端过滤。
+
+
+class OpenAlexClient(AcademicSearchAdapter):
     """封装 OpenAlex /works 请求、响应校验和论文映射。
 
     参数：
@@ -76,6 +101,8 @@ class OpenAlexClient:
         self._settings = settings_override or settings  # 默认复用经过环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
 
+    source = "openalex"  # 声明统一适配器协议要求的稳定来源名称。
+
     async def search_works(self, query: QuerySchema) -> list[Paper]:
         """请求 OpenAlex /works 并返回成功映射的论文列表。
 
@@ -87,9 +114,59 @@ class OpenAlexClient:
             OpenAlexClientError：网络、HTTP 状态、密钥配置或响应结构异常时抛出。
             ValueError：没有可用于检索的关键词时由参数构造器抛出。
         """
-        params = build_openalex_work_params(query)  # 先生成不含密钥的安全请求参数。
+        results = await self._request_works(build_openalex_work_params(query))  # 复用安全请求边界并保留旧模型输出兼容性。
+        papers: list[Paper] = []  # 保存成功映射的旧版统一论文模型。
+        skipped_count = 0  # 统计字段不完整而被跳过的单条 Work 数。
+        for result in results:  # 按 OpenAlex 返回顺序处理 Work 记录。
+            work = _as_mapping(result)  # 确认单条结果具有对象结构。
+            if work is None:  # 非对象结果无法映射为论文。
+                skipped_count += 1  # 记录异常条目数量。
+                continue  # 继续处理其余结果。
+            try:  # 单条 Work 失败不应丢弃整页有效结果。
+                papers.append(map_openalex_work_to_paper(work))  # 映射并保存旧入口所需的基础论文。
+            except OpenAlexMappingError:  # 仅跳过缺失必要字段的 Work。
+                skipped_count += 1  # 记录映射失败数量。
+        logger.info("OpenAlex 兼容检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(results), len(papers), skipped_count)  # 记录旧入口检索统计。
+        return papers  # 返回旧服务层可继续消费的基础论文模型。
+
+    async def search(self, query: QueryIntent) -> list[PaperRecord]:
+        """以统一 QueryIntent 搜索 OpenAlex 并返回可溯源的 PaperRecord。
+
+        参数：
+            query：由查询规划节点输出的统一检索意图。
+        返回：
+            list[PaperRecord]：保留 OpenAlex 原始排名和来源标识的论文记录。
+        异常：
+            OpenAlexClientError：来源配置、网络、HTTP 或响应结构异常时抛出。
+        """
+        results = await self._request_works(build_openalex_search_params(query))  # 使用统一意图构造来源请求并获取原始结果。
+        papers: list[PaperRecord] = []  # 保存成功映射的多源融合输入。
+        skipped_count = 0  # 统计无法构造稳定论文记录的来源条目。
+        for raw_rank, result in enumerate(results, start=1):  # 保留来源返回顺序供后续 RRF 融合使用。
+            work = _as_mapping(result)  # 确认单条结果具有对象结构。
+            if work is None:  # 非对象条目无法映射为统一论文。
+                skipped_count += 1  # 累加结构异常条目数量。
+                continue  # 继续处理同页其余结果。
+            try:  # 单条映射失败不能影响同页其他有效论文。
+                papers.append(map_openalex_work_to_record(work, raw_rank=raw_rank))  # 映射并写入来源溯源与排名。
+            except OpenAlexMappingError:  # 仅跳过缺少主标识或标题的无效 Work。
+                skipped_count += 1  # 累加映射失败数量。
+        logger.info("OpenAlex 统一检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(results), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
+        return papers  # 返回可直接进入多源融合的论文记录。
+
+    async def _request_works(self, params: dict[str, str | int]) -> list[object]:
+        """执行一次已构造参数的 OpenAlex 请求并校验顶层结果数组。
+
+        参数：
+            params：不含密钥的 OpenAlex /works 请求参数。
+        返回：
+            list[object]：未经单条映射的来源原始结果数组。
+        异常：
+            OpenAlexClientError：配置、网络、状态码或响应结构异常时抛出。
+        """
+        request_params = dict(params)  # 复制调用方参数，避免注入密钥时修改其可测试输入。
         try:  # 将缺失的部署配置转换为适配层领域错误。
-            params["api_key"] = self._settings.require_openalex_api_key()  # 在真正请求前注入并校验密钥。
+            request_params["api_key"] = self._settings.require_openalex_api_key()  # 在真正请求前注入并校验密钥。
         except ValueError:  # 不将环境变量内容或配置实现细节暴露给上层。
             logger.error("OpenAlex 服务未配置 API 密钥")  # 记录安全的部署错误信息。
             raise OpenAlexClientError("OpenAlex 服务尚未配置") from None  # 返回稳定且不含密钥的领域错误。
@@ -99,7 +176,7 @@ class OpenAlexClient:
                 timeout=self._settings.openalex_timeout_seconds,  # 使用集中配置的请求超时。
                 transport=self._transport,  # 在测试时使用本地 MockTransport。
             ) as client:
-                response = await client.get("/works", params=params)  # 请求论文列表端点。
+                response = await client.get("/works", params=request_params)  # 请求论文列表端点。
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为异常。
                 payload = response.json()  # 解码 JSON 响应供后续结构校验。
         except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
@@ -118,20 +195,7 @@ class OpenAlexClient:
             logger.error("OpenAlex 响应缺少 results 数组")  # 记录可定位的结构异常。
             raise OpenAlexClientError("OpenAlex 响应缺少 results 数组")  # 阻止错误数据进入后续排序流程。
 
-        papers: list[Paper] = []  # 保存成功映射的统一论文。
-        skipped_count = 0  # 统计字段不完整而被跳过的单条 Work 数。
-        for result in results:  # 按 OpenAlex 返回顺序处理 Work 记录。
-            work = _as_mapping(result)  # 确认单条结果具有对象结构。
-            if work is None:  # 非对象结果无法映射为论文。
-                skipped_count += 1  # 记录异常条目数量。
-                continue  # 继续处理其余结果。
-            try:  # 单条 Work 失败不应丢弃整页有效结果。
-                papers.append(map_openalex_work_to_paper(work))  # 映射并保存有效论文。
-            except OpenAlexMappingError:  # 仅跳过缺失必要字段的 Work。
-                skipped_count += 1  # 记录映射失败数量。
-
-        logger.info("OpenAlex 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(results), len(papers), skipped_count)  # 记录检索阶段统计。
-        return papers  # 返回可供去重服务处理的规范化论文列表。
+        return results  # 将单条映射和模型选择留给兼容入口或统一入口处理。
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
@@ -219,6 +283,7 @@ def _extract_authors(work: Mapping[str, object]) -> list[PaperAuthor]:
         author_name = _optional_text(author_data.get("display_name"))  # 提取作者显示名称。
         if author_name is None:  # 姓名是作者模型的必要字段。
             continue  # 跳过无法识别的作者。
+        author_id = _optional_text(author_data.get("id"))  # 提取可选的 OpenAlex 作者来源标识。
         institution_name: str | None = None  # 默认不绑定机构信息。
         institutions = authorship_data.get("institutions")  # 读取作者机构数组。
         if isinstance(institutions, list) and institutions:  # 仅在至少存在一个机构时继续解析。
@@ -230,6 +295,7 @@ def _extract_authors(work: Mapping[str, object]) -> list[PaperAuthor]:
                 name=author_name,  # 使用必填的作者显示名称。
                 orcid=_optional_text(author_data.get("orcid")),  # 保留可选 ORCID。
                 institution=institution_name,  # 保留可选首个机构名称。
+                source_author_ids={"openalex": author_id} if author_id else {},  # 仅在来源给出标识时保留平台作者 ID。
             )
         )
     return authors  # 返回保持原始作者顺序的列表。
@@ -291,4 +357,23 @@ def map_openalex_work_to_paper(work: Mapping[str, object]) -> Paper:
         citation_count=max(cited_by_count, 0) if isinstance(cited_by_count, int) and not isinstance(cited_by_count, bool) else 0,  # 防御异常负数或类型。
         references=_extract_references(work),  # 保留 OpenAlex 提供的被引 Work ID。
         source="openalex",  # 标记统一模型的当前数据源。
+    )
+
+
+def map_openalex_work_to_record(work: Mapping[str, object], raw_rank: int | None = None) -> PaperRecord:
+    """将一条 OpenAlex Work 响应映射为带来源溯源的 PaperRecord。
+
+    参数：
+        work：已经由 HTTP 客户端解码的单条 OpenAlex Work JSON 对象。
+        raw_rank：该论文在当前来源搜索结果中的一开始排名。
+    返回：
+        PaperRecord：可直接用于多源融合、去重和排序的规范化论文记录。
+    异常：
+        OpenAlexMappingError：Work 缺少有效 id 或 title 时由基础映射器抛出。
+    """
+    paper = map_openalex_work_to_paper(work)  # 复用已覆盖的基础字段映射，避免两套字段规则漂移。
+    return PaperRecord(  # 扩展基础论文为多源融合所需的可溯源记录。
+        **paper.model_dump(),  # 保留基础论文模型已经校验的所有兼容字段。
+        openalex_id=paper.paper_id,  # 显式保存 OpenAlex 稳定 Work 标识。
+        source_records=[PaperSourceRecord(source="openalex", external_id=paper.paper_id, raw_rank=raw_rank)],  # 写入来源与原始排名供融合解释使用。
     )

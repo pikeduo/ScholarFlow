@@ -5,7 +5,7 @@ from pathlib import Path  # 定位测试 fixture 文件。
 
 import pytest  # 提供异常断言工具。
 
-from backend.app.adapters.openalex import OpenAlexMappingError, map_openalex_work_to_paper  # 导入待测映射器和异常类型。
+from backend.app.adapters.openalex import OpenAlexMappingError, map_openalex_work_to_paper, map_openalex_work_to_record  # 导入待测映射器和异常类型。
 
 
 def _load_openalex_work_fixture() -> dict[str, object]:
@@ -34,3 +34,11 @@ def test_mapper_rejects_work_without_required_id() -> None:
     """缺少 OpenAlex Work ID 时应返回可定位的映射错误。"""
     with pytest.raises(OpenAlexMappingError, match="id"):  # 断言错误指出缺少必要字段。
         map_openalex_work_to_paper({"title": "缺少标识的论文"})  # 构造没有 Work ID 的最小无效响应。
+
+
+def test_record_mapper_preserves_openalex_provenance() -> None:
+    """多源记录映射器应显式保存 OpenAlex 论文、作者与原始排名标识。"""
+    paper = map_openalex_work_to_record(_load_openalex_work_fixture(), raw_rank=2)  # 映射固定 fixture 并传入来源原始排名。
+    assert paper.openalex_id == "https://openalex.org/W1234567890"  # 验证来源论文标识被保留。
+    assert paper.source_records[0].raw_rank == 2  # 验证融合所需的来源排名被保留。
+    assert paper.authors[0].source_author_ids["openalex"] == "https://openalex.org/A1234567890"  # 验证来源作者标识被保留。

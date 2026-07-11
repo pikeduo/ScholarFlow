@@ -17,6 +17,7 @@
   "authorships": [
     {
       "author": {
+        "id": "https://openalex.org/A1234567890",
         "display_name": "Ada Lovelace",
         "orcid": "https://orcid.org/0000-0000-0000-0001"
       },
