@@ -67,8 +67,24 @@ def _contains_excluded_term(paper: Paper, query: QuerySchema) -> bool:
     return any(term in searchable_text for term in excluded_terms)  # 任一排除词命中即交由调用方过滤。
 
 
+def _contains_all_required_terms(paper: Paper, query: QuerySchema) -> bool:
+    """判断标题或摘要是否包含全部有效的必须包含词。
+
+    参数：
+        paper：待判断的规范化论文。
+        query：包含可选必须包含词的结构化查询。
+    返回：
+        bool：未指定有效必须包含词时为真；否则要求每个词均命中标题或摘要。
+    """
+    required_terms = [_normalize_text(term) for term in query.must_include if term.strip()]  # 过滤空必须包含词并统一比较形式。
+    if not required_terms:  # 未指定有效必须包含词时无需增加过滤条件。
+        return True  # 表示论文满足空的必须包含条件。
+    searchable_text = _normalize_text(f"{paper.title} {paper.abstract}")  # 只使用可公开展示的标题和摘要进行本地匹配。
+    return all(term in searchable_text for term in required_terms)  # 只有全部必须包含词命中时才保留论文。
+
+
 def filter_papers(papers: list[Paper], query: QuerySchema) -> list[Paper]:
-    """按年份、venue 和排除词保留进入排序阶段的论文。
+    """按年份、venue、必须包含词和排除词保留进入排序阶段的论文。
 
     参数：
         papers：已完成规范化与去重、保持召回顺序的论文列表。
@@ -82,6 +98,8 @@ def filter_papers(papers: list[Paper], query: QuerySchema) -> list[Paper]:
             continue  # 排除超出范围或缺少必要年份的论文。
         if not _matches_venue(paper, query):  # 再应用期刊或会议约束。
             continue  # 排除未匹配指定 venue 的论文。
+        if not _contains_all_required_terms(paper, query):  # 再要求标题和摘要包含全部必须包含词。
+            continue  # 排除未覆盖任一必要关键词的论文。
         if _contains_excluded_term(paper, query):  # 最后应用标题和摘要中的排除词。
             continue  # 排除命中不希望主题的论文。
         retained_papers.append(paper)  # 保留通过全部规则的论文。

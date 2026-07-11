@@ -60,7 +60,7 @@ class OpenAlexSearchService:
         """
         recalled_papers = await self._client.search_works(query)  # 委托适配层完成安全的 API 调用和字段映射。
         deduplicated_papers = self._deduplicator(recalled_papers)  # 在进入排序前执行统一的稳定标识去重。
-        filtered_papers = filter_papers(deduplicated_papers, query)  # 按年份、venue 和排除词移除不符合条件的候选。
+        filtered_papers = filter_papers(deduplicated_papers, query)  # 按年份、venue、必须包含词和排除词移除不符合条件的候选。
         result = SearchResult(  # 构造供后续排序和 API 层复用的稳定输出。
             papers=filtered_papers,  # 返回保持原始相对顺序的规则过滤论文。
             recalled_count=len(recalled_papers),  # 记录客户端实际返回的规范化论文数量。

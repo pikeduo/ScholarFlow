@@ -56,19 +56,20 @@ def test_search_service_returns_empty_result() -> None:
 
 
 def test_search_service_applies_local_filtering_statistics() -> None:
-    """服务应在去重后应用本地规则并报告实际过滤数量。"""
-    client = FakeOpenAlexClient(  # 构造包含一篇应被排除论文的离线客户端。
+    """服务应在去重后应用必须包含词和排除词并报告过滤数量。"""
+    client = FakeOpenAlexClient(  # 构造分别不满足必须包含词和排除词的离线客户端。
         papers=[
             Paper(paper_id="W1", title="Forecasting Method", year=2023, source="openalex"),  # 提供应保留论文。
-            Paper(paper_id="W2", title="Forecasting Survey", year=2023, source="openalex"),  # 提供命中排除词论文。
+            Paper(paper_id="W2", title="Forecasting Baseline", year=2023, source="openalex"),  # 提供缺少必须包含词论文。
+            Paper(paper_id="W3", title="Forecasting Method Survey", year=2023, source="openalex"),  # 提供命中排除词论文。
         ]
     )
     service = OpenAlexSearchService(client)  # 注入离线客户端构造服务。
-    result = asyncio.run(service.search(QuerySchema(topic=["forecasting"], exclude=["survey"])))  # 执行包含排除词的本地检索。
-    assert result.recalled_count == 2  # 验证客户端的原始召回统计。
-    assert result.deduplicated_count == 2  # 验证两篇论文不存在稳定标识重复。
-    assert result.filtered_count == 1  # 验证服务统计一篇被本地规则移除的论文。
-    assert [paper.paper_id for paper in result.papers] == ["W1"]  # 验证仅保留未命中排除词的论文。
+    result = asyncio.run(service.search(QuerySchema(topic=["forecasting"], must_include=["method"], exclude=["survey"])))  # 执行包含必须词和排除词的本地检索。
+    assert result.recalled_count == 3  # 验证客户端的原始召回统计。
+    assert result.deduplicated_count == 3  # 验证三篇论文不存在稳定标识重复。
+    assert result.filtered_count == 2  # 验证服务统计两篇被本地规则移除的论文。
+    assert [paper.paper_id for paper in result.papers] == ["W1"]  # 验证仅保留通过两类文本规则的论文。
 
 
 def test_search_service_propagates_sanitized_client_error() -> None:

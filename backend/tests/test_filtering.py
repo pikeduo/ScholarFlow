@@ -1,12 +1,12 @@
-"""验证排序前本地论文过滤的年份、venue 和排除词规则。"""
+"""验证排序前本地论文过滤的年份、venue、必须包含词和排除词规则。"""
 
 from backend.app.models.paper import Paper  # 构造统一论文测试数据。
 from backend.app.models.query import QuerySchema  # 构造结构化过滤约束。
 from backend.app.services.filtering import filter_papers  # 导入待测本地过滤服务。
 
 
-def test_filtering_applies_year_venue_and_exclude_constraints() -> None:
-    """论文必须同时通过年份、venue 与排除词规则才能保留。"""
+def test_filtering_applies_year_venue_required_and_exclude_constraints() -> None:
+    """论文必须同时通过年份、venue、必须包含词与排除词规则才能保留。"""
     papers = [  # 构造分别命中各类过滤规则的论文集合。
         Paper(paper_id="P1", title="Forecasting with Transformers", abstract="A practical method", year=2023, venue="NeurIPS 2023", source="openalex"),  # 应保留的论文。
         Paper(paper_id="P2", title="Future Forecasting", year=2025, venue="NeurIPS", source="openalex"),  # 超出年份范围。
@@ -14,11 +14,13 @@ def test_filtering_applies_year_venue_and_exclude_constraints() -> None:
         Paper(paper_id="P4", title="A Survey of Forecasting", year=2023, venue="NeurIPS", source="openalex"),  # 标题命中排除词。
         Paper(paper_id="P5", title="Forecasting", year=2023, venue="NeurIPS", abstract="This is a survey article", source="openalex"),  # 摘要命中排除词。
         Paper(paper_id="P6", title="Unknown Year Forecasting", venue="NeurIPS", source="openalex"),  # 指定年份时缺少年份。
+        Paper(paper_id="P7", title="Forecasting Baseline", abstract="A practical method", year=2023, venue="NeurIPS", source="openalex"),  # 缺少必须包含词。
     ]
-    query = QuerySchema(  # 构造包含三类本地约束的查询。
+    query = QuerySchema(  # 构造包含四类本地约束的查询。
         topic=["forecasting"],  # 提供合法搜索主题。
         year_range=(2022, 2024),  # 限制发表年份闭区间。
         venue=["  neurips  "],  # 验证 venue 的大小写和空白不影响匹配。
+        must_include=["transformers", "method"],  # 要求标题和摘要共同覆盖全部必要词。
         exclude=["survey"],  # 排除标题或摘要包含的词。
     )
     filtered_papers = filter_papers(papers, query)  # 执行排序前的本地规则过滤。
