@@ -8,6 +8,7 @@ from backend.app.models.paper import Paper  # 使用统一论文模型贯通服�
 from backend.app.models.query import QuerySchema  # 接收已校验的结构化检索约束。
 from backend.app.models.search import SearchResult  # 返回稳定的检索阶段输出模型。
 from backend.app.services.deduplication import deduplicate_papers  # 复用统一的论文去重规则。
+from backend.app.services.filtering import filter_papers  # 在排序前应用本地确定性约束。
 
 
 class OpenAlexPaperClient(Protocol):
@@ -59,15 +60,18 @@ class OpenAlexSearchService:
         """
         recalled_papers = await self._client.search_works(query)  # 委托适配层完成安全的 API 调用和字段映射。
         deduplicated_papers = self._deduplicator(recalled_papers)  # 在进入排序前执行统一的稳定标识去重。
+        filtered_papers = filter_papers(deduplicated_papers, query)  # 按年份、venue 和排除词移除不符合条件的候选。
         result = SearchResult(  # 构造供后续排序和 API 层复用的稳定输出。
-            papers=deduplicated_papers,  # 返回保持原始相对顺序的去重论文。
+            papers=filtered_papers,  # 返回保持原始相对顺序的规则过滤论文。
             recalled_count=len(recalled_papers),  # 记录客户端实际返回的规范化论文数量。
             deduplicated_count=len(deduplicated_papers),  # 记录去重后进入下一阶段的论文数量。
+            filtered_count=len(deduplicated_papers) - len(filtered_papers),  # 记录被本地规则移除的论文数量。
         )
         logger.info(  # 仅输出数量统计，避免日志记录完整用户查询或论文内容。
-            "OpenAlex 搜索服务完成：召回=%d，去重后=%d，重复=%d",
+            "OpenAlex 搜索服务完成：召回=%d，去重后=%d，规则过滤=%d，最终返回=%d",
             result.recalled_count,
             result.deduplicated_count,
-            result.recalled_count - result.deduplicated_count,
+            result.filtered_count,
+            len(result.papers),
         )
         return result  # 返回本轮检索的可序列化业务结果。

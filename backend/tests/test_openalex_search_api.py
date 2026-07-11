@@ -49,6 +49,7 @@ def test_openalex_search_endpoint_returns_service_result(api_client: TestClient)
         papers=[Paper(paper_id="W1", title="Forecasting Paper", source="openalex")],  # 提供最小合法论文记录。
         recalled_count=1,  # 声明原始召回数量。
         deduplicated_count=1,  # 声明去重后数量。
+        filtered_count=0,  # 声明本地规则未移除论文。
     )
     app.dependency_overrides[get_openalex_search_service] = lambda: FakeOpenAlexSearchService(result=expected_result)  # 注入不访问网络的服务替身。
     response = api_client.post("/api/v1/search/openalex", json={"topic": ["forecasting"]})  # 提交合法结构化查询。
@@ -56,6 +57,7 @@ def test_openalex_search_endpoint_returns_service_result(api_client: TestClient)
     assert response.status_code == 200  # 验证成功请求返回固定状态码。
     assert payload["recalled_count"] == 1  # 验证保留服务层召回统计。
     assert payload["deduplicated_count"] == 1  # 验证保留服务层去重统计。
+    assert payload["filtered_count"] == 0  # 验证返回本地规则过滤统计。
     assert payload["papers"][0]["paper_id"] == "W1"  # 验证论文列表按统一模型序列化。
 
 
