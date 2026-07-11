@@ -88,6 +88,7 @@ class PaperRecord(Paper):
         open_access_url：可公开访问的合法链接。
         source_records：所有来源命中与原始排名记录。
         work_family_id：预印本、会议版与期刊版的版本族标识。
+        rrf_score：基于各来源原始排名计算的融合分数。
         text_hash：用于判断摘要或标题变化的文本哈希。
         embedding_model_version：生成向量时使用的模型版本。
         updated_at：规范化记录最近更新时间。
@@ -102,6 +103,7 @@ class PaperRecord(Paper):
     open_access_url: str | None = None  # 保存经来源提供的合法开放访问链接。
     source_records: list[PaperSourceRecord] = Field(default_factory=list)  # 保存多源命中和原始排名的溯源记录。
     work_family_id: str | None = None  # 关联预印本、会议版与期刊版的版本族。
+    rrf_score: float = Field(default=0.0, ge=0.0)  # 保存融合阶段计算的非负 Reciprocal Rank Fusion 分数。
     text_hash: str | None = None  # 保存向量更新判断使用的标题摘要哈希。
     embedding_model_version: str | None = None  # 保存当前向量对应的模型版本。
     updated_at: datetime | None = None  # 保存规范化记录的最近更新时间。
