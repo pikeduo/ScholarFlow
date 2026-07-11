@@ -27,10 +27,18 @@ def test_query_schema_accepts_planning_constraints() -> None:
 def test_query_schema_rejects_reversed_year_range() -> None:
     """年份起始值晚于结束值时应拒绝该查询。"""
     with pytest.raises(ValidationError, match="起始年份"):  # 断言返回可理解的年份错误。
-        QuerySchema(year_range=(2026, 2022))  # 构造倒置的年份区间。
+        QuerySchema(topic=["forecasting"], year_range=(2026, 2022))  # 构造含有有效检索词的倒置年份区间。
 
 
 def test_query_schema_rejects_conflicting_terms() -> None:
     """同一关键词不能同时作为必须包含和排除条件。"""
     with pytest.raises(ValidationError, match="不能包含相同关键词"):  # 断言返回可理解的冲突错误。
         QuerySchema(must_include=["LLM"], exclude=["llm"])  # 使用大小写不同的冲突关键词。
+
+
+def test_query_schema_rejects_missing_effective_search_terms() -> None:
+    """空查询或仅含空白词时应在模型层被拒绝。"""
+    with pytest.raises(ValidationError, match="至少需要一个主题"):  # 断言完全空查询得到稳定错误。
+        QuerySchema()  # 构造不包含任何检索意图字段的查询。
+    with pytest.raises(ValidationError, match="至少需要一个主题"):  # 断言空白文本不能绕过搜索词约束。
+        QuerySchema(topic=["  "], method=["\t"], dataset=[""])  # 构造仅包含空白搜索词的查询。

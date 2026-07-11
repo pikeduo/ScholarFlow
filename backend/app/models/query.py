@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, model_validator  # 提供数据模型、�
 
 
 class QuerySchema(BaseModel):
-    """描述一次学术论文检索的结构化意图与筛选约束。
+    """描述一次至少含有一个有效检索词的学术论文检索约束。
 
     属性：
         topic：研究主题关键词。
@@ -30,12 +30,12 @@ class QuerySchema(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_field_constraints(self) -> "QuerySchema":
-        """校验年份区间和相互冲突的包含/排除关键词。
+        """校验年份区间、关键词冲突与最小检索意图。
 
         返回：
             QuerySchema：通过校验的当前模型实例。
         异常：
-            ValueError：年份区间倒置或关键词同时被要求包含和排除时抛出。
+            ValueError：年份区间倒置、关键词冲突或缺少有效检索词时抛出。
         """
         if self.year_range and self.year_range[0] > self.year_range[1]:  # 防止产生无效年份筛选。
             raise ValueError("year_range 的起始年份不能晚于结束年份")  # 返回清晰的调用方错误。
@@ -44,4 +44,7 @@ class QuerySchema(BaseModel):
         conflicting_terms = required_terms & excluded_terms  # 识别同一关键词的矛盾约束。
         if conflicting_terms:  # 仅在实际存在冲突时阻止请求进入检索流程。
             raise ValueError("must_include 与 exclude 不能包含相同关键词")  # 避免不可解释的搜索结果。
+        search_terms = self.topic + self.method + self.dataset + self.domain + self.must_include  # 汇总可表达实际检索意图的字段。
+        if not any(term.strip() for term in search_terms):  # 仅有过滤条件或空白文本不能形成 OpenAlex 搜索表达式。
+            raise ValueError("QuerySchema 至少需要一个主题、方法、数据集、领域或必须包含关键词")  # 在 API 校验阶段拒绝必然失败的空检索。
         return self  # 返回已完成跨字段校验的模型。

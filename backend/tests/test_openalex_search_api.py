@@ -70,6 +70,16 @@ def test_openalex_search_endpoint_rejects_invalid_query(api_client: TestClient) 
     assert response.status_code == 422  # 验证无效输入不会进入外部搜索服务。
 
 
+def test_openalex_search_endpoint_rejects_missing_search_terms(api_client: TestClient) -> None:
+    """缺少有效检索词时路由应在调用服务前返回 422。"""
+    response = api_client.post(  # 仅提交不构成检索表达式的筛选条件。
+        "/api/v1/search/openalex",
+        json={"year_range": [2022, 2024], "exclude": ["survey"]},
+    )
+    assert response.status_code == 422  # 验证空检索不会进入 OpenAlex 适配层。
+    assert "至少需要一个主题" in response.text  # 验证前端可获得明确的校验原因。
+
+
 def test_openalex_search_endpoint_hides_client_error(api_client: TestClient) -> None:
     """适配层失败时路由应返回不含底层细节的服务不可用响应。"""
     failing_service = FakeOpenAlexSearchService(error=OpenAlexClientError("OpenAlex 网络请求失败"))  # 构造已净化的外部错误。
