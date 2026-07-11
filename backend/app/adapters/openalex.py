@@ -84,11 +84,15 @@ class OpenAlexClient:
         返回：
             list[Paper]：已规范化且跳过无效单条响应的论文列表。
         异常：
-            OpenAlexClientError：网络、HTTP 状态或响应结构异常时抛出。
-            ValueError：缺少 API 密钥或检索词时由配置/参数构造器抛出。
+            OpenAlexClientError：网络、HTTP 状态、密钥配置或响应结构异常时抛出。
+            ValueError：没有可用于检索的关键词时由参数构造器抛出。
         """
         params = build_openalex_work_params(query)  # 先生成不含密钥的安全请求参数。
-        params["api_key"] = self._settings.require_openalex_api_key()  # 在真正请求前注入并校验密钥。
+        try:  # 将缺失的部署配置转换为适配层领域错误。
+            params["api_key"] = self._settings.require_openalex_api_key()  # 在真正请求前注入并校验密钥。
+        except ValueError:  # 不将环境变量内容或配置实现细节暴露给上层。
+            logger.error("OpenAlex 服务未配置 API 密钥")  # 记录安全的部署错误信息。
+            raise OpenAlexClientError("OpenAlex 服务尚未配置") from None  # 返回稳定且不含密钥的领域错误。
         try:  # 捕获 HTTP 层异常并转换为不会暴露 URL 参数的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
                 base_url=self._settings.openalex_api_base_url,  # 使用集中配置的 OpenAlex 地址。

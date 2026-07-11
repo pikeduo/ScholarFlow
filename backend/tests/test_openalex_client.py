@@ -58,3 +58,10 @@ def test_client_hides_http_error_details() -> None:
     )
     with pytest.raises(OpenAlexClientError, match="HTTP 429"):  # 断言返回已净化的状态错误。
         asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行异步搜索方法。
+
+
+def test_client_hides_missing_api_key_configuration() -> None:
+    """缺少 API 密钥时客户端应返回不暴露环境变量值的领域错误。"""
+    client = OpenAlexClient(settings_override=Settings(_env_file=None))  # 构造未配置 API 密钥的隔离客户端。
+    with pytest.raises(OpenAlexClientError, match="OpenAlex 服务尚未配置"):  # 断言调用方不会收到密钥字段或其内容。
+        asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 在 HTTP 请求前触发配置校验。
