@@ -3,8 +3,11 @@
 from functools import lru_cache  # 缓存配置实例避免重复解析环境变量。
 from pathlib import Path  # 使用跨平台路径表示日志目录。
 
-from pydantic import Field, SecretStr, field_validator  # 声明配置字段、敏感值与字段校验。
+from pydantic import Field, SecretStr, field_validator, model_validator  # 声明配置字段、敏感值与字段校验。
 from pydantic_settings import BaseSettings, SettingsConfigDict  # 支持环境变量配置模型。
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]  # 根据当前配置模块位置定位仓库根目录。
 
 
 class Settings(BaseSettings):
@@ -29,6 +32,17 @@ class Settings(BaseSettings):
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
     openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
     openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。
+
+    @model_validator(mode="after")
+    def resolve_project_relative_paths(self) -> "Settings":
+        """将相对日志目录稳定解析到仓库根目录。
+
+        返回：
+            Settings：日志目录已转换为绝对路径的当前配置实例。
+        """
+        if not self.log_dir.is_absolute():  # 仅转换默认值或环境变量提供的相对目录。
+            self.log_dir = (PROJECT_ROOT / self.log_dir).resolve()  # 避免 pytest 或 IDE 工作目录改变日志位置。
+        return self  # 保留用户显式提供的绝对日志目录。
 
     @field_validator("openalex_api_key", mode="before")
     @classmethod
