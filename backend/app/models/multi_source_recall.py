@@ -20,6 +20,8 @@ class MultiSourceRecallResult(BaseModel):
         merged_paper_count：被合并到其他身份组的重复来源记录数量。
         filtered_paper_count：融合后因确定性规则被移除的论文数量。
         filter_reason_counts：按首个未通过规则汇总的移除数量。
+        semantic_truncated_count：BGE-M3 粗排候选截断数量。
+        semantic_ranking_error：语义模型不可用时的安全降级摘要。
         work_family_count：融合结果中可识别版本族的唯一数量。
     """
 
@@ -32,4 +34,6 @@ class MultiSourceRecallResult(BaseModel):
     merged_paper_count: int = Field(default=0, ge=0)  # 保存因身份融合而被合并的重复来源记录数量。
     filtered_paper_count: int = Field(default=0, ge=0)  # 保存融合后因确定性规则被移除的论文数量。
     filter_reason_counts: dict[str, int] = Field(default_factory=dict)  # 保存按首个失败规则汇总的安全过滤统计。
+    semantic_truncated_count: int = Field(default=0, ge=0)  # 保存 BGE-M3 粗排候选截断数量。
+    semantic_ranking_error: str | None = None  # 保存语义模型不可用时不含内部细节的降级摘要。
     work_family_count: int = Field(default=0, ge=0)  # 保存融合论文中唯一版本族标识的数量。

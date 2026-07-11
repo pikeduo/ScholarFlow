@@ -9,6 +9,7 @@ from backend.app.models.multi_source_recall import MultiSourceRecallResult  # �
 from backend.app.models.multi_source_filtering import MultiSourceFilterResult  # 对外导出多源规则过滤结果模型。
 from backend.app.models.search import SearchResult  # 对外导出检索阶段结果模型。
 from backend.app.models.search_run import SearchRunState  # 对外导出可恢复搜索运行状态。
+from backend.app.models.semantic_ranking import SemanticRankingResult  # 对外导出语义粗排结果模型。
 from backend.app.models.source_routing import SourceRoutePlan  # 对外导出来源选择与降级计划模型。
 
-__all__ = ["MultiSourceFilterResult", "MultiSourceRecallResult", "Paper", "PaperAuthor", "PaperFusionResult", "PaperRecord", "PaperSourceRecord", "QueryIntent", "QuerySchema", "QuerySubquery", "SearchResult", "SearchRunState", "SourceRoutePlan", "SupplementalDiscoveryItem"]  # 限制包级导出的公共模型。
+__all__ = ["MultiSourceFilterResult", "MultiSourceRecallResult", "Paper", "PaperAuthor", "PaperFusionResult", "PaperRecord", "PaperSourceRecord", "QueryIntent", "QuerySchema", "QuerySubquery", "SearchResult", "SearchRunState", "SemanticRankingResult", "SourceRoutePlan", "SupplementalDiscoveryItem"]  # 限制包级导出的公共模型。
