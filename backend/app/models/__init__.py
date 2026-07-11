@@ -1,6 +1,7 @@
 """ScholarWeave 的领域数据模型包。"""
 
 from backend.app.models.discovery import SupplementalDiscoveryItem  # 对外导出不可合并的补充网页发现模型。
+from backend.app.models.cross_encoder_ranking import CrossEncoderRankingResult  # 对外导出 Cross Encoder 重排结果模型。
 from backend.app.models.query import QuerySchema  # 对外导出结构化查询模型。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 对外导出完整查询规划契约。
 from backend.app.models.paper import Paper, PaperAuthor, PaperRecord, PaperSourceRecord  # 对外导出基础和多源论文模型。
@@ -12,4 +13,4 @@ from backend.app.models.search_run import SearchRunState  # 对外导出可恢�
 from backend.app.models.semantic_ranking import SemanticRankingResult  # 对外导出语义粗排结果模型。
 from backend.app.models.source_routing import SourceRoutePlan  # 对外导出来源选择与降级计划模型。
 
-__all__ = ["MultiSourceFilterResult", "MultiSourceRecallResult", "Paper", "PaperAuthor", "PaperFusionResult", "PaperRecord", "PaperSourceRecord", "QueryIntent", "QuerySchema", "QuerySubquery", "SearchResult", "SearchRunState", "SemanticRankingResult", "SourceRoutePlan", "SupplementalDiscoveryItem"]  # 限制包级导出的公共模型。
+__all__ = ["CrossEncoderRankingResult", "MultiSourceFilterResult", "MultiSourceRecallResult", "Paper", "PaperAuthor", "PaperFusionResult", "PaperRecord", "PaperSourceRecord", "QueryIntent", "QuerySchema", "QuerySubquery", "SearchResult", "SearchRunState", "SemanticRankingResult", "SourceRoutePlan", "SupplementalDiscoveryItem"]  # 限制包级导出的公共模型。

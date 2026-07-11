@@ -90,6 +90,7 @@ class PaperRecord(Paper):
         work_family_id：预印本、会议版与期刊版的版本族标识。
         rrf_score：基于各来源原始排名计算的融合分数。
         semantic_score：BGE-M3 密集向量计算的查询相关性分数。
+        cross_encoder_score：Cross Encoder 计算的查询-论文精细相关性分数。
         text_hash：用于判断摘要或标题变化的文本哈希。
         embedding_model_version：生成向量时使用的模型版本。
         updated_at：规范化记录最近更新时间。
@@ -106,6 +107,7 @@ class PaperRecord(Paper):
     work_family_id: str | None = None  # 关联预印本、会议版与期刊版的版本族。
     rrf_score: float = Field(default=0.0, ge=0.0)  # 保存融合阶段计算的非负 Reciprocal Rank Fusion 分数。
     semantic_score: float | None = None  # 保存语义粗排阶段的可选相关性分数，模型降级时保持空值。
+    cross_encoder_score: float | None = None  # 保存 Cross Encoder 重排阶段的可选精细相关性分数，模型降级时保持空值。
     text_hash: str | None = None  # 保存向量更新判断使用的标题摘要哈希。
     embedding_model_version: str | None = None  # 保存当前向量对应的模型版本。
     updated_at: datetime | None = None  # 保存规范化记录的最近更新时间。

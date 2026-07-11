@@ -11,6 +11,7 @@ from backend.app.models.paper import PaperRecord  # 保存进入后续规范化�
 from backend.app.models.query_intent import QueryIntent  # 接收已完成查询规划的统一意图。
 from backend.app.services.multi_source_filtering import MultiSourcePaperFilter  # 在语义排序前应用多源确定性规则过滤。
 from backend.app.services.paper_fusion import PaperFusionService  # 在协调器边界执行跨来源身份融合与 RRF 计算。
+from backend.app.services.cross_encoder_ranking import CrossEncoderReranker  # 在 BGE-M3 粗排后执行 Cross Encoder 精细重排。
 from backend.app.services.semantic_ranking import SemanticRanker  # 在规则过滤后执行 BGE-M3 粗排和候选截断。
 from backend.app.services.source_router import SourceRouter  # 使用确定性来源路由规则生成执行计划。
 
@@ -25,6 +26,7 @@ class MultiSourceRecallCoordinator:
         paper_fusion_service：可替换的跨来源身份融合和 RRF 服务。
         paper_filter：可替换的融合论文确定性规则过滤服务。
         semantic_ranker：可替换的 BGE-M3 语义粗排服务。
+        cross_encoder_reranker：可替换的 Cross Encoder 精细重排服务。
     """
 
     def __init__(
@@ -35,6 +37,7 @@ class MultiSourceRecallCoordinator:
         paper_fusion_service: PaperFusionService | None = None,
         paper_filter: MultiSourcePaperFilter | None = None,
         semantic_ranker: SemanticRanker | None = None,
+        cross_encoder_reranker: CrossEncoderReranker | None = None,
     ) -> None:
         """保存路由器和只读适配器注册表，避免协调器绑定具体供应商实现。"""
         self._source_router = source_router  # 保存可测试的来源路由策略。
@@ -43,6 +46,7 @@ class MultiSourceRecallCoordinator:
         self._paper_fusion_service = paper_fusion_service or PaperFusionService()  # 默认使用统一融合策略并允许测试替换。
         self._paper_filter = paper_filter or MultiSourcePaperFilter()  # 默认在排序前应用 QueryIntent 硬约束过滤。
         self._semantic_ranker = semantic_ranker or SemanticRanker()  # 默认在规则过滤后执行可降级的 BGE-M3 粗排。
+        self._cross_encoder_reranker = cross_encoder_reranker or CrossEncoderReranker()  # 默认在 BGE-M3 后执行可降级的精细重排。
 
     async def recall(self, query: QueryIntent) -> MultiSourceRecallResult:
         """按路由计划并发召回学术论文和补充网页发现项。
@@ -82,10 +86,11 @@ class MultiSourceRecallCoordinator:
         fusion_result = self._paper_fusion_service.fuse(recalled_papers)  # 在 API 边界前统一执行身份解析、字段融合、版本族与 RRF。
         filter_result = self._paper_filter.filter(fusion_result.papers, query)  # 在进入语义排序前应用可解释的确定性规则过滤。
         ranking_result = self._semantic_ranker.rank(filter_result.papers, query)  # 按 BGE-M3 语义相关性重排并截断后续候选。
-        logger.info("多源召回完成：原始论文=%d，融合论文=%d，过滤=%d，语义截断=%d，最终候选=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, filter_result.filtered_count, ranking_result.truncated_count, len(ranking_result.papers), len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。
+        cross_encoder_result = self._cross_encoder_reranker.rerank(ranking_result.papers, query)  # 按 Cross Encoder 精细相关性重排并截断 LLM 候选。
+        logger.info("多源召回完成：原始论文=%d，融合论文=%d，过滤=%d，语义截断=%d，交叉编码截断=%d，最终候选=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, filter_result.filtered_count, ranking_result.truncated_count, cross_encoder_result.truncated_count, len(cross_encoder_result.papers), len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。
         return MultiSourceRecallResult(  # 构造供后续规范化、去重与运行状态更新使用的结果。
             route_plan=route_plan,  # 保留本轮真实执行的来源选择计划。
-            papers=ranking_result.papers,  # 返回已融合、过滤、语义粗排并截断后的论文记录。
+            papers=cross_encoder_result.papers,  # 返回已融合、过滤、语义粗排和 Cross Encoder 重排后的论文记录。
             discoveries=discoveries,  # 返回不可合并的补充网页发现项。
             source_counts=source_counts,  # 返回每个已选来源的成功结果数。
             source_errors=source_errors,  # 返回来源级安全降级错误摘要。
@@ -95,6 +100,8 @@ class MultiSourceRecallCoordinator:
             filter_reason_counts=filter_result.filter_reason_counts,  # 返回按首个失败规则汇总的过滤统计。
             semantic_truncated_count=ranking_result.truncated_count,  # 返回 BGE-M3 粗排候选截断数量。
             semantic_ranking_error=ranking_result.ranking_error,  # 返回语义模型不可用时的安全降级摘要。
+            cross_encoder_truncated_count=cross_encoder_result.truncated_count,  # 返回 Cross Encoder 重排候选截断数量。
+            cross_encoder_ranking_error=cross_encoder_result.ranking_error,  # 返回 Cross Encoder 模型不可用时的安全降级摘要。
             work_family_count=filter_result.work_family_count,  # 返回最终候选中可识别版本族的唯一数量。
         )
 
