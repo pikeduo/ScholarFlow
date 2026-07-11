@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     semantic_scholar_enabled: bool = False  # 必须由用户在密钥获批后显式启用，默认不进入动态路由。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。
     semantic_scholar_requests_per_second: float = Field(default=1.0, gt=0, le=10)  # 配置来源级请求起始频率上限。
+    semantic_scholar_max_retries: int = Field(default=2, ge=0, le=5)  # 仅对来源限流执行有限重试，避免无限等待。
     deepseek_api_base_url: str = Field(default="https://api.deepseek.com", pattern=r"^https://")  # 限制 DeepSeek 使用官方或兼容的 HTTPS 端点。
     deepseek_api_key: SecretStr | None = None  # 保存不可写入日志或 API 响应的 DeepSeek 密钥。
     deepseek_model: str = Field(default="deepseek-v4-flash", min_length=1)  # 默认使用规划指定的低成本 Flash 模型。

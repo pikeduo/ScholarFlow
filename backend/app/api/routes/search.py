@@ -1,5 +1,6 @@
 """提供 OpenAlex 单数据源检索的版本化 HTTP 接口。"""
 
+from functools import lru_cache  # 在服务进程内复用昂贵的本地模型和来源限流状态。
 from typing import Annotated  # 为 FastAPI 依赖注入声明清晰的参数类型。
 
 from fastapi import APIRouter, Depends, HTTPException, status  # 声明路由、依赖和稳定 HTTP 错误。
@@ -31,11 +32,12 @@ def get_openalex_search_service() -> OpenAlexSearchService:
     return OpenAlexSearchService(OpenAlexClient())  # 将 HTTP、鉴权和响应解析保持在适配层内。
 
 
+@lru_cache(maxsize=1)
 def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
-    """构造生产环境使用的多源召回、融合和网页补充协调器。
+    """构造并在当前进程复用多源召回、融合、排序和网页补充协调器。
 
     返回：
-        MultiSourceRecallCoordinator：使用真实适配器但按路由规则按需调用来源的协调器。
+        MultiSourceRecallCoordinator：复用真实适配器、限流状态及本地模型实例的协调器。
     """
     return MultiSourceRecallCoordinator(  # 将适配器装配集中在 API 依赖层，避免服务层绑定具体供应商。
         source_router=SourceRouter(),  # 使用集中配置驱动的确定性来源选择规则。

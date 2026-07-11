@@ -1,7 +1,10 @@
 """封装 BGE Cross Encoder 的懒加载与查询-论文成对打分边界。"""
 
 from collections.abc import Sequence  # 声明重排器接受的稳定文档文本序列类型。
+from time import perf_counter  # 记录本地重排模型首次加载耗时。
 from typing import Protocol  # 声明可由单元测试替换的重排器协议。
+
+from backend.app.core.logging import logger  # 记录模型开始加载、完成和失败堆栈。
 
 
 class CrossEncoderError(RuntimeError):
@@ -43,9 +46,13 @@ class BgeCrossEncoder:
         """首次需要时加载 FlagEmbedding reranker，并映射依赖或模型错误。"""
         if self._model is not None:  # 已加载模型在同一服务实例内可复用。
             return self._model  # 避免重复下载、初始化和显存占用。
+        started_at = perf_counter()  # 从依赖导入前开始统计下载或缓存加载耗时。
+        logger.info("Cross Encoder 模型开始加载：模型=%s", self._model_name)  # 为首次下载和磁盘加载提供明确阶段标记。
         try:  # 延迟导入避免离线测试因为可选模型依赖而失败。
             from FlagEmbedding import FlagReranker  # 使用官方 FlagEmbedding Cross Encoder 接口。
             self._model = FlagReranker(self._model_name, use_fp16=self._use_fp16)  # 在首次真实重排时加载缓存或下载模型。
         except Exception as error:  # 不向上层暴露模型地址、缓存路径或设备异常。
+            logger.exception("Cross Encoder 模型加载失败：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 在受控日志保留下载或设备错误堆栈。
             raise CrossEncoderError("Cross Encoder 重排模型不可用") from error  # 提供可降级的稳定业务错误。
+        logger.info("Cross Encoder 模型加载完成：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 记录首次加载完成时间。
         return self._model  # 返回完成初始化的 Cross Encoder 模型。

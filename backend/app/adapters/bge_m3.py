@@ -1,7 +1,10 @@
 """封装 BGE-M3 的懒加载、向量编码与余弦相似度计算边界。"""
 
 from collections.abc import Sequence  # 声明模型适配器接受的稳定文本序列类型。
+from time import perf_counter  # 记录本地模型首次加载耗时。
 from typing import Protocol  # 声明可由测试替换的语义编码器协议。
+
+from backend.app.core.logging import logger  # 记录模型开始加载、完成和失败堆栈。
 
 
 class BgeM3EncoderError(RuntimeError):
@@ -38,9 +41,13 @@ class BgeM3Encoder:
         """首次需要时加载 BGE-M3，并将依赖或模型错误映射为安全异常。"""
         if self._model is not None:  # 已加载模型可被同一服务实例复用。
             return self._model  # 避免重复下载、初始化和占用显存。
+        started_at = perf_counter()  # 从依赖导入前开始统计下载或缓存加载耗时。
+        logger.info("BGE-M3 模型开始加载：模型=%s", self._model_name)  # 首次下载期间即使长时间无输出也能定位当前阶段。
         try:  # 将可选依赖导入延后到真正执行模型推理的时刻。
             from FlagEmbedding import BGEM3FlagModel  # 使用官方 BGE-M3 dense 编码实现。
             self._model = BGEM3FlagModel(self._model_name, use_fp16=self._use_fp16)  # 首次调用时按配置加载本地或缓存模型。
         except Exception as error:  # 统一隐藏依赖路径、下载地址和底层运行时细节。
+            logger.exception("BGE-M3 模型加载失败：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 在受控日志中保留下载或设备错误堆栈。
             raise BgeM3EncoderError("BGE-M3 语义模型不可用") from error  # 向业务层提供稳定安全的降级边界。
+        logger.info("BGE-M3 模型加载完成：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 记录缓存或下载完成时间。
         return self._model  # 返回完成初始化的模型对象。

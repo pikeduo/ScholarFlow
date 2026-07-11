@@ -3,6 +3,7 @@
 import asyncio  # 在同步 pytest 用例中运行异步来源适配器。
 import json  # 加载本地 Semantic Scholar JSON fixture。
 from pathlib import Path  # 定位测试 fixture 文件。
+from unittest.mock import AsyncMock, patch  # 跳过限流重试的真实等待并验证异步调用。
 
 import httpx  # 使用 MockTransport 拦截 HTTP 请求。
 import pytest  # 提供异常断言工具。
@@ -38,7 +39,7 @@ def _build_query_intent() -> QueryIntent:
 
 def _build_test_settings(api_key: str | None = "test-api-key") -> Settings:
     """构造不读取真实 .env 的 Semantic Scholar 测试配置。"""
-    return Settings(_env_file=None, semantic_scholar_api_key=api_key)  # 注入无实际权限的测试密钥或匿名访问配置。
+    return Settings(_env_file=None, semantic_scholar_api_key=api_key, semantic_scholar_max_retries=0)  # 注入测试密钥并默认关闭等待重试。
 
 
 def test_client_implements_unified_adapter_and_maps_search_response() -> None:
@@ -91,3 +92,44 @@ def test_client_hides_http_error_details() -> None:
     )
     with pytest.raises(SemanticScholarClientError, match="HTTP 429"):  # 断言调用方仅收到已净化状态错误。
         asyncio.run(client.search(_build_query_intent()))  # 执行并触发来源错误边界。
+
+
+@pytest.mark.parametrize(  # 覆盖供应商可能以 HTTP 200 返回的常见错误信封。
+    ("payload", "expected_category"),
+    [
+        ({"message": "Too many requests; status code 429"}, "请求受限"),  # 模拟限流错误信封。
+        ({"error": "Invalid API key"}, "认证失败"),  # 模拟无效认证错误信封。
+        ({"detail": "Invalid fields parameter"}, "请求参数被拒绝"),  # 模拟字段参数拒绝错误信封。
+        ({"message": "Internal server error 503"}, "供应商暂时不可用"),  # 模拟供应商暂时故障。
+        ({"unexpected": True}, "响应结构无效"),  # 模拟未知结构响应。
+    ],
+)
+def test_client_classifies_success_status_error_envelope(payload: dict[str, object], expected_category: str) -> None:
+    """HTTP 200 但缺少 data 时客户端应给出安全错误分类而不返回原始正文。"""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload, request=request))  # 返回完全离线的供应商错误信封。
+    client = SemanticScholarClient(settings_override=_build_test_settings(), transport=transport)  # 使用隔离配置构造来源客户端。
+
+    with pytest.raises(SemanticScholarClientError, match=expected_category):  # 验证调用方获得稳定分类。
+        asyncio.run(client.search(_build_query_intent()))  # 执行并触发非标准响应分类。
+
+
+def test_client_retries_success_status_rate_limit_envelope() -> None:
+    """供应商以 HTTP 200 返回限流信封时客户端应等待并在预算内重试。"""
+    fixture = _load_semantic_scholar_paper_fixture()  # 读取重试成功时返回的本地论文样例。
+    request_count = 0  # 统计 MockTransport 收到的调用次数。
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """首次返回限流信封，第二次返回正常 data。"""
+        nonlocal request_count  # 更新当前用例的调用计数。
+        request_count += 1  # 记录本次来源请求。
+        payload = {"message": "Too many requests 429"} if request_count == 1 else {"data": [fixture]}  # 按次数切换响应。
+        return httpx.Response(200, json=payload, request=request)  # 保持完全离线的成功状态响应。
+
+    settings = Settings(_env_file=None, semantic_scholar_api_key="test-api-key", semantic_scholar_max_retries=1)  # 允许一次限流重试。
+    client = SemanticScholarClient(settings_override=settings, transport=httpx.MockTransport(handler))  # 注入离线来源响应。
+    with patch("backend.app.adapters.semantic_scholar.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 跳过真实一秒等待。
+        papers = asyncio.run(client.search(_build_query_intent()))  # 执行限流后成功路径。
+
+    assert request_count == 2  # 验证只发起首次调用和一次重试。
+    assert [paper.paper_id for paper in papers] == ["S2-paper-123"]  # 验证重试成功结果正常映射。
+    sleep_mock.assert_awaited_once_with(1.0)  # 验证遵守至少一秒的来源重试间隔。

@@ -89,30 +89,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
         await self._wait_for_rate_limit()  # 在请求前遵守配置化的来源级最小间隔。
         params = build_semantic_scholar_search_params(query)  # 构造不含密钥的可测试请求参数。
         headers = self._build_headers()  # 仅在配置了密钥时构造认证请求头。
-        try:  # 将 HTTP 层异常转换为不泄露响应正文和请求头的领域错误。
-            async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
-                base_url=self._settings.semantic_scholar_api_base_url,  # 使用集中配置的 Graph API 地址。
-                timeout=self._settings.semantic_scholar_timeout_seconds,  # 使用集中配置的请求超时。
-                transport=self._transport,  # 在测试时使用本地 MockTransport。
-            ) as client:
-                response = await client.get("/paper/search", params=params, headers=headers)  # 请求官方单页论文搜索端点。
-                response.raise_for_status()  # 将非成功 HTTP 状态转换为可统一处理的异常。
-                payload = response.json()  # 解码 JSON 响应供结构校验和映射使用。
-        except httpx.HTTPStatusError as error:  # 单独记录不含认证头和响应正文的状态码。
-            logger.error("Semantic Scholar 请求失败，状态码=%d", error.response.status_code)  # 输出安全且可观测的来源错误。
-            raise SemanticScholarClientError(f"Semantic Scholar 请求失败（HTTP {error.response.status_code}）") from None  # 隐藏可能含敏感信息的底层上下文。
-        except httpx.RequestError as error:  # 捕获连接、超时和传输失败。
-            logger.error("Semantic Scholar 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
-            raise SemanticScholarClientError("Semantic Scholar 网络请求失败") from None  # 返回稳定的领域错误。
-        except ValueError:  # 捕获无效 JSON 等解析失败。
-            logger.error("Semantic Scholar 响应不是有效 JSON")  # 不记录原始响应正文。
-            raise SemanticScholarClientError("Semantic Scholar 响应格式无效") from None  # 返回不泄露内部细节的错误。
-
-        response_data = _as_mapping(payload)  # 确认根 JSON 响应具有对象结构。
-        data = response_data.get("data") if response_data else None  # 读取官方搜索响应中的论文数组。
-        if not isinstance(data, list):  # 缺少论文数组表示响应结构不符合端点契约。
-            logger.error("Semantic Scholar 响应缺少 data 数组")  # 记录可定位的结构异常。
-            raise SemanticScholarClientError("Semantic Scholar 响应缺少 data 数组")  # 阻止错误数据进入融合流程。
+        data = await self._request_search_data(params, headers)  # 执行带有限流重试和安全错误分类的来源请求。
 
         papers: list[PaperRecord] = []  # 保存成功映射的统一多源论文记录。
         skipped_count = 0  # 统计字段不完整而无法映射的单条结果数量。
@@ -128,6 +105,60 @@ class SemanticScholarClient(AcademicSearchAdapter):
 
         logger.info("Semantic Scholar 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(data), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
         return papers  # 返回可直接进入多源融合的统一论文记录。
+
+    async def _request_search_data(self, params: dict[str, str | int], headers: dict[str, str]) -> list[object]:
+        """请求论文数组，并仅对明确限流响应执行配置化短重试。
+
+        参数：
+            params：不含密钥的 Semantic Scholar 搜索参数。
+            headers：仅可能包含 x-api-key 的认证请求头。
+        返回：
+            list[object]：官方 data 论文数组。
+        异常：
+            SemanticScholarClientError：网络、非限流状态、认证、参数或响应结构异常。
+        """
+        max_attempts = self._settings.semantic_scholar_max_retries + 1  # 将重试次数转换为包含首次调用的总尝试数。
+        async with httpx.AsyncClient(  # 在全部尝试间复用连接池并在结束时自动关闭。
+            base_url=self._settings.semantic_scholar_api_base_url,  # 使用集中配置的 Graph API 地址。
+            timeout=self._settings.semantic_scholar_timeout_seconds,  # 使用集中配置的请求超时。
+            transport=self._transport,  # 在测试时使用本地 MockTransport。
+        ) as client:
+            for attempt in range(1, max_attempts + 1):  # 按首次调用和有限重试顺序执行。
+                try:  # 将 HTTP 层异常转换为不泄露正文和请求头的领域错误。
+                    response = await client.get("/paper/search", params=params, headers=headers)  # 请求官方单页论文搜索端点。
+                    response.raise_for_status()  # 将非成功 HTTP 状态转换为可分类异常。
+                    payload = response.json()  # 解码 JSON 响应供结构校验和映射使用。
+                except httpx.HTTPStatusError as error:  # 单独处理状态码并允许 429 重试。
+                    status_code = error.response.status_code  # 提取不含认证信息的状态码。
+                    if status_code == 429 and attempt < max_attempts:  # 仅在仍有预算时重试明确限流。
+                        await self._wait_before_retry(attempt, max_attempts)  # 按来源 RPS 等待后继续。
+                        continue  # 发起下一次有限尝试。
+                    logger.error("Semantic Scholar 请求失败，状态码=%d，尝试=%d/%d", status_code, attempt, max_attempts)  # 记录状态与尝试次数。
+                    raise SemanticScholarClientError(f"Semantic Scholar 请求失败（HTTP {status_code}）") from None  # 隐藏底层请求上下文。
+                except httpx.RequestError as error:  # 网络和超时错误不自动重试，避免放大外部故障。
+                    logger.error("Semantic Scholar 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全异常类型。
+                    raise SemanticScholarClientError("Semantic Scholar 网络请求失败") from None  # 返回稳定领域错误。
+                except ValueError:  # 捕获无效 JSON 等解析失败。
+                    logger.error("Semantic Scholar 响应不是有效 JSON")  # 不记录原始响应正文。
+                    raise SemanticScholarClientError("Semantic Scholar 响应格式无效") from None  # 返回不泄露内部细节的错误。
+                response_data = _as_mapping(payload)  # 确认根 JSON 响应具有对象结构。
+                data = response_data.get("data") if response_data else None  # 读取官方搜索响应中的论文数组。
+                if isinstance(data, list):  # 正常响应立即结束重试循环。
+                    return data  # 返回官方论文数组供单条映射。
+                error_category = _classify_error_envelope(response_data)  # 将非标准成功状态响应归类为安全错误摘要。
+                if error_category == "请求受限" and attempt < max_attempts:  # 兼容供应商以 HTTP 200 返回的限流信封。
+                    await self._wait_before_retry(attempt, max_attempts)  # 等待来源级间隔后继续。
+                    continue  # 发起下一次有限尝试。
+                response_fields = ",".join(sorted(response_data.keys())) if response_data else "none"  # 仅记录字段名而不记录值。
+                logger.error("Semantic Scholar 响应不可用：错误类型=%s，响应字段=%s，尝试=%d/%d", error_category, response_fields, attempt, max_attempts)  # 记录安全分类和最终尝试数。
+                raise SemanticScholarClientError(f"Semantic Scholar {error_category}")  # 将来源错误安全传递给协调器。
+        raise SemanticScholarClientError("Semantic Scholar 请求受限")  # 防御循环异常退出，正常路径不会到达此处。
+
+    async def _wait_before_retry(self, attempt: int, max_attempts: int) -> None:
+        """按已配置来源速率等待下一次限流重试。"""
+        wait_seconds = max(1.0, 1.0 / self._settings.semantic_scholar_requests_per_second)  # 至少等待一秒并遵守更低 RPS。
+        logger.warning("Semantic Scholar 请求受限，等待重试：秒数=%.3f，下一次=%d/%d", wait_seconds, attempt + 1, max_attempts)  # 记录可观测重试进度。
+        await asyncio.sleep(wait_seconds)  # 让出事件循环且不阻塞其他来源任务。
 
     def _build_headers(self) -> dict[str, str]:
         """构造可选 API Key 请求头，未配置密钥时保持匿名访问。
@@ -160,6 +191,29 @@ def _as_mapping(value: object) -> Mapping[str, object] | None:
         Mapping[str, object] | None：可用对象或空值。
     """
     return value if isinstance(value, Mapping) else None  # 拒绝列表、字符串和空值等非对象字段。
+
+
+def _classify_error_envelope(response_data: Mapping[str, object] | None) -> str:
+    """根据供应商错误信封中的公开提示归类原因，但不返回或记录原始正文。
+
+    参数：
+        response_data：HTTP 成功状态下缺少 data 的顶层 JSON 对象。
+    返回：
+        str：认证失败、请求受限、请求参数被拒绝、供应商暂时不可用或响应结构无效。
+    """
+    if response_data is None:  # 非对象响应无法进一步判断供应商错误。
+        return "响应结构无效"  # 返回稳定结构分类。
+    candidate_values = [response_data.get(field_name) for field_name in ("message", "error", "detail")]  # 只检查常见公开错误字段。
+    message_text = " ".join(value for value in candidate_values if isinstance(value, str)).casefold()  # 合并用于本地关键词分类但不写入日志。
+    if any(marker in message_text for marker in ("429", "rate limit", "too many", "throttl")):  # 识别限流和共享匿名额度提示。
+        return "请求受限"  # 指示调用方稍后重试而非修改查询。
+    if any(marker in message_text for marker in ("401", "403", "api key", "unauthor", "forbidden", "authenticat")):  # 识别无效密钥或权限不足。
+        return "认证失败"  # 指示部署方检查 API Key。
+    if any(marker in message_text for marker in ("400", "field", "parameter", "query", "invalid", "bad request")):  # 识别字段和查询参数拒绝。
+        return "请求参数被拒绝"  # 指示适配器契约可能需要调整。
+    if any(marker in message_text for marker in ("500", "502", "503", "504", "internal", "unavailable", "timeout")):  # 识别供应商服务故障。
+        return "供应商暂时不可用"  # 指示安全降级并稍后重试。
+    return "响应结构无效"  # 未知信封不猜测具体原因。
 
 
 def _optional_text(value: object) -> str | None:

@@ -91,3 +91,14 @@ def test_multi_source_search_endpoint_hides_unexpected_coordinator_error(api_cli
     assert response.status_code == 503  # 验证未预期错误被转换为服务不可用响应。
     assert response.json()["detail"] == "多源论文检索服务暂时不可用，请稍后重试"  # 验证不会泄露适配器或内部堆栈信息。
     log_exception.assert_called_once_with("多源检索接口调用失败")  # 验证完整堆栈仍写入受控日志。
+
+
+def test_production_coordinator_is_reused_within_process() -> None:
+    """生产依赖应在同一进程复用协调器，避免每次请求重新加载本地模型。"""
+    get_multi_source_recall_coordinator.cache_clear()  # 清除其他用例或导入过程可能留下的缓存实例。
+    try:  # 确保测试结束不保留生产依赖对象。
+        first_coordinator = get_multi_source_recall_coordinator()  # 首次构造全部懒加载适配器和排序服务。
+        second_coordinator = get_multi_source_recall_coordinator()  # 再次获取应直接命中进程缓存。
+        assert first_coordinator is second_coordinator  # 验证模型容器和来源限流状态不会按请求重建。
+    finally:  # 清理缓存避免影响后续测试替身。
+        get_multi_source_recall_coordinator.cache_clear()  # 释放当前测试创建的生产协调器引用。
