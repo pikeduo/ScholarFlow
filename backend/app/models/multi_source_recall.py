@@ -12,14 +12,20 @@ class MultiSourceRecallResult(BaseModel):
 
     属性：
         route_plan：本次执行前生成的来源选择计划。
-        papers：尚未跨源去重的统一论文记录。
+        papers：完成跨来源身份融合后的统一论文记录。
         discoveries：不能合并为论文的补充网页发现项。
         source_counts：每个已选来源成功返回的条目数量。
         source_errors：来源调用失败或未注册时的安全错误摘要。
+        raw_paper_count：各学术来源返回并进入融合前的原始论文数量。
+        merged_paper_count：被合并到其他身份组的重复来源记录数量。
+        work_family_count：融合结果中可识别版本族的唯一数量。
     """
 
     route_plan: SourceRoutePlan  # 保留实际执行的来源选择与预先降级说明。
-    papers: list[PaperRecord] = Field(default_factory=list)  # 保存按路由来源顺序拼接的未去重论文记录。
+    papers: list[PaperRecord] = Field(default_factory=list)  # 保存按首次身份组顺序排列的融合论文记录。
     discoveries: list[SupplementalDiscoveryItem] = Field(default_factory=list)  # 保存独立于论文集合的网页发现结果。
     source_counts: dict[str, int] = Field(default_factory=dict)  # 保存每个来源的成功结果数。
     source_errors: dict[str, str] = Field(default_factory=dict)  # 保存不含密钥、路径和响应正文的来源错误摘要。
+    raw_paper_count: int = Field(default=0, ge=0)  # 保存跨来源融合前的原始学术论文数量。
+    merged_paper_count: int = Field(default=0, ge=0)  # 保存因身份融合而被合并的重复来源记录数量。
+    work_family_count: int = Field(default=0, ge=0)  # 保存融合论文中唯一版本族标识的数量。

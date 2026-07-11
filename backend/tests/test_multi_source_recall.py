@@ -4,7 +4,7 @@ import asyncio  # 在同步 pytest 用例中运行异步协调器。
 
 from backend.app.core.config import Settings  # 构造不读取真实 .env 的隔离路由配置。
 from backend.app.models.discovery import SupplementalDiscoveryItem  # 构造不可合并网页发现测试结果。
-from backend.app.models.paper import PaperRecord  # 构造统一论文测试记录。
+from backend.app.models.paper import PaperRecord, PaperSourceRecord  # 构造统一论文测试记录和来源溯源。
 from backend.app.models.query_intent import QueryIntent  # 构造协调器所需查询意图。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 导入待测多源召回协调服务。
 from backend.app.services.source_router import SourceRouter  # 使用实际确定性路由器生成执行计划。
@@ -90,6 +90,8 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     assert result.discoveries[0].mergeable_as_paper is False  # 验证补充网页项仍保持不可合并边界。
     assert result.source_counts == {"openalex": 1, "arxiv": 1, "dblp": 1, "semantic_scholar": 1, "tavily": 1}  # 验证来源级成功数量完整可观测。
     assert result.source_errors == {}  # 验证全部替身成功时不存在降级错误。
+    assert result.raw_paper_count == 4  # 验证来源数量统计与融合前原始论文数量分离保存。
+    assert result.merged_paper_count == 0  # 验证不同论文不会被错误合并。
 
 
 def test_coordinator_degrades_single_academic_source_without_discarding_other_results() -> None:
@@ -110,6 +112,7 @@ def test_coordinator_degrades_single_academic_source_without_discarding_other_re
     assert [paper.source for paper in result.papers] == ["openalex"]  # 验证失败来源不会丢弃主源已返回论文。
     assert result.source_counts == {"openalex": 1, "semantic_scholar": 0}  # 验证失败来源仍记录零结果统计。
     assert result.source_errors == {"semantic_scholar": "学术来源调用失败"}  # 验证调用方仅收到不含内部细节的降级摘要。
+    assert result.raw_paper_count == 1  # 验证失败来源不会虚构进入融合阶段的论文。
 
 
 def test_coordinator_reports_unregistered_selected_source_without_raising() -> None:
@@ -121,3 +124,40 @@ def test_coordinator_reports_unregistered_selected_source_without_raising() -> N
     result = asyncio.run(coordinator.recall(_build_query_intent()))  # 执行并触发未注册来源降级。
     assert result.papers == []  # 验证没有适配器时不会虚构论文结果。
     assert result.source_errors == {"openalex": "学术来源适配器未注册"}  # 验证返回稳定配置错误摘要。
+
+
+def test_coordinator_fuses_cross_source_duplicate_before_returning_result() -> None:
+    """协调器应在返回 API 边界前融合 DOI 重复论文，并保留来源级原始数量统计。"""
+    openalex_paper = PaperRecord(  # 构造 OpenAlex 返回的 DOI 论文。
+        paper_id="https://openalex.org/W-duplicate",  # 提供 OpenAlex 稳定标识。
+        title="Duplicate Paper",  # 提供同一论文标题。
+        source="openalex",  # 标记主来源。
+        doi="10.1000/duplicate",  # 提供跨来源 DOI。
+        source_records=[PaperSourceRecord(source="openalex", external_id="https://openalex.org/W-duplicate", raw_rank=1)],  # 提供 RRF 所需来源排名。
+    )
+    semantic_paper = PaperRecord(  # 构造 Semantic Scholar 返回的同 DOI 论文。
+        paper_id="S2-duplicate",  # 提供 Semantic Scholar 稳定标识。
+        title="Duplicate Paper",  # 提供同一论文标题。
+        source="semantic_scholar",  # 标记补充来源。
+        doi="https://doi.org/10.1000/DUPLICATE",  # 使用不同 DOI 展示形式验证规范化融合。
+        source_records=[PaperSourceRecord(source="semantic_scholar", external_id="S2-duplicate", raw_rank=2)],  # 提供第二来源的 RRF 排名。
+    )
+    settings = Settings(  # 构造允许核心双源进入路由的隔离配置。
+        _env_file=None,  # 禁止读取本地真实配置。
+        semantic_scholar_api_key="test-semantic-key",  # 注入仅用于路由的测试密钥。
+        semantic_scholar_enabled=True,  # 显式启用核心补充来源。
+    )
+    coordinator = MultiSourceRecallCoordinator(  # 使用离线学术来源替身构造协调器。
+        source_router=SourceRouter(settings),  # 使用实际核心双源路由规则。
+        academic_adapters={  # 注册两个会被当前路由选择的离线来源。
+            "openalex": _StubAcademicAdapter("openalex", [openalex_paper]),  # 返回首条来源论文。
+            "semantic_scholar": _StubAcademicAdapter("semantic_scholar", [semantic_paper]),  # 返回相同 DOI 的补充来源论文。
+        },
+    )
+
+    result = asyncio.run(coordinator.recall(_build_query_intent()))  # 执行不访问网络的召回和融合流程。
+
+    assert result.raw_paper_count == 2  # 验证记录融合前的两个来源原始响应。
+    assert len(result.papers) == 1  # 验证重复论文不会透传到多源结果。
+    assert result.merged_paper_count == 1  # 验证返回合并掉的一条重复来源记录。
+    assert [source_record.source for source_record in result.papers[0].source_records] == ["openalex", "semantic_scholar"]  # 验证融合结果保留完整来源溯源。
