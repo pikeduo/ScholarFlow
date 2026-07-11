@@ -3,7 +3,7 @@
 from functools import lru_cache  # 缓存配置实例避免重复解析环境变量。
 from pathlib import Path  # 使用跨平台路径表示日志目录。
 
-from pydantic import Field  # 声明配置字段默认值与说明。
+from pydantic import Field, SecretStr, field_validator  # 声明配置字段、敏感值与字段校验。
 from pydantic_settings import BaseSettings, SettingsConfigDict  # 支持环境变量配置模型。
 
 
@@ -26,6 +26,35 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./data/scholarflow.db")  # 指定开发期 SQLite 地址。
     log_dir: Path = Field(default=Path("logs"))  # 指定可被 Git 忽略的日志目录。
     log_level: str = Field(default="INFO")  # 支持部署时调整日志详细程度。
+    openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
+    openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
+    openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。
+
+    @field_validator("openalex_api_key", mode="before")
+    @classmethod
+    def normalize_openalex_api_key(cls, value: object) -> object:
+        """将空白 API 密钥统一视为未配置。
+
+        参数：
+            value：环境变量或构造参数提供的原始密钥值。
+        返回：
+            object：规范化后的密钥值或空值。
+        """
+        if isinstance(value, str) and not value.strip():  # 避免将空字符串误认为有效密钥。
+            return None  # 让缺失密钥在实际调用前得到明确提示。
+        return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
+
+    def require_openalex_api_key(self) -> str:
+        """返回已配置的 OpenAlex API 密钥。
+
+        返回：
+            str：仅供 HTTP 适配器请求头或参数使用的密钥文本。
+        异常：
+            ValueError：尚未配置密钥时抛出，避免发出必然失败的请求。
+        """
+        if self.openalex_api_key is None:  # 在网络请求前提前发现缺失配置。
+            raise ValueError("未配置 SCHOLARFLOW_OPENALEX_API_KEY")  # 提供不泄露敏感值的明确错误。
+        return self.openalex_api_key.get_secret_value()  # 仅在调用方真正需要时解封装密钥。
 
 
 @lru_cache
