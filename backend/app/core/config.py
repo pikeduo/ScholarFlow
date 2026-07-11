@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     arxiv_api_base_url: str = Field(default="https://export.arxiv.org/api", pattern=r"^https://")  # 限制 arXiv 使用 HTTPS API 地址。
     arxiv_timeout_seconds: float = Field(default=15.0, gt=0, le=120)  # 为 Atom XML 响应保留略长的单次请求超时。
     arxiv_requests_per_second: float = Field(default=1 / 3, gt=0, le=1)  # 默认遵守官方建议的连续请求至少间隔三秒。
+    dblp_api_base_url: str = Field(default="https://dblp.org/search/publ", pattern=r"^https://")  # 限制 DBLP 使用 HTTPS 出版物搜索地址。
+    dblp_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 DBLP 单次请求等待时间。
+    dblp_requests_per_second: float = Field(default=1.0, gt=0, le=5)  # 设置保守的 DBLP 来源级请求频率上限。
     semantic_scholar_api_base_url: str = Field(default="https://api.semanticscholar.org/graph/v1", pattern=r"^https://")  # 限制 Semantic Scholar 使用 HTTPS Graph API 地址。
     semantic_scholar_api_key: SecretStr | None = None  # 保存可选且不可写入日志的 Semantic Scholar API 密钥。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。

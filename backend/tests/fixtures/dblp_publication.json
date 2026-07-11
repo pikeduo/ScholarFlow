@@ -1,0 +1,25 @@
+{
+  "result": {
+    "hits": {
+      "@total": "1",
+      "@first": "0",
+      "hit": {
+        "@score": "2",
+        "info": {
+          "key": "conf/aaai/Lovelace25",
+          "title": "Transformer &amp; Forecasting: A &lt;sup&gt;DBLP&lt;/sup&gt; Example",
+          "authors": {
+            "author": [
+              "Ada Lovelace",
+              "Grace Hopper"
+            ]
+          },
+          "venue": "AAAI",
+          "year": "2025",
+          "type": "Conference and Workshop Papers",
+          "doi": "10.1000/dblp-example"
+        }
+      }
+    }
+  }
+}

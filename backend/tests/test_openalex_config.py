@@ -42,6 +42,24 @@ def test_settings_rejects_excessive_arxiv_rps() -> None:
         Settings(_env_file=None, arxiv_requests_per_second=2)  # 构造超过来源保护阈值的无效频率。
 
 
+def test_settings_preserves_dblp_connection_configuration() -> None:
+    """DBLP 无密钥配置应保留 HTTPS 地址、超时和来源级频率。"""
+    settings = Settings(  # 构造不读取用户本地 .env 的 DBLP 隔离配置。
+        _env_file=None,  # 禁止测试读取用户本地配置值。
+        dblp_timeout_seconds=20,  # 提供有效的自定义超时。
+        dblp_requests_per_second=1,  # 提供保守的每秒一次来源频率。
+    )
+    assert settings.dblp_api_base_url == "https://dblp.org/search/publ"  # 验证默认出版物搜索地址。
+    assert settings.dblp_timeout_seconds == 20  # 验证超时配置被正确保存。
+    assert settings.dblp_requests_per_second == 1  # 验证来源级频率配置被正确保存。
+
+
+def test_settings_rejects_excessive_dblp_rps() -> None:
+    """DBLP 请求频率超过保守上限时应被配置模型拒绝。"""
+    with pytest.raises(ValueError, match="less than or equal to 5"):  # 断言超过配置上限时返回数值校验错误。
+        Settings(_env_file=None, dblp_requests_per_second=6)  # 构造超过保守来源保护阈值的无效频率。
+
+
 def test_settings_allows_optional_semantic_scholar_key_and_preserves_rps() -> None:
     """Semantic Scholar 匿名访问配置应保留 1 RPS 来源级限制。"""
     settings = Settings(  # 构造不读取用户本地 .env 的匿名访问配置。
