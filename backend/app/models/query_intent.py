@@ -48,6 +48,8 @@ class QueryIntent(BaseModel):
         target_paper_count：期望返回的最终论文数量。
         search_mode：标准或深度搜索模式。
         domains：用于动态选择第三来源的领域标签。
+        requires_web_evidence：是否需要补充网页发现证据，默认关闭。
+        requires_web_evidence：是否需要补充网页发现证据，默认关闭。
         complexity_score：供模型路由与预算守卫使用的复杂度评分。
     """
 
@@ -70,6 +72,8 @@ class QueryIntent(BaseModel):
     target_paper_count: int = Field(default=20, ge=1, le=100)  # 限制最终结果规模以控制成本。
     search_mode: SearchMode = "standard"  # 默认使用成本更低的标准检索模式。
     domains: list[str] = Field(default_factory=list)  # 保存用于动态来源路由的领域标签。
+    requires_web_evidence: bool = False  # 仅在需要网页补充证据时允许 Tavily 进入路由计划。
+    requires_web_evidence: bool = False  # 仅在需要网页补充证据时允许 Tavily 进入路由计划。
     complexity_score: float = Field(default=0.0, ge=0.0, le=1.0)  # 限制模型路由评分为闭区间。
 
     @model_validator(mode="after")

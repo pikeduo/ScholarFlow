@@ -88,6 +88,7 @@ def test_settings_allows_optional_semantic_scholar_key_and_preserves_rps() -> No
         semantic_scholar_requests_per_second=1,  # 提供规划基线要求的 1 RPS。
     )
     assert settings.semantic_scholar_api_key is None  # 验证空白密钥不会被误认为有效认证信息。
+    assert settings.semantic_scholar_enabled is False  # 验证待审批语义来源默认不进入动态路由。
     assert settings.semantic_scholar_requests_per_second == 1  # 验证来源级频率配置被正确保存。
 
 

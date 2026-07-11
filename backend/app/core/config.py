@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     tavily_max_results: int = Field(default=5, ge=1, le=20)  # 限制补充发现数量避免挤占主论文来源预算。
     semantic_scholar_api_base_url: str = Field(default="https://api.semanticscholar.org/graph/v1", pattern=r"^https://")  # 限制 Semantic Scholar 使用 HTTPS Graph API 地址。
     semantic_scholar_api_key: SecretStr | None = None  # 保存可选且不可写入日志的 Semantic Scholar API 密钥。
+    semantic_scholar_enabled: bool = False  # 必须由用户在密钥获批后显式启用，默认不进入动态路由。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。
     semantic_scholar_requests_per_second: float = Field(default=1.0, gt=0, le=10)  # 配置来源级请求起始频率上限。
 

@@ -85,6 +85,16 @@ def test_query_intent_rejects_conflicting_soft_preference_and_exclusion() -> Non
         )
 
 
+def test_query_intent_defaults_to_no_web_evidence() -> None:
+    """查询意图未明确请求时不应自动启用补充网页发现。"""
+    query = QueryIntent(  # 构造未设置网页证据开关的最小有效查询意图。
+        original_query="测试查询",  # 提供最小原始查询文本。
+        normalized_query="测试查询",  # 提供最小规范化查询文本。
+        query_language="zh",  # 标记查询语言。
+    )
+    assert query.requires_web_evidence is False  # 验证默认策略不会无条件调用 Tavily。
+
+
 def test_search_run_state_rejects_excessive_round() -> None:
     """当前轮次超过最大轮次时应阻止工作流继续循环。"""
     with pytest.raises(ValidationError, match="current_round"):  # 断言轮次越界得到稳定错误。
