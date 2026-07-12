@@ -5,12 +5,15 @@ const props = defineProps({ // 声明父页面传入的多源检索响应。
   result: { type: Object, required: true }, // 要求提供完整响应对象。
 })
 
-const fusedCount = computed(() => Math.max(0, (props.result.raw_paper_count ?? 0) - (props.result.merged_paper_count ?? 0))) // 根据原始与合并数量推导融合后候选数。
-const filteredCount = computed(() => Math.max(0, fusedCount.value - (props.result.filtered_paper_count ?? 0))) // 推导规则过滤后的候选数。
-const semanticCount = computed(() => Math.max(0, filteredCount.value - (props.result.semantic_truncated_count ?? 0))) // 推导 BGE-M3 截断后的候选数。
-const crossEncoderCount = computed(() => Math.max(0, semanticCount.value - (props.result.cross_encoder_truncated_count ?? 0))) // 推导 Cross Encoder 截断后的候选数。
+const isMultiRound = computed(() => Boolean(props.result.run_state)) // 区分新多轮响应与兼容保留的旧单轮响应。
+const runState = computed(() => props.result.run_state || {}) // 提取多轮运行状态并在旧响应时提供稳定空对象。
+const coverageReport = computed(() => props.result.coverage_report || runState.value.coverage_report || null) // 读取累计候选的最终覆盖报告。
+const fusedCount = computed(() => Math.max(0, (props.result.raw_paper_count ?? 0) - (props.result.merged_paper_count ?? 0))) // 根据旧响应原始与合并数量推导融合后候选数。
+const filteredCount = computed(() => Math.max(0, fusedCount.value - (props.result.filtered_paper_count ?? 0))) // 推导旧响应规则过滤后的候选数。
+const semanticCount = computed(() => Math.max(0, filteredCount.value - (props.result.semantic_truncated_count ?? 0))) // 推导旧响应 BGE-M3 截断后的候选数。
+const crossEncoderCount = computed(() => Math.max(0, semanticCount.value - (props.result.cross_encoder_truncated_count ?? 0))) // 推导旧响应 Cross Encoder 截断后的候选数。
 
-const stageStats = computed(() => [ // 按真实检索流程组织阶段数量。
+const singleRoundStageStats = computed(() => [ // 按旧单轮检索流程组织阶段数量。
   { label: '多源召回', value: props.result.raw_paper_count ?? 0, detail: sourceSummary.value }, // 展示来源级原始论文数。
   { label: '身份融合', value: fusedCount.value, detail: `合并 ${props.result.merged_paper_count ?? 0} 条重复记录` }, // 展示融合后规模。
   { label: '规则过滤', value: filteredCount.value, detail: `移除 ${props.result.filtered_paper_count ?? 0} 篇` }, // 展示硬规则过滤结果。
@@ -18,6 +21,15 @@ const stageStats = computed(() => [ // 按真实检索流程组织阶段数量�
   { label: '精细重排', value: crossEncoderCount.value, detail: `Cross Encoder 截断 ${props.result.cross_encoder_truncated_count ?? 0} 篇` }, // 展示 Cross Encoder 阶段统计。
   { label: '最终推荐', value: props.result.papers?.length ?? 0, detail: `LLM 核验淘汰 ${props.result.llm_rejected_count ?? 0} 篇` }, // 展示最终证据化结果数量。
 ])
+const multiRoundStageStats = computed(() => [ // 将多轮控制器状态组织为可扫读的过程摘要。
+  { label: '搜索轮次', value: runState.value.current_round ?? 0, detail: `最多 ${runState.value.max_rounds ?? 0} 轮` }, // 展示实际完成轮次和硬上限。
+  { label: '来源调用', value: runState.value.api_call_count ?? 0, detail: sourceSummary.value }, // 展示所有轮次累计的来源调用和结果统计。
+  { label: '累计候选', value: runState.value.candidate_ids?.length ?? props.result.papers?.length ?? 0, detail: `最终保留 ${props.result.papers?.length ?? 0} 篇` }, // 区分跨轮候选与最终显示论文。
+  { label: '高相关', value: coverageReport.value?.high_relevance_count ?? 0, detail: `目标 ${coverageReport.value?.target_count ?? 0} 篇` }, // 展示覆盖报告的目标完成度。
+  { label: '部分相关', value: coverageReport.value?.partial_relevance_count ?? 0, detail: `本轮新增 ${coverageReport.value?.new_valid_count ?? 0} 篇` }, // 展示仍需人工核验的候选与边际收益。
+  { label: '最终推荐', value: props.result.papers?.length ?? 0, detail: runState.value.stop_reason || '已完成' }, // 展示控制器停止原因而非将不足结果误解为失败。
+])
+const stageStats = computed(() => isMultiRound.value ? multiRoundStageStats.value : singleRoundStageStats.value) // 按响应类型选择正确的过程统计。
 
 const sourceSummary = computed(() => { // 将来源数量压缩为可扫读文本。
   const entries = Object.entries(props.result.source_counts || {}) // 获取实际执行来源和数量。
@@ -27,7 +39,8 @@ const sourceSummary = computed(() => { // 将来源数量压缩为可扫读文�
 const warnings = computed(() => { // 汇总来源和排序阶段的安全降级摘要。
   const sourceWarnings = Object.entries(props.result.source_errors || {}).map(([source, message]) => `${source}：${message}`) // 格式化来源错误。
   const rankingWarnings = [props.result.semantic_ranking_error, props.result.cross_encoder_ranking_error, props.result.llm_ranking_error].filter(Boolean) // 收集各排序层降级信息。
-  return [...sourceWarnings, ...rankingWarnings] // 保持来源错误在前、排序降级在后的稳定顺序。
+  const stateWarnings = Array.isArray(runState.value.warnings) ? runState.value.warnings : [] // 补充多轮运行中安全可展示的控制器提示。
+  return [...sourceWarnings, ...rankingWarnings, ...stateWarnings] // 保持来源错误在前、排序降级和控制器提示在后。
 })
 </script>
 
@@ -39,7 +52,7 @@ const warnings = computed(() => { // 汇总来源和排序阶段的安全降级�
         <p class="kicker">SEARCH TRACE</p>
         <h2 id="stats-heading">检索过程</h2>
       </div>
-      <p v-if="result.llm_model_name" class="model-meta">{{ result.llm_model_name }} · {{ result.llm_prompt_tokens + result.llm_completion_tokens }} tokens</p>
+      <p v-if="result.llm_model_name || result.query_planning_model_name" class="model-meta">{{ result.llm_model_name || result.query_planning_model_name }} · {{ (result.llm_prompt_tokens || result.query_planning_prompt_tokens || 0) + (result.llm_completion_tokens || result.query_planning_completion_tokens || 0) }} tokens</p>
     </div>
     <ol class="stage-grid">
       <li v-for="(stage, index) in stageStats" :key="stage.label" class="stage-card">

@@ -76,10 +76,10 @@ export function createNaturalSearchRequest(form) { // 复用已有表单校验�
   }
 }
 
-/** 调用多源检索接口并返回结构化结果。 */
+/** 调用多轮自然语言检索接口并返回结构化结果。 */
 export async function searchPapers(form, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许测试注入离线 fetch 替身。
   const naturalRequest = createNaturalSearchRequest(form) // 在网络调用前生成自然语言规划请求。
-  return postSearch('/api/v1/search/natural', naturalRequest, fetchImpl, apiBaseUrl) // 调用先规划再检索的自然语言入口。
+  return postSearch('/api/v1/search/natural-multi-round', naturalRequest, fetchImpl, apiBaseUrl) // 调用先规划再执行有限轮次检索的自然语言入口。
 }
 
 /** 校验并复制用户编辑后的 QueryIntent，避免直接修改上一轮响应。 */
@@ -115,10 +115,10 @@ export function validateQueryIntent(intent) { // 接收查询解析面板提交�
 /** 使用已编辑 QueryIntent 直接重搜，从而跳过 Query Agent 调用。 */
 export async function searchWithIntent(intent, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许测试注入离线 fetch。
   const validatedIntent = validateQueryIntent(intent) // 在网络调用前验证完整编辑结果。
-  return postSearch('/api/v1/search/multi-source', validatedIntent, fetchImpl, apiBaseUrl) // 直接进入多源检索与排序链路。
+  return postSearch('/api/v1/search/multi-round', validatedIntent, fetchImpl, apiBaseUrl) // 直接进入多轮检索并保持跳过 Query Agent。
 }
 
-/** 提交统一搜索请求并校验 MultiSourceRecallResult 最小契约。 */
+/** 提交统一搜索请求并校验 MultiRoundSearchResult 最小契约。 */
 async function postSearch(path, requestBody, fetchImpl, apiBaseUrl) { // 复用自然入口和直接意图入口的错误边界。
   if (typeof fetchImpl !== 'function') throw new SearchApiError('当前环境不支持网络请求') // 在旧环境给出可理解错误。
   let response // 保存 HTTP 响应供后续状态处理。
@@ -142,8 +142,8 @@ async function postSearch(path, requestBody, fetchImpl, apiBaseUrl) { // 复用�
     throw new SearchApiError(message, response.status) // 携带状态码供未来埋点但页面只展示安全消息。
   }
   try { // 防止成功状态携带无效 JSON 时页面崩溃。
-    const result = await response.json() // 解析后端稳定 MultiSourceRecallResult。
-    if (!result || !Array.isArray(result.papers) || typeof result.route_plan !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 验证页面渲染依赖的最小响应结构。
+    const result = await response.json() // 解析后端稳定 MultiRoundSearchResult。
+    if (!result || !Array.isArray(result.papers) || typeof result.run_state !== 'object' || typeof result.query_intent !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 验证页面渲染依赖的多轮状态和可编辑意图。
     return result // 返回已通过最小契约检查的结果。
   } catch (error) { // 将响应解析失败转换为统一错误。
     if (error instanceof SearchApiError) throw error // 保留本地最小契约检查给出的明确消息。

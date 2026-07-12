@@ -4,6 +4,7 @@ import { computed, reactive, ref } from 'vue' // 管理搜索表单、请求状�
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
+import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, searchPapers, searchWithIntent } from '../services/searchApi.js' // 调用自然入口或跳过 Query Agent 的直接意图入口。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
@@ -24,16 +25,21 @@ const form = reactive({ // 保存搜索页当前可编辑查询条件。
   requiresWebEvidence: false, // 默认不启用网页补充发现。
 })
 
-const result = ref(null) // 保存最近一次成功的 MultiSourceRecallResult。
+const result = ref(null) // 保存最近一次成功的 MultiRoundSearchResult。
 const loading = ref(false) // 标记当前是否正在等待完整检索链路。
 const errorMessage = ref('') // 保存可安全展示的请求或校验错误。
 const submittedQuery = ref('') // 保存最近一次成功提交的查询文本。
 const showAdvanced = ref(false) // 控制高级约束面板展开状态。
+const savedPaperIds = ref(new Set()) // 保存当前页面已成功收藏的论文 ID。
+const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防止重复点击。
+const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
 
-const routeSources = computed(() => result.value?.route_plan?.academic_sources || []) // 提取本次实际选择的学术来源。
+const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
 
 const discoveries = computed(() => result.value?.discoveries || []) // 保持补充网页发现与论文结果独立展示。
+const runState = computed(() => result.value?.run_state || null) // 提取多轮运行状态供搜索页展示过程和停止原因。
+const coverageReport = computed(() => result.value?.coverage_report || runState.value?.coverage_report || null) // 提取累计候选覆盖报告并兼容后续状态存储。
 const planningMeta = computed(() => ({ // 将后端查询规划观测字段映射为面板属性。
   modelName: result.value?.query_planning_model_name || null, // 自然入口展示实际模型，直接重搜时为空。
   promptTokens: result.value?.query_planning_prompt_tokens || 0, // 展示规划输入 Token。
@@ -77,7 +83,7 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
   loading.value = true // 禁用搜索和编辑面板。
   errorMessage.value = '' // 清除上一轮错误。
   try { // 捕获统一 API 客户端错误。
-    const nextResult = await searchWithIntent(editedIntent) // 直接进入多源召回、排序和核验链路。
+    const nextResult = await searchWithIntent(editedIntent) // 直接进入多轮召回、排序、核验与停止判断链路。
     result.value = nextResult // 成功后替换论文和检索统计。
     submittedQuery.value = editedIntent.original_query // 保持结果对应的原始研究问题。
     conditionChips.value = buildConditionChips({ // 使用编辑后的关键约束更新结果说明。
@@ -92,6 +98,21 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
     errorMessage.value = error instanceof SearchApiError ? error.message : '重新检索过程中出现未知错误，请稍后重试' // 不展示内部堆栈。
   } finally { // 无论成功失败都恢复交互。
     loading.value = false // 结束加载状态。
+  }
+}
+
+async function savePaper(paper) { // 将单篇搜索结果去重保存到个人文献库。
+  if (savingPaperIds.value.has(paper.paper_id) || savedPaperIds.value.has(paper.paper_id)) return // 防止同一卡片重复提交。
+  savingPaperIds.value.add(paper.paper_id) // 立即标记请求中状态。
+  libraryMessage.value = { text: '', tone: 'success' } // 清除上一条收藏反馈。
+  try { // 将 API 客户端公共错误转换为页面提示。
+    const saveResult = await saveLibraryPaper(paper) // 默认以未读、无标签状态收藏论文。
+    savedPaperIds.value.add(paper.paper_id) // 成功后固定当前卡片已收藏状态。
+    libraryMessage.value = { text: saveResult.created ? '论文已收藏到“我的文献库”' : '该论文已在文献库中，元数据已更新', tone: 'success' } // 区分新建与去重命中。
+  } catch (error) { // 捕获断网、后端错误和响应契约异常。
+    libraryMessage.value = { text: error instanceof LibraryApiError ? error.message : '收藏论文时出现未知错误，请稍后重试', tone: 'error' } // 不展示底层堆栈。
+  } finally { // 无论成功失败都恢复按钮。
+    savingPaperIds.value.delete(paper.paper_id) // 清除请求中状态以允许失败重试。
   }
 }
 </script>
@@ -124,9 +145,9 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
               <input v-model="form.searchMode" type="radio" value="standard" :disabled="loading">
               <span><strong>标准</strong><small>1–2 轮 · 更快</small></span>
             </label>
-            <label class="mode-option is-disabled" aria-disabled="true">
-              <input v-model="form.searchMode" type="radio" value="deep" disabled>
-              <span><strong>深度</strong><small>多轮编排开发中</small></span>
+            <label :class="['mode-option', { 'is-selected': form.searchMode === 'deep' }]">
+              <input v-model="form.searchMode" type="radio" value="deep" :disabled="loading">
+              <span><strong>深度</strong><small>最多 3 轮 · 补足缺口</small></span>
             </label>
           </fieldset>
           <button class="advanced-toggle" type="button" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced">
@@ -173,13 +194,28 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
       <div class="loading-orbit" aria-hidden="true"><span></span><i></i></div>
       <div>
         <strong>正在执行多源论文检索</strong>
-        <p>OpenAlex / Semantic Scholar → 身份融合 → BGE-M3 → Cross Encoder → LLM 核验</p>
+        <p>OpenAlex / Semantic Scholar → 身份融合 → BGE-M3 → Cross Encoder → LLM 核验 → 覆盖缺口分析</p>
       </div>
     </section>
 
     <!-- 成功响应后展示可审计检索轨迹和证据化论文。 -->
     <section v-if="result && !loading" class="results-shell" aria-labelledby="results-title">
       <SearchStats :result="result" />
+      <section v-if="runState" class="run-summary" aria-labelledby="run-summary-title">
+        <div>
+          <p class="eyebrow">MULTI-ROUND CONTROL</p>
+          <h2 id="run-summary-title">多轮搜索状态</h2>
+          <p>{{ `已完成 ${runState.current_round} / ${runState.max_rounds} 轮，${runState.stop_reason || '正在汇总结果'}` }}</p>
+        </div>
+        <div v-if="coverageReport" class="coverage-summary">
+          <span>高相关 {{ coverageReport.high_relevance_count }} / {{ coverageReport.target_count }}</span>
+          <span>部分相关 {{ coverageReport.partial_relevance_count }}</span>
+          <span>边际收益 {{ Math.round((coverageReport.marginal_gain || 0) * 100) }}%</span>
+        </div>
+        <ul v-if="coverageReport?.gaps?.length" class="coverage-gap-list" aria-label="尚未覆盖的检索缺口">
+          <li v-for="gap in coverageReport.gaps" :key="`${gap.gap_type}-${gap.constraint}`">{{ `${gap.constraint}：当前 ${gap.current_match_count} 篇，建议补充检索“${gap.recommended_query_focus}”` }}</li>
+        </ul>
+      </section>
       <QueryIntentPanel v-if="result.query_intent" :intent="result.query_intent" :planning-meta="planningMeta" :disabled="loading" @resubmit="resubmitIntent" />
       <header class="results-header">
         <div>
@@ -194,8 +230,9 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
       <div class="condition-row" aria-label="当前检索条件">
         <span v-for="chip in conditionChips" :key="chip.label" :class="['condition-chip', `is-${chip.tone}`]">{{ chip.label }}</span>
       </div>
+      <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="result.papers.length" class="paper-list">
-        <PaperResultCard v-for="(paper, index) in result.papers" :key="paper.paper_id" :paper="paper" :rank="index + 1" />
+        <PaperResultCard v-for="(paper, index) in result.papers" :key="paper.paper_id" :paper="paper" :rank="index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" @save="savePaper" />
       </div>
       <div v-else class="empty-state">
         <strong>暂未找到满足全部条件的论文</strong>
@@ -633,6 +670,60 @@ legend { /* 标记检索模式字段组。 */
   padding-top: 0.5rem; /* 增加与统计区距离。 */
 }
 
+.run-summary { /* 展示多轮控制器的轮次、停止原因和覆盖缺口。 */
+  display: grid; /* 纵向组织主状态、统计胶囊和缺口列表。 */
+  gap: 0.8rem; /* 保持不同层级信息清晰分隔。 */
+  padding: 1.2rem 1.35rem; /* 为多轮过程摘要提供紧凑留白。 */
+  border: 1px solid #cfe0e8; /* 使用浅蓝边框表示过程性信息。 */
+  border-radius: 1rem; /* 与搜索统计面板保持一致圆角。 */
+  background: #f7fbfc; /* 使用轻量背景避免压过论文结果。 */
+}
+
+.run-summary h2 { /* 设置多轮过程标题。 */
+  margin: 0; /* 移除默认标题留白。 */
+  color: #254a62; /* 使用沉稳蓝色文字。 */
+  font-family: Georgia, "Noto Serif SC", serif; /* 延续页面学术排版。 */
+  font-size: 1.12rem; /* 保持过程区低于主结果标题。 */
+}
+
+.run-summary > div:first-child > p:last-child { /* 展示用户可理解的停止原因。 */
+  margin: 0.35rem 0 0; /* 与标题紧凑分隔。 */
+  color: #607487; /* 使用辅助正文颜色。 */
+  font-size: 0.73rem; /* 控制过程说明信息密度。 */
+}
+
+.coverage-summary { /* 横向展示完成度、部分相关和边际收益。 */
+  display: flex; /* 使用弹性布局排列统计胶囊。 */
+  flex-wrap: wrap; /* 窄屏允许统计换行。 */
+  gap: 0.45rem; /* 分隔每项统计。 */
+}
+
+.coverage-summary span { /* 设置单个覆盖统计胶囊。 */
+  padding: 0.32rem 0.55rem; /* 提供紧凑留白。 */
+  border-radius: 999px; /* 使用胶囊表现辅助统计。 */
+  color: #386277; /* 使用低饱和蓝色。 */
+  background: #e8f2f5; /* 与面板底色拉开层次。 */
+  font-size: 0.66rem; /* 保持辅助信息紧凑。 */
+  font-weight: 700; /* 提升小字号可读性。 */
+}
+
+.coverage-gap-list { /* 列出仍未充分覆盖的可解释约束。 */
+  display: grid; /* 纵向排列缺口条目。 */
+  gap: 0.35rem; /* 分隔相邻缺口。 */
+  margin: 0; /* 清除默认列表外边距。 */
+  padding: 0; /* 清除默认列表缩进。 */
+  list-style: none; /* 使用提示条而非默认圆点。 */
+}
+
+.coverage-gap-list li { /* 设置单条缺口说明。 */
+  padding: 0.45rem 0.6rem; /* 提供可扫读的提示条留白。 */
+  border-radius: 0.55rem; /* 与统计胶囊形成层级差异。 */
+  color: #7a5b2c; /* 使用克制琥珀文字提示尚未覆盖。 */
+  background: #fff8e9; /* 使用浅琥珀背景。 */
+  font-size: 0.68rem; /* 控制缺口提示密度。 */
+  line-height: 1.5; /* 提升较长建议文本可读性。 */
+}
+
 .results-header h2,
 .discovery-section h2 { /* 设置结果和补充发现标题。 */
   margin: 0; /* 清除默认标题间距。 */
@@ -703,6 +794,23 @@ legend { /* 标记检索模式字段组。 */
 .paper-list { /* 纵向排列最终论文卡片。 */
   display: grid; /* 使用网格控制间距。 */
   gap: 0.85rem; /* 分隔论文结果。 */
+}
+
+.library-message { /* 展示收藏操作结果。 */
+  margin: -0.7rem 0 0; /* 拉近检索条件与操作反馈。 */
+  padding: 0.65rem 0.75rem; /* 提供提示条留白。 */
+  border-radius: 0.65rem; /* 与页面提示样式协调。 */
+  font-size: 0.72rem; /* 保持反馈清晰但不抢占结果标题。 */
+}
+
+.library-message.is-success { /* 标记收藏成功或去重命中。 */
+  color: #28745a; /* 使用可信绿色文字。 */
+  background: #e8f7f0; /* 使用浅绿背景。 */
+}
+
+.library-message.is-error { /* 标记收藏请求失败。 */
+  color: #9b3c36; /* 使用克制红色文字。 */
+  background: #fff0ee; /* 使用浅红背景。 */
 }
 
 .empty-state { /* 展示无满足条件结果。 */

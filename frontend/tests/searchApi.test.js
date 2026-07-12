@@ -43,7 +43,7 @@ test('createQueryIntent 拒绝互相冲突的包含与排除条件', () => { // 
 test('searchPapers 提交 JSON 并返回结构化响应', async () => { // 验证成功请求参数和响应映射。
   let capturedUrl = '' // 保存替身收到的请求地址。
   let capturedOptions = null // 保存替身收到的请求配置。
-  const expectedResult = { papers: [], raw_paper_count: 0, route_plan: { academic_sources: ['openalex'] } } // 构造最小成功响应。
+  const expectedResult = { papers: [], run_state: { current_round: 1, max_rounds: 2 }, query_intent: { normalized_query: 'Transformer forecasting' } } // 构造最小多轮成功响应。
   const fetchStub = async (url, options) => { // 提供不访问网络的 fetch 替身。
     capturedUrl = url // 记录请求地址供断言。
     capturedOptions = options // 记录请求配置供断言。
@@ -52,7 +52,7 @@ test('searchPapers 提交 JSON 并返回结构化响应', async () => { // 验�
 
   const result = await searchPapers(baseForm, fetchStub, 'http://test.local') // 调用注入替身的 API 客户端。
 
-  assert.equal(capturedUrl, 'http://test.local/api/v1/search/natural') // 验证自然语言查询规划接口路径。
+  assert.equal(capturedUrl, 'http://test.local/api/v1/search/natural-multi-round') // 验证自然语言多轮检索接口路径。
   assert.equal(capturedOptions.method, 'POST') // 验证使用 POST 提交复杂查询。
   assert.equal(JSON.parse(capturedOptions.body).target_paper_count, 20) // 验证请求正文保留最终结果目标。
   assert.equal(JSON.parse(capturedOptions.body).query, baseForm.queryText) // 验证后端收到原始自然语言问题。
@@ -66,7 +66,7 @@ test('searchPapers 将后端公共错误转换为 SearchApiError', async () => {
 })
 
 test('searchPapers 拒绝缺少论文列表的成功响应', async () => { // 验证前端依赖的最小响应契约。
-  const fetchStub = async () => ({ ok: true, status: 200, json: async () => ({ route_plan: {} }) }) // 构造 HTTP 成功但结构不完整的响应。
+  const fetchStub = async () => ({ ok: true, status: 200, json: async () => ({ query_intent: {} }) }) // 构造 HTTP 成功但缺少多轮运行状态和论文列表的响应。
 
   await assert.rejects(() => searchPapers(baseForm, fetchStub), /不完整的结果/) // 验证页面不会尝试渲染无效响应。
 })
@@ -86,7 +86,7 @@ const editableIntent = { // 构造查询解析面板可提交的完整最小意�
 test('searchWithIntent 直接提交编辑后的 QueryIntent 并跳过自然语言入口', async () => { // 验证重搜不会再次调用 Query Agent。
   let capturedUrl = '' // 保存直接意图请求地址。
   let capturedBody = null // 保存编辑后的请求正文。
-  const expectedResult = { papers: [], route_plan: { academic_sources: ['openalex'] }, query_intent: editableIntent } // 构造最小成功响应。
+  const expectedResult = { papers: [], run_state: { current_round: 1, max_rounds: 2 }, query_intent: editableIntent } // 构造最小多轮成功响应。
   const fetchStub = async (url, options) => { // 提供不访问网络的 fetch 替身。
     capturedUrl = url // 记录接口路径。
     capturedBody = JSON.parse(options.body) // 解析请求正文供断言。
@@ -95,7 +95,7 @@ test('searchWithIntent 直接提交编辑后的 QueryIntent 并跳过自然语�
 
   const result = await searchWithIntent({ ...editableIntent, normalized_query: '  edited   english query  ' }, fetchStub, 'http://test.local') // 提交带多余空白的编辑计划。
 
-  assert.equal(capturedUrl, 'http://test.local/api/v1/search/multi-source') // 验证跳过 `/natural` Query Agent 入口。
+  assert.equal(capturedUrl, 'http://test.local/api/v1/search/multi-round') // 验证跳过 `/natural` Query Agent 并进入多轮意图入口。
   assert.equal(capturedBody.normalized_query, 'edited english query') // 验证英文检索式空白被规范化。
   assert.equal(capturedBody.source_recall_count, 50) // 验证来源召回规模完整保留。
   assert.equal(result, expectedResult) // 验证成功响应返回页面层。
