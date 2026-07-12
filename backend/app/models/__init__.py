@@ -14,8 +14,9 @@ from backend.app.models.multi_source_recall import MultiSourceRecallResult  # �
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 对外导出多轮搜索控制器结果。
 from backend.app.models.multi_source_filtering import MultiSourceFilterResult  # 对外导出多源规则过滤结果模型。
 from backend.app.models.search import SearchResult  # 对外导出检索阶段结果模型。
+from backend.app.models.search_event import SearchProgressEvent  # 对外导出搜索进度 SSE 事件契约。
 from backend.app.models.search_run import SearchRunState  # 对外导出可恢复搜索运行状态。
 from backend.app.models.semantic_ranking import SemanticRankingResult  # 对外导出语义粗排结果模型。
 from backend.app.models.source_routing import SourceRoutePlan  # 对外导出来源选择与降级计划模型。
 
-__all__ = ["CoverageGap", "CoverageReport", "CrossEncoderRankingResult", "LlmAssessmentBatch", "LlmPaperAssessment", "LlmRankingResult", "MultiRoundSearchResult", "MultiSourceFilterResult", "MultiSourceRecallResult", "NaturalSearchRequest", "Paper", "PaperAuthor", "PaperFusionResult", "PaperRecord", "PaperSourceRecord", "QueryEvolutionResult", "QueryIntent", "QuerySchema", "QuerySubquery", "SearchResult", "SearchRunState", "SemanticRankingResult", "SourceRoutePlan", "SupplementalDiscoveryItem"]  # 限制包级导出的公共模型。
+__all__ = ["CoverageGap", "CoverageReport", "CrossEncoderRankingResult", "LlmAssessmentBatch", "LlmPaperAssessment", "LlmRankingResult", "MultiRoundSearchResult", "MultiSourceFilterResult", "MultiSourceRecallResult", "NaturalSearchRequest", "Paper", "PaperAuthor", "PaperFusionResult", "PaperRecord", "PaperSourceRecord", "QueryEvolutionResult", "QueryIntent", "QuerySchema", "QuerySubquery", "SearchProgressEvent", "SearchResult", "SearchRunState", "SemanticRankingResult", "SourceRoutePlan", "SupplementalDiscoveryItem"]  # 限制包级导出的公共模型。

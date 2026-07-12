@@ -1,9 +1,12 @@
-"""提供 OpenAlex 单数据源检索的版本化 HTTP 接口。"""
+"""提供单轮、多轮与 SSE 进度流的版本化论文搜索 HTTP 接口。"""
 
+import asyncio  # 在 SSE 请求内并发执行多轮控制器与事件流生成器。
+import json  # 将已净化事件编码为 SSE data 行。
 from functools import lru_cache  # 在服务进程内复用昂贵的本地模型和来源限流状态。
 from typing import Annotated  # 为 FastAPI 依赖注入声明清晰的参数类型。
 
 from fastapi import APIRouter, Depends, HTTPException, status  # 声明路由、依赖和稳定 HTTP 错误。
+from fastapi.responses import StreamingResponse  # 返回符合 EventSource 语义的文本事件流。
 
 from backend.app.adapters.arxiv import ArxivClient  # 装配 AI/计算机领域可选的预印本搜索适配器。
 from backend.app.adapters.dblp import DblpClient  # 装配 AI/计算机领域可选的书目搜索适配器。
@@ -18,9 +21,11 @@ from backend.app.models.query import QuerySchema  # 接收 FastAPI 自动校验�
 from backend.app.models.query_intent import QueryIntent  # 接收已规划完成的多源检索意图。
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
 from backend.app.models.search_run import SearchRunState  # 声明可按运行标识读取的持久化状态响应。
+from backend.app.models.search_event import SearchProgressEvent  # 传递不含敏感查询和论文摘要的 SSE 事件。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
 from backend.app.services.multi_round_search import MultiRoundSearchController  # 执行有限轮次的召回、缺口修复与保护性停止。
 from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore, SearchRunStoreError  # 装配 SQLite 状态持久化并映射安全读取错误。
+from backend.app.services.search_events import InMemorySearchRunEventPublisher  # 在单次流式请求内连接控制器和事件响应。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
 from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
 from backend.app.adapters.deepseek_query_planner import QueryPlanningError  # 将查询规划故障转换为稳定 HTTP 错误。
@@ -148,6 +153,40 @@ async def search_multi_round(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回安全、可理解且稳定的公共错误。
 
 
+@router.post("/multi-round/events", status_code=status.HTTP_200_OK, summary="以 SSE 流返回多轮论文检索进度")
+async def stream_multi_round_search_events(
+    query: QueryIntent,
+    controller: Annotated[MultiRoundSearchController, Depends(get_multi_round_search_controller)],
+) -> StreamingResponse:
+    """执行多轮搜索并实时返回轻量进度事件，连接断开后可按 run_id 查询状态。
+
+    参数：
+        query：用户编辑后可直接执行的完整检索意图。
+        controller：可替换的多轮搜索控制器。
+    返回：
+        StreamingResponse：`text/event-stream` 响应，事件不携带完整查询或论文摘要。
+    """
+    publisher = InMemorySearchRunEventPublisher()  # 为本次 HTTP 请求创建独立且有界的事件队列。
+    task = asyncio.create_task(controller.run(query, event_publisher=publisher))  # 在后台执行来源召回、排序和覆盖控制。
+
+    async def event_stream():
+        """持续将控制器事件编码为 SSE，直到任务和队列均结束。"""
+        try:  # 将任务生命周期与客户端连接生命周期绑定。
+            while not task.done() or not publisher.empty():  # 确保终态事件在任务完成后仍会被发送。
+                event = await publisher.next_event()  # 等待下一条由控制器发布的轻量事件。
+                yield _encode_sse_event(event)  # 按 SSE 帧格式发送事件类型和 JSON 数据。
+            await task  # 传播控制器未处理异常以便 ASGI 记录，而正常路径已在事件中结束。
+        finally:  # 客户端中断或事件发送失败时结束后台任务。
+            if not task.done():  # 避免取消已经完成的正常控制器任务。
+                task.cancel()  # 防止断线后继续发起不必要的后续来源调用。
+                try:  # 等待取消完成以避免未检索任务警告。
+                    await task  # 让协程释放可能持有的资源。
+                except asyncio.CancelledError:  # 取消属于正常的 SSE 连接关闭路径。
+                    pass  # 不向客户端或日志暴露无意义的断线堆栈。
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})  # 禁止代理缓冲以尽快向浏览器发送进度。
+
+
 @router.get("/runs/{run_id}", response_model=SearchRunState, status_code=status.HTTP_200_OK, summary="读取可恢复的搜索运行状态")
 def get_search_run_state(
     run_id: str,
@@ -236,3 +275,9 @@ async def search_natural_multi_round(
             "query_planning_duration_ms": planning_result.duration_ms,
         }
     )
+
+
+def _encode_sse_event(event: SearchProgressEvent) -> str:
+    """将已校验的进度事件编码为符合 SSE 规范的文本帧。"""
+    payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))  # 保持中文提示可读并避免无意义空白。
+    return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {payload}\n\n"  # 按 EventSource 可解析的 id、event 和 data 行返回。

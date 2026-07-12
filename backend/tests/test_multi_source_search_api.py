@@ -14,6 +14,7 @@ from backend.app.models.natural_search import QueryPlanningResult  # 构造带�
 from backend.app.models.paper import PaperRecord  # 构造融合论文响应数据。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计来源路由计划。
 from backend.app.models.query_intent import QueryIntent  # 构造自然语言入口规划结果。
+from backend.app.models.search_event import SearchProgressEvent  # 构造 SSE 端点的安全进度事件。
 
 
 class FakeMultiSourceRecallCoordinator:
@@ -50,12 +51,15 @@ class FakeMultiRoundSearchController:
         self._result = result  # 保存成功请求应返回的多轮结果。
         self._should_fail = should_fail  # 保存是否模拟控制器未预期故障。
 
-    async def run(self, _: QueryIntent) -> MultiRoundSearchResult:
+    async def run(self, _: QueryIntent, *, event_publisher: object | None = None) -> MultiRoundSearchResult:
         """按测试配置返回结果或触发安全 HTTP 错误边界。"""
         if self._should_fail:  # 仅在错误边界用例模拟内部错误。
             raise RuntimeError("模拟多轮控制器故障")  # 让路由转换为稳定 503 响应。
         if self._result is None:  # 防御测试替身遗漏成功结果配置。
             raise AssertionError("测试替身未配置 MultiRoundSearchResult")  # 让测试配置问题立即可见。
+        if event_publisher is not None:  # SSE 端点传入发布器时模拟创建和完成事件。
+            event_publisher.publish(SearchProgressEvent(run_id=self._result.run_state.run_id, event_type="run_created", node="search_run", current_round=0, progress=0.0, message="已创建搜索运行"))  # 发布不含查询正文的首个运行事件。
+            event_publisher.publish(SearchProgressEvent(run_id=self._result.run_state.run_id, event_type="completed", node="compose_results", current_round=self._result.run_state.current_round, progress=1.0, message="搜索已完成", metrics={"final_paper_count": len(self._result.papers)}))  # 发布稳定完成事件。
         return self._result  # 返回预设的可序列化多轮响应。
 
 
@@ -208,6 +212,18 @@ def test_multi_round_search_endpoint_hides_unexpected_controller_error(api_clien
     assert response.status_code == 503  # 验证内部错误转换为服务不可用。
     assert response.json()["detail"] == "多轮论文检索服务暂时不可用，请稍后重试"  # 验证不会泄露内部异常文本。
     log_exception.assert_called_once_with("多轮多源检索接口调用失败")  # 验证完整堆栈仍会写入受控日志。
+
+
+def test_multi_round_event_endpoint_streams_safe_lifecycle_frames(api_client: TestClient) -> None:
+    """SSE 端点应按 EventSource 帧格式输出创建和完成事件。"""
+    app.dependency_overrides[get_multi_round_search_controller] = lambda: FakeMultiRoundSearchController(result=_build_multi_round_result())  # 注入会发布离线事件的控制器替身。
+
+    response = api_client.post("/api/v1/search/multi-round/events", json=_valid_query_payload())  # 发起一次流式多轮搜索请求。
+
+    assert response.status_code == 200  # 验证 SSE 请求成功建立。
+    assert response.headers["content-type"].startswith("text/event-stream")  # 验证响应使用 EventSource 所需媒体类型。
+    assert "event: run_created" in response.text and "event: completed" in response.text  # 验证创建和完成事件均已输出。
+    assert "检索 Transformer 预测论文" not in response.text  # 验证流式事件不会包含用户完整查询正文。
 
 
 def test_search_run_state_endpoint_returns_latest_snapshot_and_404_when_missing(api_client: TestClient) -> None:
