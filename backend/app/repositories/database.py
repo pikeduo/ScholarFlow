@@ -51,7 +51,9 @@ def initialize_database() -> None:
         SQLAlchemyError：由 SQLAlchemy 在建库或建表失败时抛出。
     """
     from backend.app.repositories import library as _library_repository  # 导入业务 ORM 映射以注册文献库表。
+    from backend.app.repositories import vector_metadata as _vector_metadata_repository  # 导入向量与索引 ORM 映射以注册阶段五表。
 
     _ = _library_repository  # 明确该导入用于 SQLAlchemy 元数据注册而非直接调用。
+    _ = _vector_metadata_repository  # 明确该导入用于 SQLAlchemy 元数据注册而非直接调用。
     Base.metadata.create_all(bind=engine)  # 仅创建不存在的表，不删除或修改已有数据。
     logger.info("SQLite 基础结构已准备完成，数据库=%s", settings.database_url)  # 记录数据库准备完成信息。
