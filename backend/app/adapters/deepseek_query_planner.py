@@ -156,7 +156,7 @@ class DeepSeekQueryPlanningClient:
             venues=planned.venues,
             paper_types=planned.paper_types,
             year_range=request.year_range or planned.year_range,  # 用户显式年份优先。
-            must_include=_merge_terms(planned.must_include, request.must_include),
+            must_include=request.must_include,  # 只有用户在高级条件中显式填写的词才执行逐字硬过滤，模型语义条件交给后续核验。
             should_include=_merge_terms(planned.should_include, request.should_include),
             exclude=_merge_terms(planned.exclude, request.exclude),
             subqueries=planned.subqueries[:3],  # 限制子查询规模。
@@ -180,7 +180,7 @@ class DeepSeekQueryPlanningClient:
         )
 
 
-_SYSTEM_PROMPT = """你是学术检索 Query Agent。只输出 JSON，不输出 Markdown 或思维过程。将中文或英文问题解析为结构化计划；所有用于学术 API 的主题、方法、任务、数据集、领域和 normalized_query 必须使用规范、简洁的英文术语。不要把“优先”误作硬约束。paper_types 只能使用 article、conference、preprint、review。complexity_score 必须是 0 到 1。subqueries 最多三条英文查询，每条必须包含 query、language='en' 和 purpose，purpose 只能是 method、dataset、citation。输出字段必须包含 normalized_query、query_language、research_topics、methods、tasks、datasets、authors、institutions、venues、paper_types、year_range、must_include、should_include、exclude、domains、complexity_score、subqueries。"""  # 定义稳定查询规划边界。
+_SYSTEM_PROMPT = """你是学术检索 Query Agent。只输出 JSON，不输出 Markdown 或思维过程。将中文或英文问题解析为结构化计划；所有用于学术 API 的主题、方法、任务、数据集、领域和 normalized_query 必须使用规范、简洁的英文术语。不要把“优先”误作硬约束。只有用户明确限定论文类型时才填写 paper_types，不得因为普通“论文”或“研究”措辞推断 article；paper_types 只能使用 article、conference、preprint、review。must_include 只提取用户明确要求逐字包含的术语，方法、任务和数据集分别放入对应字段。complexity_score 必须是 0 到 1。subqueries 最多三条英文查询，每条必须包含 query、language='en' 和 purpose，purpose 只能是 method、dataset、citation。输出字段必须包含 normalized_query、query_language、research_topics、methods、tasks、datasets、authors、institutions、venues、paper_types、year_range、must_include、should_include、exclude、domains、complexity_score、subqueries。"""  # 定义稳定查询规划边界。
 
 
 def _merge_terms(first: list[str], second: list[str]) -> list[str]:

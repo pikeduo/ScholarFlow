@@ -35,7 +35,7 @@ class MultiSourcePaperFilter:
             filter_reason_counts=dict(reason_counts),  # 转换为可序列化普通字典。
             work_family_count=len({paper.work_family_id for paper in retained_papers if paper.work_family_id}),  # 统计最终候选包含的唯一版本族。
         )
-        logger.info("多源规则过滤完成：输入=%d，移除=%d，保留=%d，原因数=%d", result.input_count, result.filtered_count, len(result.papers), len(result.filter_reason_counts))  # 仅记录数量统计避免泄露查询或论文内容。
+        logger.info("多源规则过滤完成：输入=%d，移除=%d，保留=%d，原因统计=%s", result.input_count, result.filtered_count, len(result.papers), result.filter_reason_counts)  # 记录不含查询文本的稳定原因计数供定位过度过滤。
         return result  # 返回可交给 BGE-M3 粗排的确定性候选集合。
 
     @staticmethod
@@ -76,8 +76,8 @@ def _matches_year_range(paper: PaperRecord, query: QueryIntent) -> bool:
 
 
 def _matches_paper_type(paper: PaperRecord, query: QueryIntent) -> bool:
-    """判断论文是否属于任一指定类型；指定时未知类型视为未通过。"""
-    return not query.paper_types or paper.paper_type in query.paper_types  # 无约束时保留全部，有约束时要求来源类型明确匹配。
+    """判断论文是否属于任一指定类型；来源未知时保留并交给后续核验。"""
+    return not query.paper_types or paper.paper_type is None or paper.paper_type in query.paper_types  # 只过滤来源明确提供且与约束不匹配的类型。
 
 
 def _matches_venues(paper: PaperRecord, query: QueryIntent) -> bool:
@@ -85,8 +85,8 @@ def _matches_venues(paper: PaperRecord, query: QueryIntent) -> bool:
     expected_venues = _normalized_terms(query.venues)  # 规范化有效 venue 约束。
     if not expected_venues:  # 未指定有效 venue 时无需过滤。
         return True  # 保留论文。
-    normalized_venue = _normalize_text(paper.venue or "")  # 将缺失 venue 统一为不可匹配的空文本。
-    return bool(normalized_venue) and any(expected in normalized_venue or normalized_venue in expected for expected in expected_venues)  # 兼容常见缩写与全称。
+    normalized_venue = _normalize_text(paper.venue or "")  # 将缺失 venue 统一为空文本。
+    return not normalized_venue or any(expected in normalized_venue or normalized_venue in expected for expected in expected_venues)  # 来源未知时保留，已知时兼容简称与全称。
 
 
 def _matches_authors(paper: PaperRecord, query: QueryIntent) -> bool:
@@ -94,17 +94,18 @@ def _matches_authors(paper: PaperRecord, query: QueryIntent) -> bool:
     expected_authors = _normalized_terms(query.authors)  # 规范化有效作者约束。
     if not expected_authors:  # 未指定作者时无需过滤。
         return True  # 保留论文。
-    actual_authors = [_normalize_text(author.name) for author in paper.authors]  # 读取融合论文中的全部作者名称。
-    return any(expected in actual or actual in expected for expected in expected_authors for actual in actual_authors if actual)  # 支持用户输入全名、来源缩写或常见显示差异。
+    actual_authors = [_normalize_text(author.name) for author in paper.authors if author.name.strip()]  # 读取融合论文中的有效作者名称。
+    return not actual_authors or any(expected in actual or actual in expected for expected in expected_authors for actual in actual_authors)  # 来源未知时保留，已知时支持全名和包含式匹配。
 
 
 def _matches_institutions(paper: PaperRecord, query: QueryIntent) -> bool:
-    """判断作者来源机构是否匹配任一机构约束，缺失机构不能通过显式约束。"""
+    """判断作者来源机构是否匹配任一机构约束，来源未知时交给后续核验。"""
     expected_institutions = _normalized_terms(query.institutions)  # 规范化有效机构约束。
     if not expected_institutions:  # 未指定机构时无需过滤。
         return True  # 保留论文。
     actual_institutions = [_normalize_text(author.institution or "") for author in paper.authors]  # 读取来源提供的作者机构字段。
-    return any(expected in actual or actual in expected for expected in expected_institutions for actual in actual_institutions if actual)  # 兼容机构简称和全称。
+    known_institutions = [institution for institution in actual_institutions if institution]  # 过滤来源未提供的机构字段。
+    return not known_institutions or any(expected in actual or actual in expected for expected in expected_institutions for actual in known_institutions)  # 来源未知时保留，已知时兼容简称和全称。
 
 
 def _searchable_text(paper: PaperRecord) -> str:

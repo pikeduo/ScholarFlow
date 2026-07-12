@@ -74,3 +74,22 @@ def test_filter_keeps_all_papers_when_query_has_no_filterable_hard_constraints()
     assert [paper.paper_id for paper in result.papers] == ["minimal"]  # 验证缺失可选元数据不会被错误过滤。
     assert result.filtered_count == 0  # 验证没有论文被移除。
     assert result.filter_reason_counts == {}  # 验证没有失败原因统计。
+
+
+def test_filter_keeps_unknown_optional_metadata_for_later_verification() -> None:
+    """来源缺少类型、venue、作者或机构时不应在语义核验前制造假阴性。"""
+    query = QueryIntent(  # 构造需要来源元数据核验的明确约束。
+        original_query="Scholar Lab 在 NeurIPS 发表的会议论文",  # 提供用户原始查询。
+        normalized_query="Scholar Lab NeurIPS conference paper",  # 提供规范化检索文本。
+        query_language="mixed",  # 标记中英混合查询。
+        paper_types=["conference"],  # 指定论文类型。
+        venues=["NeurIPS"],  # 指定 venue。
+        authors=["Ada Lovelace"],  # 指定作者。
+        institutions=["Scholar Lab"],  # 指定机构。
+    )
+    paper = PaperRecord(paper_id="unknown-metadata", title="Potentially Relevant Paper", source="openalex")  # 构造来源可选元数据均缺失的论文。
+
+    result = MultiSourcePaperFilter().filter([paper], query)  # 执行确定性过滤。
+
+    assert [candidate.paper_id for candidate in result.papers] == ["unknown-metadata"]  # 验证未知不等同于明确不满足。
+    assert result.filter_reason_counts == {}  # 验证候选留给 BGE-M3 和 LLM 后续核验。

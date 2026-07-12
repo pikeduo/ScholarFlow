@@ -25,7 +25,7 @@ def test_query_planner_generates_english_intent_and_preserves_explicit_constrain
             "venues": [],
             "paper_types": [],
             "year_range": [2022, 2026],
-            "must_include": [],
+            "must_include": ["vision-language model"],
             "should_include": ["public dataset"],
             "exclude": [],
             "domains": ["artificial intelligence", "medical imaging"],
@@ -43,13 +43,14 @@ def test_query_planner_generates_english_intent_and_preserves_explicit_constrain
 
     config = Settings(_env_file=None, deepseek_api_key="test-key", academic_source_recall_limit=50)  # 注入无权限测试密钥和召回规模。
     client = DeepSeekQueryPlanningClient(config=config, transport=httpx.MockTransport(handler))  # 构造离线客户端。
-    request = NaturalSearchRequest(query="检索视觉语言模型在医学影像报告生成中的最新研究，优先包含公开数据集", year_range=(2023, 2026), exclude=["survey"])  # 提供显式覆盖。
+    request = NaturalSearchRequest(query="检索视觉语言模型在医学影像报告生成中的最新研究，优先包含公开数据集", year_range=(2023, 2026), must_include=["medical imaging"], exclude=["survey"])  # 提供显式覆盖。
     planning_result = asyncio.run(client.plan(request))  # 执行不访问网络的规划。
     intent = planning_result.query_intent  # 提取可执行意图供语义字段断言。
 
     assert intent.normalized_query.startswith("vision language models")  # 验证学术 API 使用英文检索式。
     assert intent.tasks == ["medical image report generation"]  # 验证目标任务被独立提取。
     assert intent.should_include == ["public dataset"]  # 验证“优先”保持软偏好。
+    assert intent.must_include == ["medical imaging"]  # 验证只有用户显式高级条件进入逐字硬过滤。
     assert intent.year_range == (2023, 2026)  # 验证显式年份覆盖模型推断。
     assert intent.exclude == ["survey"]  # 验证显式排除条件被保留。
     assert intent.source_recall_count == 50 and intent.target_paper_count == 20  # 验证召回规模与最终数量已分离。

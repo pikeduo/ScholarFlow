@@ -11,7 +11,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 前端使用 Vue 3，后端使用 Python 与 FastAPI。
 - 检索编排使用轻量多 Agent + LangGraph 工作流，保持 Query、Search、Analysis、Ranking 与 Knowledge Management 职责分离。
 - Codex 仅用于受控开发辅助，不得成为生产运行链路、产品功能或部署依赖。
-- 当前核心检索源为 OpenAlex 与 Semantic Scholar；Semantic Scholar 已获批并启用，必须遵守每秒最多一次请求的来源级限制。AI/计算机领域优先按需接入 arXiv、DBLP；Tavily 仅作为补充发现与网页证据来源，不能替代学术来源的论文身份与引用元数据。不要无条件调用所有数据源。
+- 当前核心检索源为 OpenAlex 与 Semantic Scholar；Semantic Scholar 已获批并启用，必须遵守每秒最多一次请求的来源级限制，遇到 429 时默认不重试并进入至少一分钟的进程内冷却，以免放大 API 调用。AI/计算机领域优先按需接入 arXiv、DBLP；Tavily 仅作为补充发现与网页证据来源，不能替代学术来源的论文身份与引用元数据。不要无条件调用所有数据源。
 - 持久化使用 SQLite，短期缓存、限流和工作流临时状态使用 Redis；语义向量索引使用 FAISS。
 - 排序遵循“规则过滤 → BGE-M3 粗排 → Cross Encoder 重排 → LLM 精排与理由生成”的分层设计。初期不得以模型微调或强化学习替代该方案。
 - 核心领域契约为 `QueryIntent`、`PaperRecord`、`SearchRunState` 与 `SearchResult`；补充网页发现使用独立的 `SupplementalDiscoveryItem`，不得伪装为论文记录。Python 模块可渐进兼容演进，但不得在没有迁移计划时随意改写已有公开字段。去重优先级为 DOI、arXiv ID、PMID、来源平台 ID、标题+年份+作者。
@@ -21,7 +21,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 ## 2. 实施与规划规则
 
 - 按阶段交付，优先顺序为：基础工程 → 多源检索与规范化/去重 → 排序系统 → 搜索页与文献库/图谱 → 缓存、成本统计与策略优化。
-- 当前实施顺序为：核心领域契约、自然语言 Query Agent、OpenAlex、Semantic Scholar、arXiv、DBLP 与 Tavily 适配器、动态来源路由、多源召回协调、`PaperRecord` 规范化融合、身份去重、版本族关联、RRF、多源稳定 API、多源分层排序与约束核验、搜索结果页基础闭环、可编辑 `QueryIntent` 直接重搜，以及 SQLite 文献库后端基础闭环均已完成；下一步在搜索结果页接入收藏操作并实现“我的文献库”基础页面，再进入 FAISS 文献库语义检索。自然语言入口必须先生成英文检索式和结构化 `QueryIntent`，并将来源召回规模与最终结果数量分离；用户编辑已有 `QueryIntent` 后应直接进入多源检索，避免重复调用 Query Agent。文献库按 DOI、arXiv ID、PMID、来源平台 ID 和内部论文 ID 的顺序去重。OpenAlex 与已启用的 Semantic Scholar 为核心源；AI/计算机领域按需加入 arXiv 与 DBLP；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用。
+- 当前实施顺序为：核心领域契约、自然语言 Query Agent、OpenAlex、Semantic Scholar、arXiv、DBLP 与 Tavily 适配器、动态来源路由、多源召回协调、`PaperRecord` 规范化融合、身份去重、版本族关联、RRF、多源稳定 API、多源分层排序与约束核验、搜索结果页基础闭环、可编辑 `QueryIntent` 直接重搜，以及 SQLite 文献库前后端基础闭环均已完成；下一步实现文献库 BGE-M3 向量生成与 FAISS 语义检索，再接入文献库自然语言搜索。自然语言入口必须先生成英文检索式和结构化 `QueryIntent`，并将来源召回规模与最终结果数量分离；用户编辑已有 `QueryIntent` 后应直接进入多源检索，避免重复调用 Query Agent。文献库按 DOI、arXiv ID、PMID、来源平台 ID 和内部论文 ID 的顺序去重。OpenAlex 与已启用的 Semantic Scholar 为核心源；AI/计算机领域按需加入 arXiv 与 DBLP；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用。
 - 一次变更以一个可验收的功能闭环为边界，可合并 2–4 个紧密相关的小任务（如实现、测试及必要配置/文档）；完成后立即停止并等待用户确认下一步。不得将无关模块、多个开发阶段或复杂基础设施一次性混入同一变更。
 - 规划完成后，必须在交付说明中明确写出“下一步规划”，并检查本文件是否仍准确；若架构、目录、命令、依赖管理或协作流程发生变化，必须同时更新 `AGENTS.md`，否则说明“AGENTS.md 无需更新”。
 - 每次交付说明必须列出本轮新增或更新的文件，并使用可点击的本地文件链接；说明每个文件的主要变更，方便用户直接审阅。

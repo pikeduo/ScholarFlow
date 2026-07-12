@@ -75,6 +75,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
         self._rate_limit_lock = asyncio.Lock()  # 串行化同一客户端的请求起始时间。
         self._next_request_at = 0.0  # 保存下一次允许发起请求的事件循环时间。
+        self._cooldown_until = 0.0  # 保存来源返回 429 后的进程内冷却截止时间。
 
     async def search(self, query: QueryIntent) -> list[PaperRecord]:
         """搜索 Semantic Scholar 并返回保留来源排名的统一论文记录。
@@ -86,6 +87,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
         异常：
             SemanticScholarClientError：HTTP、网络或响应结构异常时抛出。
         """
+        self._ensure_not_in_cooldown()  # 冷却期内直接降级，避免继续消耗已受限来源调用。
         await self._wait_for_rate_limit()  # 在请求前遵守配置化的来源级最小间隔。
         params = build_semantic_scholar_search_params(query)  # 构造不含密钥的可测试请求参数。
         headers = self._build_headers()  # 仅在配置了密钥时构造认证请求头。
@@ -133,6 +135,8 @@ class SemanticScholarClient(AcademicSearchAdapter):
                     if status_code == 429 and attempt < max_attempts:  # 仅在仍有预算时重试明确限流。
                         await self._wait_before_retry(attempt, max_attempts)  # 按来源 RPS 等待后继续。
                         continue  # 发起下一次有限尝试。
+                    if status_code == 429:  # 最终限流响应应触发跨搜索冷却。
+                        self._activate_cooldown(error.response)  # 优先尊重 Retry-After，否则使用保守冷却时间。
                     logger.error("Semantic Scholar 请求失败，状态码=%d，尝试=%d/%d", status_code, attempt, max_attempts)  # 记录状态与尝试次数。
                     raise SemanticScholarClientError(f"Semantic Scholar 请求失败（HTTP {status_code}）") from None  # 隐藏底层请求上下文。
                 except httpx.RequestError as error:  # 网络和超时错误不自动重试，避免放大外部故障。
@@ -149,6 +153,8 @@ class SemanticScholarClient(AcademicSearchAdapter):
                 if error_category == "请求受限" and attempt < max_attempts:  # 兼容供应商以 HTTP 200 返回的限流信封。
                     await self._wait_before_retry(attempt, max_attempts)  # 等待来源级间隔后继续。
                     continue  # 发起下一次有限尝试。
+                if error_category == "请求受限":  # 最终限流信封同样触发跨搜索冷却。
+                    self._activate_cooldown(response)  # 使用响应头或保守默认时间。
                 response_fields = ",".join(sorted(response_data.keys())) if response_data else "none"  # 仅记录字段名而不记录值。
                 logger.error("Semantic Scholar 响应不可用：错误类型=%s，响应字段=%s，尝试=%d/%d", error_category, response_fields, attempt, max_attempts)  # 记录安全分类和最终尝试数。
                 raise SemanticScholarClientError(f"Semantic Scholar {error_category}")  # 将来源错误安全传递给协调器。
@@ -169,6 +175,26 @@ class SemanticScholarClient(AcademicSearchAdapter):
         if self._settings.semantic_scholar_api_key is None:  # 官方端点允许匿名访问，但可能受共享限流影响。
             return {}  # 不发送空认证头，避免产生误导性请求。
         return {"x-api-key": self._settings.semantic_scholar_api_key.get_secret_value()}  # 仅在实际请求层解封装密钥。
+
+    def _ensure_not_in_cooldown(self) -> None:
+        """在来源限流冷却期内快速失败，避免再次发出外部请求。"""
+        loop = asyncio.get_running_loop()  # 使用事件循环单调时间判断冷却状态。
+        remaining_seconds = self._cooldown_until - loop.time()  # 计算剩余冷却时间。
+        if remaining_seconds > 0:  # 冷却尚未结束时不访问供应商。
+            logger.warning("Semantic Scholar 仍在限流冷却期：剩余秒数=%.3f", remaining_seconds)  # 记录安全等待统计。
+            raise SemanticScholarClientError("Semantic Scholar 请求受限，当前处于冷却期")  # 让协调器立即使用其他来源降级。
+
+    def _activate_cooldown(self, response: httpx.Response) -> None:
+        """根据 Retry-After 或保守默认值启用进程内限流冷却。"""
+        retry_after = response.headers.get("Retry-After", "").strip()  # 读取不含敏感信息的官方重试建议。
+        try:  # 仅解析常见秒数形式，HTTP 日期交给默认值处理。
+            retry_after_seconds = float(retry_after) if retry_after else 0.0  # 将有效秒数转换为浮点数。
+        except ValueError:  # 无法解析的 HTTP 日期或异常文本不应阻断降级。
+            retry_after_seconds = 0.0  # 使用保守默认冷却。
+        cooldown_seconds = max(60.0, retry_after_seconds, 1.0 / self._settings.semantic_scholar_requests_per_second)  # 至少冷却一分钟以避免连续搜索反复触发 429。
+        loop = asyncio.get_running_loop()  # 使用与请求限流一致的单调时间。
+        self._cooldown_until = max(self._cooldown_until, loop.time() + cooldown_seconds)  # 延长而不缩短已有冷却期。
+        logger.warning("Semantic Scholar 已进入限流冷却：秒数=%.3f", cooldown_seconds)  # 记录不含响应正文的冷却统计。
 
     async def _wait_for_rate_limit(self) -> None:
         """按配置化 RPS 串行等待下一次允许的来源请求时间。"""

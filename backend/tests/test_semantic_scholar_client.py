@@ -82,16 +82,27 @@ def test_client_allows_anonymous_access_when_key_is_not_configured() -> None:
 
 def test_client_hides_http_error_details() -> None:
     """非成功 HTTP 状态应转换为不泄露请求头或响应正文的领域错误。"""
+    request_count = 0  # 统计限流响应后的真实外部调用次数。
+
     def handler(request: httpx.Request) -> httpx.Response:
         """返回模拟来源限流响应。"""
-        return httpx.Response(429, request=request)  # 模拟 Semantic Scholar 限流。
+        nonlocal request_count  # 更新当前用例调用计数。
+        request_count += 1  # 记录实际进入 MockTransport 的请求。
+        return httpx.Response(429, headers={"Retry-After": "90"}, request=request)  # 模拟带官方冷却建议的限流。
 
     client = SemanticScholarClient(  # 使用 mock 限流响应构造来源客户端。
         settings_override=_build_test_settings(),  # 注入隔离配置。
         transport=httpx.MockTransport(handler),  # 拦截真实网络访问。
     )
-    with pytest.raises(SemanticScholarClientError, match="HTTP 429"):  # 断言调用方仅收到已净化状态错误。
-        asyncio.run(client.search(_build_query_intent()))  # 执行并触发来源错误边界。
+    async def execute_twice() -> None:
+        """在同一事件循环验证首次 429 后快速降级。"""
+        with pytest.raises(SemanticScholarClientError, match="HTTP 429"):  # 首次调用应返回净化状态错误。
+            await client.search(_build_query_intent())  # 发起唯一一次外部请求并触发冷却。
+        with pytest.raises(SemanticScholarClientError, match="冷却期"):  # 冷却期内不应再次访问来源。
+            await client.search(_build_query_intent())  # 验证进程内快速降级。
+
+    asyncio.run(execute_twice())  # 执行同一事件循环内的两次搜索。
+    assert request_count == 1  # 验证第二次搜索没有消耗 Semantic Scholar API 调用。
 
 
 @pytest.mark.parametrize(  # 覆盖供应商可能以 HTTP 200 返回的常见错误信封。
