@@ -10,7 +10,8 @@ from sqlalchemy.exc import SQLAlchemyError  # 模拟持久化故障。
 from sqlalchemy.orm import Session, sessionmaker  # 创建测试会话工厂。
 from sqlalchemy.pool import StaticPool  # 让多线程测试客户端共享同一内存数据库。
 
-from backend.app.api.routes.library import get_database_session, get_library_paper_indexer, get_library_service  # 覆盖生产数据库、模型和服务依赖。
+from backend.app.api.routes.library import get_database_session, get_library_paper_indexer, get_library_semantic_searcher, get_library_service  # 覆盖生产数据库、模型和服务依赖。
+from backend.app.models.library import LibrarySemanticSearchResult  # 构造不加载真实模型的自然语言检索响应。
 from backend.app.services.library_vector_index import LibraryVectorIndexResult  # 构造不加载真实模型的收藏后索引替身。
 from backend.app.main import app  # 导入已装配文献库路由的 FastAPI 应用。
 from backend.app.models.paper import PaperRecord  # 构造去重优先级测试论文。
@@ -36,11 +37,13 @@ def library_client() -> Iterator[TestClient]:
 
     app.dependency_overrides[get_database_session] = override_session  # 替换真实 SQLite 会话。
     app.dependency_overrides[get_library_paper_indexer] = lambda: _NoopLibraryPaperIndexer()  # 阻止 API 单测加载或下载 BGE-M3 模型。
+    app.dependency_overrides[get_library_semantic_searcher] = lambda: _NoopLibrarySemanticSearcher()  # 阻止 API 单测读取真实 FAISS 索引。
     client = TestClient(app)  # 构造不启动真实服务的本地客户端。
     yield client  # 交给用例验证完整路由闭环。
     client.close()  # 释放 ASGI 客户端资源。
     app.dependency_overrides.pop(get_database_session, None)  # 清理会话覆盖防止污染其他测试。
     app.dependency_overrides.pop(get_library_paper_indexer, None)  # 清理模型索引器覆盖防止污染其他测试。
+    app.dependency_overrides.pop(get_library_semantic_searcher, None)  # 清理语义检索器覆盖防止污染其他测试。
     app.dependency_overrides.pop(get_library_service, None)  # 清理可能由异常用例设置的服务覆盖。
     Base.metadata.drop_all(bind=engine)  # 删除内存表以隔离下一用例。
     engine.dispose()  # 释放内存数据库连接。
@@ -53,6 +56,15 @@ class _NoopLibraryPaperIndexer:
         """不加载模型、不写入索引，仅返回可解释测试降级结果。"""
         _ = paper, metadata_repository  # 明确测试替身不会读取论文内容或 SQLite 映射。
         return LibraryVectorIndexResult(indexed=False, vector_id=None, reason="测试未启用语义索引")  # 保持收藏 API 响应契约不变。
+
+
+class _NoopLibrarySemanticSearcher:
+    """在 API 单测中替代真实 BGE 和 FAISS 的自然语言检索器。"""
+
+    async def search(self, query: str, items: list[object], metadata_repository: object, top_k: int) -> LibrarySemanticSearchResult:
+        """验证路由已完成结构化筛选后调用检索器，并返回稳定空结果。"""
+        _ = query, items, metadata_repository, top_k  # 测试替身不读取查询或数据库内容。
+        return LibrarySemanticSearchResult()  # 维持 API 响应契约且不触发模型加载。
 
 
 def _paper_payload(paper_id: str = "paper-1", doi: str = "10.1000/library-test", title: str = "Evidence-Grounded Retrieval") -> dict[str, object]:
@@ -85,6 +97,14 @@ def test_library_starts_empty_and_deduplicates_doi_saves(library_client: TestCli
     assert duplicate_response.json()["item"]["paper"]["title"] == "Updated Retrieval Metadata"  # 验证重复收藏刷新论文快照。
     assert duplicate_response.json()["item"]["note"] == "首次收藏"  # 验证未提供新备注时保留旧备注。
     assert list_response.json()["total"] == 1  # 验证数据库中只存在一条论文身份记录。
+
+
+def test_library_semantic_search_uses_stable_route_and_response_contract(library_client: TestClient) -> None:
+    """自然语言文献库检索应在动态 item_id 路由之前匹配并返回稳定响应。"""
+    response = library_client.get("/api/v1/library/items/semantic-search", params={"query": "semantic retrieval", "top_k": 5})  # 调用无需真实模型的覆盖检索器。
+
+    assert response.status_code == 200  # 验证固定语义检索路径未被 /{item_id} 路由吞掉。
+    assert response.json() == {"items": [], "total": 0, "degraded": False, "degradation_reason": None}  # 验证空语义结果保持稳定公共契约。
 
 
 def test_library_filters_updates_and_deletes_item(library_client: TestClient) -> None:

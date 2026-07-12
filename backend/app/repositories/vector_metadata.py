@@ -115,6 +115,13 @@ class VectorMetadataRepository:
         rows = self._session.scalars(select(EmbeddingRecordRow.vector_id).where(EmbeddingRecordRow.index_name == index_name, EmbeddingRecordRow.status == "active", EmbeddingRecordRow.vector_id.in_(vector_ids))).all()  # 仅查询本索引内仍有效的映射。
         return {int(vector_id) for vector_id in rows}  # 转换为供 FAISS 搜索结果过滤使用的整数集合。
 
+    def active_records(self, index_name: str, vector_ids: list[int]) -> dict[int, EmbeddingRecordRow]:
+        """返回候选 ID 中仍处于 active 状态的完整映射，供结果回填 PaperRecord。"""
+        if not vector_ids:  # 避免生成无意义 IN 空集合查询。
+            return {}  # 返回稳定空映射。
+        rows = self._session.scalars(select(EmbeddingRecordRow).where(EmbeddingRecordRow.index_name == index_name, EmbeddingRecordRow.status == "active", EmbeddingRecordRow.vector_id.in_(vector_ids))).all()  # 仅返回当前索引仍可检索的论文映射。
+        return {row.vector_id: row for row in rows}  # 使用 vector_id 保留 FAISS 命中顺序的快速回填能力。
+
     def active_count(self, index_name: str) -> int:
         """返回指定索引在 SQLite 映射中仍有效的向量数量。"""
         return len(self._session.scalars(select(EmbeddingRecordRow.vector_id).where(EmbeddingRecordRow.index_name == index_name, EmbeddingRecordRow.status == "active")).all())  # 使用 SQLite 状态而非 FAISS 总数统计逻辑失效后的真实可检索数量。

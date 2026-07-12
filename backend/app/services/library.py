@@ -1,10 +1,11 @@
 """编排个人文献库操作并记录不含用户备注的安全统计。"""
 
 from backend.app.core.logging import logger  # 记录收藏数量和操作类型等非敏感统计。
-from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 接收稳定请求并返回公共领域模型。
+from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, LibrarySemanticSearchResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 接收稳定请求并返回公共领域模型。
 from backend.app.repositories.library import LibraryRepository  # 依赖可替换 SQLite 仓储。
 from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 使用请求级 SQLite 会话维护向量映射状态。
 from backend.app.services.library_vector_index import LibraryPaperIndexer  # 依赖可替换的收藏后语义索引编排器。
+from backend.app.services.library_semantic_search import LibrarySemanticSearcher  # 依赖可替换的文献库自然语言检索器。
 
 
 class LibraryItemNotFoundError(LookupError):
@@ -14,11 +15,12 @@ class LibraryItemNotFoundError(LookupError):
 class LibraryService:
     """提供去重收藏、筛选、属性更新和删除的业务边界。"""
 
-    def __init__(self, repository: LibraryRepository, vector_metadata_repository: VectorMetadataRepository | None = None, paper_indexer: LibraryPaperIndexer | None = None) -> None:
+    def __init__(self, repository: LibraryRepository, vector_metadata_repository: VectorMetadataRepository | None = None, paper_indexer: LibraryPaperIndexer | None = None, semantic_searcher: LibrarySemanticSearcher | None = None) -> None:
         """保存由 API 或测试注入的文献库仓储。"""
         self._repository = repository  # 服务不依赖全局数据库会话。
         self._vector_metadata_repository = vector_metadata_repository  # 保存可选向量元数据仓储以保持既有直接服务测试兼容。
         self._paper_indexer = paper_indexer  # 保存可选索引器，允许测试或降级场景不加载模型。
+        self._semantic_searcher = semantic_searcher  # 保存可选语义检索器，保持既有直接服务测试兼容。
 
     def save(self, request: SaveLibraryItemRequest) -> LibrarySaveResult:
         """保存论文，并明确返回本次是否创建新收藏。"""
@@ -34,6 +36,26 @@ class LibraryService:
         items = self._repository.list(tag=tag, reading_status=reading_status)  # 执行确定性筛选。
         logger.info("文献库查询完成：结果数=%d，按标签筛选=%s，按状态筛选=%s", len(items), bool(tag), reading_status is not None)  # 只记录筛选是否启用。
         return LibraryItemList(items=items, total=len(items))  # 返回当前筛选集合和总数。
+
+    async def search_semantic(self, query: str, top_k: int, tag: str | None = None, reading_status: ReadingStatus | None = None) -> LibrarySemanticSearchResult:
+        """在结构化筛选后的收藏集合中执行自然语言语义检索或安全降级。
+
+        参数：
+            query：用户输入的自然语言检索文本，仅传给本地嵌入模型且不写入日志。
+            top_k：期望返回的最多结果数。
+            tag：可选精确标签筛选。
+            reading_status：可选阅读状态筛选。
+        返回：
+            LibrarySemanticSearchResult：按语义分数排序的收藏，可能标记降级。
+        异常：
+            RuntimeError：未装配语义检索依赖时抛出稳定错误。
+        """
+        if self._vector_metadata_repository is None or self._semantic_searcher is None:  # 直接服务测试或未完成组合根时没有检索依赖。
+            raise RuntimeError("文献库语义检索尚未装配")  # 由 API 层映射为安全服务不可用错误。
+        items = self._repository.list(tag=tag, reading_status=reading_status)  # 先执行文献库结构化筛选，避免无关论文进入语义结果。
+        result = await self._semantic_searcher.search(query, items, self._vector_metadata_repository, top_k)  # 在筛选集合内执行 BGE、FAISS 和 SQLite 映射过滤。
+        logger.info("文献库自然语言检索完成：候选数=%d，返回数=%d，降级=%s", len(items), result.total, result.degraded)  # 仅记录数量和降级状态，不记录查询或论文正文。
+        return result  # 返回稳定 API 响应模型。
 
     def get(self, item_id: str) -> LibraryItem:
         """读取单条收藏，不存在时抛出稳定业务异常。"""

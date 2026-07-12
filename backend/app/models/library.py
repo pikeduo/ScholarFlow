@@ -66,6 +66,22 @@ class LibraryItemList(BaseModel):
     total: int = Field(default=0, ge=0)  # 返回当前筛选条件下的记录总数。
 
 
+class LibrarySemanticSearchItem(BaseModel):
+    """保存一条文献库语义检索命中及其可解释相似度分数。"""
+
+    item: LibraryItem  # 返回与普通文献库列表一致的收藏详情。
+    semantic_score: float = Field(ge=0.0, le=1.0)  # 返回归一化向量内积或降级词项匹配分数。
+
+
+class LibrarySemanticSearchResult(BaseModel):
+    """保存文献库自然语言语义检索结果与降级状态。"""
+
+    items: list[LibrarySemanticSearchItem] = Field(default_factory=list)  # 按相似度降序返回命中的收藏。
+    total: int = Field(default=0, ge=0)  # 返回当前结果数量。
+    degraded: bool = False  # 标记是否因模型或索引不可用而采用本地词项匹配。
+    degradation_reason: str | None = None  # 返回不泄露内部路径的安全降级摘要。
+
+
 def _normalize_tags(tags: list[str]) -> list[str]:
     """规范化标签文本并保持首次出现顺序。"""
     normalized_tags: list[str] = []  # 保存有效且去重后的标签。

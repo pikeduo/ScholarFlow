@@ -8,13 +8,14 @@ from sqlalchemy.exc import SQLAlchemyError  # 捕获持久化层可预期故障�
 from sqlalchemy.orm import Session  # 标注请求级 SQLAlchemy 会话。
 
 from backend.app.core.logging import logger  # 记录数据库故障完整堆栈。
-from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 声明公共请求与响应契约。
+from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, LibrarySemanticSearchResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 声明公共请求与响应契约。
 from backend.app.repositories.database import SessionLocal  # 为每个请求创建独立数据库会话。
 from backend.app.repositories.faiss_index import FaissIndexManager  # 管理默认文献库 FAISS 索引文件。
 from backend.app.repositories.library import LibraryRepository  # 装配 SQLite 文献库仓储。
 from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 装配 SQLite 向量映射仓储。
 from backend.app.services.library import LibraryItemNotFoundError, LibraryService  # 编排文献库业务并映射不存在错误。
 from backend.app.services.library_vector_index import DEFAULT_LIBRARY_INDEX_PATH, LIBRARY_INDEX_NAME, LibraryPaperIndexer, LibraryVectorIndexer  # 装配可覆盖的收藏后向量索引依赖。
+from backend.app.services.library_semantic_search import LibrarySemanticSearchService, LibrarySemanticSearcher  # 装配可覆盖的自然语言语义检索依赖。
 
 
 router = APIRouter(prefix="/library/items")  # 将个人文献库端点组织到稳定资源路径。
@@ -29,7 +30,9 @@ def get_database_session() -> Iterator[Session]:
         session.close()  # 防止连接长期占用。
 
 
-_library_paper_indexer = LibraryVectorIndexer(index_manager=FaissIndexManager(LIBRARY_INDEX_NAME, DEFAULT_LIBRARY_INDEX_PATH))  # 创建进程级懒加载模型和索引管理器，构造阶段不触发 I/O。
+_library_index_manager = FaissIndexManager(LIBRARY_INDEX_NAME, DEFAULT_LIBRARY_INDEX_PATH)  # 创建进程级共享索引管理器，构造阶段不触发 I/O。
+_library_paper_indexer = LibraryVectorIndexer(index_manager=_library_index_manager)  # 复用共享管理器完成收藏后向量写入。
+_library_semantic_searcher = LibrarySemanticSearchService(index_manager=_library_index_manager)  # 复用共享管理器完成自然语言查询读取。
 
 
 def get_library_paper_indexer() -> LibraryPaperIndexer:
@@ -37,9 +40,14 @@ def get_library_paper_indexer() -> LibraryPaperIndexer:
     return _library_paper_indexer  # 复用模型和索引实例，避免每次收藏重复加载权重。
 
 
-def get_library_service(session: Annotated[Session, Depends(get_database_session)], paper_indexer: Annotated[LibraryPaperIndexer, Depends(get_library_paper_indexer)]) -> LibraryService:
+def get_library_semantic_searcher() -> LibrarySemanticSearcher:
+    """提供可由测试覆盖的进程级文献库自然语言语义检索器。"""
+    return _library_semantic_searcher  # 复用模型和索引实例，避免每次检索重复读取索引文件。
+
+
+def get_library_service(session: Annotated[Session, Depends(get_database_session)], paper_indexer: Annotated[LibraryPaperIndexer, Depends(get_library_paper_indexer)], semantic_searcher: Annotated[LibrarySemanticSearcher, Depends(get_library_semantic_searcher)]) -> LibraryService:
     """使用请求级会话构造文献库服务。"""
-    return LibraryService(LibraryRepository(session), VectorMetadataRepository(session), paper_indexer)  # 集中装配文献库、向量状态和懒加载索引器。
+    return LibraryService(LibraryRepository(session), VectorMetadataRepository(session), paper_indexer, semantic_searcher)  # 集中装配文献库、向量状态及共享语义组件。
 
 
 @router.post("", response_model=LibrarySaveResult, status_code=status.HTTP_200_OK, summary="收藏论文")
@@ -59,6 +67,19 @@ def list_library_items(service: Annotated[LibraryService, Depends(get_library_se
         return service.list(tag=tag, reading_status=reading_status)  # 返回确定性筛选结果。
     except SQLAlchemyError:  # 不向前端暴露查询实现细节。
         logger.exception("文献库查询失败")  # 记录完整堆栈供排查。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库服务暂时不可用，请稍后重试") from None  # 返回安全错误。
+
+
+@router.get("/semantic-search", response_model=LibrarySemanticSearchResult, status_code=status.HTTP_200_OK, summary="自然语言检索文献库")
+async def search_library_items_semantically(query: Annotated[str, Query(min_length=2, max_length=1000)], service: Annotated[LibraryService, Depends(get_library_service)], top_k: Annotated[int, Query(ge=1, le=50)] = 20, tag: Annotated[str | None, Query(min_length=1, max_length=100)] = None, reading_status: ReadingStatus | None = None) -> LibrarySemanticSearchResult:
+    """按可选结构化筛选检索收藏论文，并返回语义分数或安全降级结果。"""
+    try:  # 将数据库故障和未装配依赖隔离为稳定公共错误。
+        return await service.search_semantic(query, top_k=top_k, tag=tag, reading_status=reading_status)  # 先筛选再执行 BGE、FAISS 和 SQLite 映射过滤。
+    except RuntimeError:  # 仅处理未装配语义服务等稳定基础设施错误。
+        logger.exception("文献库语义检索服务不可用")  # 记录完整受控堆栈，不记录查询正文。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库语义检索暂不可用，请稍后重试") from None  # 返回安全错误。
+    except SQLAlchemyError:  # 不向前端暴露 SQL、数据库路径或表结构。
+        logger.exception("文献库语义检索数据库失败")  # 记录完整数据库异常堆栈。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库服务暂时不可用，请稍后重试") from None  # 返回安全错误。
 
 
