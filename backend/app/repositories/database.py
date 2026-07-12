@@ -41,7 +41,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)  # �
 
 
 class Base(DeclarativeBase):
-    """所有未来持久化数据模型的声明式基类。"""
+    """所有 SQLite 业务持久化模型共享的声明式基类。"""
 
 
 def initialize_database() -> None:
@@ -50,5 +50,8 @@ def initialize_database() -> None:
     异常：
         SQLAlchemyError：由 SQLAlchemy 在建库或建表失败时抛出。
     """
+    from backend.app.repositories import library as _library_repository  # 导入业务 ORM 映射以注册文献库表。
+
+    _ = _library_repository  # 明确该导入用于 SQLAlchemy 元数据注册而非直接调用。
     Base.metadata.create_all(bind=engine)  # 仅创建不存在的表，不删除或修改已有数据。
     logger.info("SQLite 基础结构已准备完成，数据库=%s", settings.database_url)  # 记录数据库准备完成信息。
