@@ -12,11 +12,13 @@ from backend.app.adapters.semantic_scholar import SemanticScholarClient  # 装�
 from backend.app.adapters.tavily import TavilyClient  # 装配仅用于独立网页补充发现的适配器。
 from backend.app.core.logging import logger  # 记录服务不可用时的完整错误堆栈。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 声明多源检索的稳定融合响应模型。
+from backend.app.models.multi_round_search import MultiRoundSearchResult  # 声明多轮搜索的稳定运行状态和最终结果响应模型。
 from backend.app.models.natural_search import NaturalSearchRequest  # 接收前端自然语言问题和显式约束。
 from backend.app.models.query import QuerySchema  # 接收 FastAPI 自动校验的结构化检索请求。
 from backend.app.models.query_intent import QueryIntent  # 接收已规划完成的多源检索意图。
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
+from backend.app.services.multi_round_search import MultiRoundSearchController  # 执行有限轮次的召回、缺口修复与保护性停止。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
 from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
 from backend.app.adapters.deepseek_query_planner import QueryPlanningError  # 将查询规划故障转换为稳定 HTTP 错误。
@@ -52,6 +54,12 @@ def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
         },
         web_discovery_adapters={"tavily": TavilyClient()},  # 注册独立网页补充来源且永不进入论文融合。
     )
+
+
+@lru_cache(maxsize=1)
+def get_multi_round_search_controller() -> MultiRoundSearchController:
+    """构造并复用多轮搜索控制器，复用单轮协调器的来源限流和模型实例。"""
+    return MultiRoundSearchController(get_multi_source_recall_coordinator())  # 让多轮执行复用同一进程内的来源与模型容器。
 
 
 @lru_cache(maxsize=1)
@@ -110,6 +118,28 @@ async def search_multi_source(
         ) from None
 
 
+@router.post("/multi-round", response_model=MultiRoundSearchResult, status_code=status.HTTP_200_OK, summary="按意图执行有限轮次的多源论文检索")
+async def search_multi_round(
+    query: QueryIntent,
+    controller: Annotated[MultiRoundSearchController, Depends(get_multi_round_search_controller)],
+) -> MultiRoundSearchResult:
+    """直接执行用户已编辑的 QueryIntent，并返回多轮过程的最终状态与停止原因。
+
+    参数：
+        query：无需再次调用 Query Agent 的完整、已校验查询意图。
+        controller：可在测试中替换的多轮搜索控制器。
+    返回：
+        MultiRoundSearchResult：累计论文、覆盖报告、运行状态与安全来源统计。
+    异常：
+        HTTPException：控制器未能形成稳定结果时返回不泄露内部实现的 503 响应。
+    """
+    try:  # 控制器会隔离来源错误，此处仅转换未预期的服务边界故障。
+        return await controller.run(query)  # 直接使用编辑后的意图，避免重复调用 Query Agent。
+    except Exception:  # 不向调用方暴露模型装配、来源实现或工作流内部细节。
+        logger.exception("多轮多源检索接口调用失败")  # 在受控日志保留完整堆栈供运维排查。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回安全、可理解且稳定的公共错误。
+
+
 @router.post("/natural", response_model=MultiSourceRecallResult, status_code=status.HTTP_200_OK, summary="按自然语言检索多源论文")
 async def search_natural(
     request: NaturalSearchRequest,
@@ -133,3 +163,43 @@ async def search_natural(
     except Exception:  # 隔离无法形成稳定响应的未预期错误。
         logger.exception("自然语言多源检索失败")  # 记录完整堆栈且不输出查询正文。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多源论文检索服务暂时不可用，请稍后重试") from None  # 返回稳定错误。
+
+
+@router.post("/natural-multi-round", response_model=MultiRoundSearchResult, status_code=status.HTTP_200_OK, summary="按自然语言执行有限轮次的多源论文检索")
+async def search_natural_multi_round(
+    request: NaturalSearchRequest,
+    planner: Annotated[QueryPlanningService, Depends(get_query_planning_service)],
+    controller: Annotated[MultiRoundSearchController, Depends(get_multi_round_search_controller)],
+) -> MultiRoundSearchResult:
+    """先生成 QueryIntent，再执行多轮搜索并附加规划用量，供前端展示完整过程。
+
+    参数：
+        request：自然语言问题和用户显式检索条件。
+        planner：可替换的自然语言 Query Agent 服务。
+        controller：可替换的多轮搜索控制器。
+    返回：
+        MultiRoundSearchResult：包含执行意图、累计论文、停止原因和 Query Agent 统计。
+    异常：
+        HTTPException：规划或控制器不可用时返回稳定且不泄露内部细节的 503 响应。
+    """
+    try:  # 查询规划失败时禁止退回整句低质量检索。
+        planning_result = await planner.plan(request)  # 先获得可编辑且可审计的结构化英文检索意图。
+    except QueryPlanningError:  # 适配层已净化密钥、URL 与原始响应正文。
+        logger.exception("多轮自然语言查询规划失败")  # 保留受控堆栈供服务排查。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回安全公共错误。
+    try:  # 多轮控制器使用规划意图执行实际召回、排序和缺口修复。
+        result = await controller.run(planning_result.query_intent)  # 不将原始自然语言整句直接传递给来源适配器。
+    except Exception:  # 隔离控制器装配或未预期内部错误。
+        logger.exception("多轮自然语言检索接口调用失败")  # 仅记录受控堆栈，不记录完整原始查询。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回稳定服务不可用响应。
+    updated_state = result.run_state.model_copy(update={"token_usage": result.run_state.token_usage + planning_result.prompt_tokens + planning_result.completion_tokens})  # 将 Query Agent 用量纳入运行总 Token 统计。
+    return result.model_copy(  # 保持直接意图重搜零规划开销，同时自然入口回显规划统计。
+        update={
+            "run_state": updated_state,
+            "query_intent": planning_result.query_intent,
+            "query_planning_model_name": planning_result.model_name,
+            "query_planning_prompt_tokens": planning_result.prompt_tokens,
+            "query_planning_completion_tokens": planning_result.completion_tokens,
+            "query_planning_duration_ms": planning_result.duration_ms,
+        }
+    )

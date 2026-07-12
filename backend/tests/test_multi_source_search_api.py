@@ -6,9 +6,10 @@ from unittest.mock import patch  # 替换预期错误日志调用而不影响生
 import pytest  # 提供测试夹具与异常断言工具。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 HTTP 响应。
 
-from backend.app.api.routes.search import get_multi_source_recall_coordinator, get_query_planning_service  # 覆盖生产协调器与查询规划依赖。
+from backend.app.api.routes.search import get_multi_round_search_controller, get_multi_source_recall_coordinator, get_query_planning_service  # 覆盖生产协调器、控制器与查询规划依赖。
 from backend.app.main import app  # 导入待测 FastAPI 应用实例。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造稳定的多源响应结果。
+from backend.app.models.multi_round_search import MultiRoundSearchResult  # 构造稳定的多轮搜索响应结果。
 from backend.app.models.natural_search import QueryPlanningResult  # 构造带用量统计的查询规划结果。
 from backend.app.models.paper import PaperRecord  # 构造融合论文响应数据。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计来源路由计划。
@@ -41,6 +42,23 @@ class FakeQueryPlanningService:
         return QueryPlanningResult(query_intent=intent, model_name="deepseek-v4-flash", prompt_tokens=120, completion_tokens=80, duration_ms=450)  # 构造固定观测数据。
 
 
+class FakeMultiRoundSearchController:
+    """为多轮搜索 HTTP 测试返回预设结果或模拟内部故障的控制器替身。"""
+
+    def __init__(self, result: MultiRoundSearchResult | None = None, should_fail: bool = False) -> None:
+        """保存不访问来源、模型或网络的固定多轮结果和失败开关。"""
+        self._result = result  # 保存成功请求应返回的多轮结果。
+        self._should_fail = should_fail  # 保存是否模拟控制器未预期故障。
+
+    async def run(self, _: QueryIntent) -> MultiRoundSearchResult:
+        """按测试配置返回结果或触发安全 HTTP 错误边界。"""
+        if self._should_fail:  # 仅在错误边界用例模拟内部错误。
+            raise RuntimeError("模拟多轮控制器故障")  # 让路由转换为稳定 503 响应。
+        if self._result is None:  # 防御测试替身遗漏成功结果配置。
+            raise AssertionError("测试替身未配置 MultiRoundSearchResult")  # 让测试配置问题立即可见。
+        return self._result  # 返回预设的可序列化多轮响应。
+
+
 @pytest.fixture
 def api_client() -> Iterator[TestClient]:
     """提供不触发应用生命周期且会清理多源依赖覆盖的本地 HTTP 客户端。"""
@@ -48,7 +66,9 @@ def api_client() -> Iterator[TestClient]:
     yield client  # 交给测试用例发起不访问网络的 HTTP 请求。
     client.close()  # 释放测试客户端持有的本地资源。
     app.dependency_overrides.pop(get_multi_source_recall_coordinator, None)  # 防止替身污染后续测试。
+    app.dependency_overrides.pop(get_multi_round_search_controller, None)  # 清理多轮控制器替身。
     app.dependency_overrides.pop(get_query_planning_service, None)  # 清理查询规划替身。
+    get_multi_round_search_controller.cache_clear()  # 释放可能持有旧协调器的生产控制器缓存。
 
 
 def _build_result() -> MultiSourceRecallResult:
@@ -61,6 +81,15 @@ def _build_result() -> MultiSourceRecallResult:
         merged_paper_count=0,  # 提供无重复时的合并数量。
         work_family_count=1,  # 提供可识别版本族数量。
     )
+
+
+def _build_multi_round_result() -> MultiRoundSearchResult:
+    """构造含完成状态、停止原因和可编辑意图的稳定多轮响应。"""
+    intent = QueryIntent(original_query="中文查询", normalized_query="vision language model medical report generation", query_language="zh", target_paper_count=20, source_recall_count=50)  # 构造自然语言入口将实际执行的意图。
+    paper = PaperRecord(paper_id="W1", title="Fused Paper", source="openalex", rrf_score=0.02)  # 构造一篇无需外部服务的最终论文。
+    from backend.app.models.search_run import SearchRunState  # 在测试辅助函数内导入运行状态避免无关用例依赖。
+    run_state = SearchRunState(query_intent=intent, search_mode="standard", max_rounds=2, current_round=1, normalized_papers=[paper], candidate_ids=[paper.paper_id], final_papers=[paper], stop_reason="没有可执行的新查询", status="completed")  # 构造与控制器返回字段一致的最终运行状态。
+    return MultiRoundSearchResult(run_state=run_state, query_intent=intent, papers=[paper], source_counts={"openalex": 1})  # 返回前端可消费的最小多轮搜索结果。
 
 
 def _valid_query_payload() -> dict[str, object]:
@@ -119,6 +148,45 @@ def test_multi_source_search_endpoint_hides_unexpected_coordinator_error(api_cli
     assert response.status_code == 503  # 验证未预期错误被转换为服务不可用响应。
     assert response.json()["detail"] == "多源论文检索服务暂时不可用，请稍后重试"  # 验证不会泄露适配器或内部堆栈信息。
     log_exception.assert_called_once_with("多源检索接口调用失败")  # 验证完整堆栈仍写入受控日志。
+
+
+def test_multi_round_search_endpoint_returns_run_state_and_stop_reason(api_client: TestClient) -> None:
+    """多轮意图入口应返回累计论文、运行状态与可解释停止原因。"""
+    app.dependency_overrides[get_multi_round_search_controller] = lambda: FakeMultiRoundSearchController(result=_build_multi_round_result())  # 注入离线多轮控制器替身。
+
+    response = api_client.post("/api/v1/search/multi-round", json=_valid_query_payload())  # 提交合法的已编辑 QueryIntent。
+
+    assert response.status_code == 200  # 验证多轮入口返回稳定成功状态。
+    payload = response.json()  # 解析公共 JSON 响应。
+    assert payload["papers"][0]["paper_id"] == "W1"  # 验证返回累计最终论文。
+    assert payload["run_state"]["stop_reason"] == "没有可执行的新查询"  # 验证停止原因对前端可见。
+    assert payload["query_intent"]["normalized_query"] == "vision language model medical report generation"  # 验证回显可编辑执行意图。
+
+
+def test_natural_multi_round_search_attaches_query_planning_statistics(api_client: TestClient) -> None:
+    """自然语言多轮入口应先规划意图，再回传规划模型、Token 与耗时统计。"""
+    app.dependency_overrides[get_query_planning_service] = lambda: FakeQueryPlanningService()  # 注入不访问 DeepSeek 的规划替身。
+    app.dependency_overrides[get_multi_round_search_controller] = lambda: FakeMultiRoundSearchController(result=_build_multi_round_result())  # 注入不访问来源的控制器替身。
+
+    response = api_client.post("/api/v1/search/natural-multi-round", json={"query": "检索视觉语言模型在医学影像报告生成中的研究"})  # 提交自然语言搜索请求。
+
+    assert response.status_code == 200  # 验证自然语言多轮入口返回稳定成功状态。
+    payload = response.json()  # 解析可供前端消费的响应。
+    assert payload["query_planning_model_name"] == "deepseek-v4-flash"  # 验证回显实际规划模型。
+    assert payload["query_planning_prompt_tokens"] == 120 and payload["query_planning_completion_tokens"] == 80  # 验证回显 Query Agent Token 用量。
+    assert payload["query_planning_duration_ms"] == 450  # 验证回显 Query Agent 耗时。
+    assert payload["run_state"]["token_usage"] == 200  # 验证规划 Token 已纳入本次运行总量。
+
+
+def test_multi_round_search_endpoint_hides_unexpected_controller_error(api_client: TestClient) -> None:
+    """控制器出现未预期故障时多轮入口必须返回不泄露内部细节的 503。"""
+    app.dependency_overrides[get_multi_round_search_controller] = lambda: FakeMultiRoundSearchController(should_fail=True)  # 注入会抛出内部错误的控制器替身。
+    with patch("backend.app.api.routes.search.logger.exception") as log_exception:  # 拦截预期错误日志调用。
+        response = api_client.post("/api/v1/search/multi-round", json=_valid_query_payload())  # 提交合法请求触发控制器错误。
+
+    assert response.status_code == 503  # 验证内部错误转换为服务不可用。
+    assert response.json()["detail"] == "多轮论文检索服务暂时不可用，请稍后重试"  # 验证不会泄露内部异常文本。
+    log_exception.assert_called_once_with("多轮多源检索接口调用失败")  # 验证完整堆栈仍会写入受控日志。
 
 
 def test_production_coordinator_is_reused_within_process() -> None:

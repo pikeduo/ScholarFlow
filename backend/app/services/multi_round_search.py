@@ -82,7 +82,7 @@ class MultiRoundSearchController:
             except Exception:  # 未预期异常不得形成无限循环或泄露内部细节。
                 logger.exception("多轮搜索单轮协调失败：轮次=%d", next_round)  # 在受控日志记录堆栈而不记录完整用户查询。
                 failed_state = state.model_copy(update={"status": "failed", "current_round": next_round, "stop_reason": "搜索执行出现内部错误", "errors": [*state.errors, "搜索执行出现内部错误"]})  # 返回可恢复的安全失败状态。
-                return MultiRoundSearchResult(run_state=failed_state, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 保留此前已获得的最佳结果。
+                return MultiRoundSearchResult(run_state=failed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 保留此前已获得的最佳结果。
             new_valid_count = _merge_round_papers(accumulated_papers, paper_index, round_result.papers)  # 仅将跨轮首次出现的论文计为本轮新增高质量结果。
             discoveries.extend(round_result.discoveries)  # 网页发现保持独立且允许跨轮累积。
             _accumulate_source_counts(source_counts, round_result.source_counts)  # 汇总所有轮次的来源成功数量。
@@ -118,18 +118,18 @@ class MultiRoundSearchController:
             logger.info("多轮搜索完成一轮：轮次=%d，新增高质量论文=%d，累计论文=%d，来源错误=%d，是否建议继续=%s", next_round, new_valid_count, len(accumulated_papers), len(source_errors), coverage_report.should_continue)  # 仅记录计数、布尔状态和轮次。
             if coverage_report.stop_reason is not None:  # 目标、预算、轮次或边际收益触发时立即停止。
                 completed_state = state.model_copy(update={"status": "completed", "stop_reason": coverage_report.stop_reason})  # 保持当前最佳结果并写入可解释停止原因。
-                return MultiRoundSearchResult(run_state=completed_state, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 返回不额外调用来源的终态。
+                return MultiRoundSearchResult(run_state=completed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 返回不额外调用来源的终态。
             evolution_result = self._query_evolution_service.evolve(query, coverage_report, executed_subqueries=executed_subqueries)  # 只针对当前缺口生成下一轮候选查询。
             pending_subqueries = _append_pending_subqueries(pending_subqueries, evolution_result.generated_subqueries, executed_subqueries)  # 追加通过演化去重的新查询并保留原规划顺序。
             if not pending_subqueries:  # 既无原计划也无演化得到的新查询时禁止重复调用首轮表达。
                 coverage_report = self._coverage_gap_analyzer.analyze(query, accumulated_papers, new_valid_count=new_valid_count, source_counts=source_counts, unavailable_sources=tuple(source_errors), current_round=next_round, max_rounds=max_rounds, budget_exhausted=budget_exhausted, has_executable_query=False)  # 重算明确的“没有可执行新查询”停止原因。
                 completed_state = state.model_copy(update={"status": "completed", "stop_reason": coverage_report.stop_reason, "coverage_report": coverage_report, "warnings": [*state.warnings, *evolution_result.warnings]})  # 保留演化跳过提示供 API 或 SSE 展示。
-                return MultiRoundSearchResult(run_state=completed_state, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 安全停止而不是回退到重复检索。
+                return MultiRoundSearchResult(run_state=completed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 安全停止而不是回退到重复检索。
             next_subquery = pending_subqueries.pop(0)  # 按 Query Agent 原计划优先、再按缺口严重度执行下一条查询。
             executed_subqueries.append(next_subquery.query)  # 在发起下一轮前标记，确保异常恢复也不会重发同一查询。
             current_query = _query_for_subquery(query, next_subquery)  # 将子查询转换为适配器当前可消费的轮次专用 QueryIntent。
         completed_state = state.model_copy(update={"status": "completed", "stop_reason": "已达到最大搜索轮次"})  # 防御性处理循环自然结束的极端路径。
-        return MultiRoundSearchResult(run_state=completed_state, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 返回最后一轮已获得的最佳候选。
+        return MultiRoundSearchResult(run_state=completed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 返回最后一轮已获得的最佳候选。
 
 
 def _merge_round_papers(accumulated_papers: list[PaperRecord], paper_index: dict[str, int], papers: Sequence[PaperRecord]) -> int:
