@@ -4,6 +4,7 @@ from typing import Literal  # 限制工作流运行状态的稳定取值。
 from uuid import uuid4  # 生成不依赖数据库的临时搜索运行标识。
 
 from pydantic import BaseModel, Field, model_validator  # 提供工作流状态的字段和跨字段校验。
+from backend.app.models.coverage import CoverageReport  # 保存每轮完成后可供恢复和停止判断的覆盖报告。
 
 from backend.app.models.paper import PaperRecord, PaperSource  # 保存多源规范化论文和来源状态。
 from backend.app.models.query_intent import QueryIntent, SearchMode  # 保存已规划的查询意图和检索模式。
@@ -33,6 +34,8 @@ class SearchRunState(BaseModel):
         warnings：安全可展示的降级或约束提示。
         errors：已净化的错误摘要。
         degraded_sources：本次运行不可用但未阻塞整体结果的来源。
+        coverage_report：累计候选的覆盖缺口、边际收益和停止判断。
+        final_papers：跨轮身份去重后的最终论文候选。
         stop_reason：完成、预算触顶或边际收益不足等停止原因。
         status：当前工作流状态文本。
     """
@@ -54,6 +57,8 @@ class SearchRunState(BaseModel):
     warnings: list[str] = Field(default_factory=list)  # 保存不含密钥和完整敏感查询的警告。
     errors: list[str] = Field(default_factory=list)  # 保存不含堆栈和请求参数的错误摘要。
     degraded_sources: list[PaperSource] = Field(default_factory=list)  # 保存发生故障但允许整体降级的来源。
+    coverage_report: CoverageReport | None = None  # 保存可由恢复、SSE 和 API 直接消费的最新覆盖报告。
+    final_papers: list[PaperRecord] = Field(default_factory=list)  # 保存跨轮去重且不使用低相关论文填充的最终候选。
     stop_reason: str | None = None  # 保存确定性停止条件或最终失败原因。
     status: SearchRunStatus = "pending"  # 默认标记为尚未开始执行的运行。
 

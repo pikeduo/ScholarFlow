@@ -2,6 +2,7 @@
 """ScholarWeave 检索、融合与排序业务服务包。"""
 
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 对外导出多源召回协调服务。
+from backend.app.services.multi_round_search import MultiRoundSearchController  # 对外导出多轮搜索控制服务。
 from backend.app.services.coverage_analysis import CoverageGapAnalyzer  # 对外导出覆盖缺口分析服务。
 from backend.app.services.cross_encoder_ranking import CrossEncoderReranker  # 对外导出 Cross Encoder 精细重排服务。
 from backend.app.services.llm_ranking import LlmPaperReranker  # 对外导出 LLM 约束核验与最终精排服务。
@@ -16,4 +17,4 @@ from backend.app.services.library_vector_index import LibraryVectorIndexResult, 
 from backend.app.services.library_semantic_search import LibrarySemanticSearchService  # 对外导出文献库自然语言语义检索服务。
 from backend.app.services.source_router import SourceRouter  # 对外导出动态来源路由服务。
 
-__all__ = ["BuiltText", "CoverageGapAnalyzer", "CrossEncoderReranker", "EmbeddingBatch", "EmbeddingService", "EmbeddingServiceConfig", "EmbeddingServiceError", "LibrarySemanticSearchService", "LibraryVectorIndexResult", "LibraryVectorIndexer", "LlmPaperReranker", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryEvolutionService", "QueryPlanningService", "SemanticRanker", "SourceRouter"]  # 限制服务包的公共接口。
+__all__ = ["BuiltText", "CoverageGapAnalyzer", "CrossEncoderReranker", "EmbeddingBatch", "EmbeddingService", "EmbeddingServiceConfig", "EmbeddingServiceError", "LibrarySemanticSearchService", "LibraryVectorIndexResult", "LibraryVectorIndexer", "LlmPaperReranker", "MultiRoundSearchController", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryEvolutionService", "QueryPlanningService", "SemanticRanker", "SourceRouter"]  # 限制服务包的公共接口。

@@ -71,6 +71,7 @@ class CoverageGapAnalyzer:
             high_relevance_count=len(high_relevance_papers),
             gaps=gaps,
             new_valid_count=new_valid_count,
+            source_counts=source_counts,
             unavailable_sources=unavailable_sources,
             current_round=current_round,
             max_rounds=max_rounds,
@@ -131,6 +132,7 @@ class CoverageGapAnalyzer:
         high_relevance_count: int,
         gaps: Sequence[CoverageGap],
         new_valid_count: int,
+        source_counts: Mapping[str, int],
         unavailable_sources: Sequence[str],
         current_round: int,
         max_rounds: int,
@@ -147,7 +149,7 @@ class CoverageGapAnalyzer:
             return "已达到最大搜索轮次"  # 由后续控制器将此原因写入 SearchRunState。
         if not has_executable_query:  # 没有新查询时重复调用同一来源只会放大成本。
             return "没有可执行的新查询"  # 明确说明停止不是因为生成低相关结果。
-        if unavailable_sources and len(unavailable_sources) >= len(source_names_from_gaps(gaps)):  # 所有本轮来源都不可用时继续没有实际价值。
+        if source_counts and unavailable_sources and len(unavailable_sources) >= len(source_counts):  # 全部已选来源均不可用时继续没有实际价值。
             return "可用学术来源不足"  # 避免将单来源故障错误描述为用户查询无结果。
         if current_round > 1 and new_valid_count < self._minimum_new_valid_count:  # 非首轮无新增高质量论文说明边际收益已经不足。
             return "连续轮次新增高质量论文不足"  # 保护 API、Token 和模型成本预算。
@@ -184,7 +186,3 @@ def _gap(gap_type: str, constraint: str, severity: float, current_match_count: i
     """构造保持原约束文本的单个覆盖缺口。"""
     return CoverageGap(gap_type=gap_type, constraint=constraint, severity=severity, current_match_count=current_match_count, recommended_query_focus=constraint)  # 不自动放宽或改写用户条件。
 
-
-def source_names_from_gaps(gaps: Sequence[CoverageGap]) -> set[str]:
-    """从来源缺口中提取本轮已选学术来源名称以判断整体可用性。"""
-    return {gap.constraint for gap in gaps if gap.gap_type == "source"}  # 仅返回来源级缺口，避免误将条件文本视为来源。
