@@ -17,7 +17,7 @@ class _StubScorer:
 
     def score(self, query_text: str, document_texts: list[str]) -> list[float]:
         """验证输入形状后返回固定分数，不加载真实 Cross Encoder。"""
-        assert query_text == "Transformer forecasting"  # 验证服务使用规范化查询文本。
+        assert query_text == "Research topic: Transformer forecasting"  # 验证服务使用统一结构化查询文本。
         assert len(document_texts) == len(self._scores)  # 验证候选和返回分数保持一一对应。
         return self._scores  # 返回预设精细相关性分数。
 

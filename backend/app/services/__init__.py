@@ -8,6 +8,7 @@ from backend.app.services.multi_source_filtering import MultiSourcePaperFilter  
 from backend.app.services.paper_fusion import PaperFusionService  # 对外导出跨来源论文融合服务。
 from backend.app.services.query_planning import QueryPlanningService  # 对外导出自然语言查询规划服务。
 from backend.app.services.semantic_ranking import SemanticRanker  # 对外导出 BGE-M3 语义粗排服务。
+from backend.app.services.paper_text import BuiltText, PaperTextBuilder, PaperTextBuilderError  # 对外导出统一文本构造与哈希边界。
 from backend.app.services.source_router import SourceRouter  # 对外导出动态来源路由服务。
 
-__all__ = ["CrossEncoderReranker", "LlmPaperReranker", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "QueryPlanningService", "SemanticRanker", "SourceRouter"]  # 限制服务包的公共接口。
+__all__ = ["BuiltText", "CrossEncoderReranker", "LlmPaperReranker", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryPlanningService", "SemanticRanker", "SourceRouter"]  # 限制服务包的公共接口。
