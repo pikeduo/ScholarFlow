@@ -6,7 +6,7 @@ from unittest.mock import patch  # 替换预期错误日志调用而不影响生
 import pytest  # 提供测试夹具与异常断言工具。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 HTTP 响应。
 
-from backend.app.api.routes.search import get_multi_round_search_controller, get_multi_source_recall_coordinator, get_query_planning_service  # 覆盖生产协调器、控制器与查询规划依赖。
+from backend.app.api.routes.search import get_multi_round_search_controller, get_multi_source_recall_coordinator, get_query_planning_service, get_search_run_state_store  # 覆盖生产协调器、控制器、查询规划与运行状态依赖。
 from backend.app.main import app  # 导入待测 FastAPI 应用实例。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造稳定的多源响应结果。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 构造稳定的多轮搜索响应结果。
@@ -59,6 +59,26 @@ class FakeMultiRoundSearchController:
         return self._result  # 返回预设的可序列化多轮响应。
 
 
+class FakeSearchRunStateStore:
+    """为运行状态读取接口返回固定状态或模拟存储错误的离线替身。"""
+
+    def __init__(self, state: object | None = None, should_fail: bool = False) -> None:
+        """保存无需 SQLite 的固定状态和失败开关。"""
+        self._state = state  # 保存查询命中时应返回的运行状态。
+        self._should_fail = should_fail  # 保存是否模拟存储读取故障。
+
+    def save(self, _: object) -> None:
+        """满足存储协议，本 HTTP 读取测试不需要写入。"""
+        return None  # 保持替身无副作用。
+
+    def get(self, _: str) -> object | None:
+        """按测试配置返回状态、空值或触发安全错误边界。"""
+        if self._should_fail:  # 仅在存储错误边界用例模拟异常。
+            from backend.app.services.search_run_store import SearchRunStoreError  # 延迟导入稳定服务异常避免无关测试耦合。
+            raise SearchRunStoreError("模拟状态存储故障")  # 让路由转换为不泄露内部细节的 503。
+        return self._state  # 返回固定状态或不存在标识的空值。
+
+
 @pytest.fixture
 def api_client() -> Iterator[TestClient]:
     """提供不触发应用生命周期且会清理多源依赖覆盖的本地 HTTP 客户端。"""
@@ -67,6 +87,7 @@ def api_client() -> Iterator[TestClient]:
     client.close()  # 释放测试客户端持有的本地资源。
     app.dependency_overrides.pop(get_multi_source_recall_coordinator, None)  # 防止替身污染后续测试。
     app.dependency_overrides.pop(get_multi_round_search_controller, None)  # 清理多轮控制器替身。
+    app.dependency_overrides.pop(get_search_run_state_store, None)  # 清理搜索运行状态存储替身。
     app.dependency_overrides.pop(get_query_planning_service, None)  # 清理查询规划替身。
     get_multi_round_search_controller.cache_clear()  # 释放可能持有旧协调器的生产控制器缓存。
 
@@ -187,6 +208,21 @@ def test_multi_round_search_endpoint_hides_unexpected_controller_error(api_clien
     assert response.status_code == 503  # 验证内部错误转换为服务不可用。
     assert response.json()["detail"] == "多轮论文检索服务暂时不可用，请稍后重试"  # 验证不会泄露内部异常文本。
     log_exception.assert_called_once_with("多轮多源检索接口调用失败")  # 验证完整堆栈仍会写入受控日志。
+
+
+def test_search_run_state_endpoint_returns_latest_snapshot_and_404_when_missing(api_client: TestClient) -> None:
+    """运行状态接口应返回轻量快照，并将不存在 run_id 映射为稳定 404。"""
+    expected_state = _build_multi_round_result().run_state  # 复用与多轮响应一致的完成状态。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeSearchRunStateStore(state=expected_state)  # 注入不访问 SQLite 的固定状态存储。
+
+    response = api_client.get(f"/api/v1/search/runs/{expected_state.run_id}")  # 查询存在的运行标识。
+
+    assert response.status_code == 200  # 验证最新轻量状态可以稳定读取。
+    assert response.json()["run_id"] == expected_state.run_id  # 验证响应关联正确运行标识。
+    assert response.json()["status"] == "completed"  # 验证终态可供轮询或 SSE 补偿消费。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeSearchRunStateStore()  # 切换为返回不存在状态的替身。
+    missing_response = api_client.get("/api/v1/search/runs/missing-run")  # 查询未知运行标识。
+    assert missing_response.status_code == 404 and missing_response.json()["detail"] == "搜索运行不存在"  # 验证不存在状态不会伪装为服务故障。
 
 
 def test_production_coordinator_is_reused_within_process() -> None:

@@ -17,8 +17,10 @@ from backend.app.models.natural_search import NaturalSearchRequest  # 接收前�
 from backend.app.models.query import QuerySchema  # 接收 FastAPI 自动校验的结构化检索请求。
 from backend.app.models.query_intent import QueryIntent  # 接收已规划完成的多源检索意图。
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
+from backend.app.models.search_run import SearchRunState  # 声明可按运行标识读取的持久化状态响应。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
 from backend.app.services.multi_round_search import MultiRoundSearchController  # 执行有限轮次的召回、缺口修复与保护性停止。
+from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore, SearchRunStoreError  # 装配 SQLite 状态持久化并映射安全读取错误。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
 from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
 from backend.app.adapters.deepseek_query_planner import QueryPlanningError  # 将查询规划故障转换为稳定 HTTP 错误。
@@ -59,7 +61,13 @@ def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
 @lru_cache(maxsize=1)
 def get_multi_round_search_controller() -> MultiRoundSearchController:
     """构造并复用多轮搜索控制器，复用单轮协调器的来源限流和模型实例。"""
-    return MultiRoundSearchController(get_multi_source_recall_coordinator())  # 让多轮执行复用同一进程内的来源与模型容器。
+    return MultiRoundSearchController(get_multi_source_recall_coordinator(), state_store=get_search_run_state_store())  # 让多轮执行复用来源模型和运行状态持久化适配层。
+
+
+@lru_cache(maxsize=1)
+def get_search_run_state_store() -> SearchRunStateStore:
+    """构造并复用 SQLite 搜索运行状态存储适配层。"""
+    return SqliteSearchRunStateStore()  # 每次存取内部创建短生命周期会话，适合进程级控制器复用。
 
 
 @lru_cache(maxsize=1)
@@ -138,6 +146,31 @@ async def search_multi_round(
     except Exception:  # 不向调用方暴露模型装配、来源实现或工作流内部细节。
         logger.exception("多轮多源检索接口调用失败")  # 在受控日志保留完整堆栈供运维排查。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回安全、可理解且稳定的公共错误。
+
+
+@router.get("/runs/{run_id}", response_model=SearchRunState, status_code=status.HTTP_200_OK, summary="读取可恢复的搜索运行状态")
+def get_search_run_state(
+    run_id: str,
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+) -> SearchRunState:
+    """按 run_id 读取最新轻量运行快照，供轮询、SSE 补偿和恢复入口使用。
+
+    参数：
+        run_id：多轮搜索响应中返回的稳定运行标识。
+        state_store：可替换的搜索运行状态存储适配层。
+    返回：
+        SearchRunState：不重复包含完整论文集合的最新可恢复状态。
+    异常：
+        HTTPException：运行不存在时返回 404，存储不可用时返回安全 503。
+    """
+    try:  # 将存储访问故障隔离为稳定 HTTP 边界。
+        state = state_store.get(run_id)  # 读取最近一次轮次或终态的轻量快照。
+    except SearchRunStoreError:  # 不向前端暴露 SQLite 路径、SQL 或状态 JSON。
+        logger.exception("搜索运行状态读取接口失败：运行=%s", run_id)  # 记录安全运行标识和完整堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="搜索运行状态暂时不可用，请稍后重试") from None  # 返回安全公共错误。
+    if state is None:  # 不存在的运行标识属于稳定资源边界。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索运行不存在")  # 避免将不存在误报为服务故障。
+    return state  # 返回轻量状态，前端可据此补偿进度显示。
 
 
 @router.post("/natural", response_model=MultiSourceRecallResult, status_code=status.HTTP_200_OK, summary="按自然语言检索多源论文")

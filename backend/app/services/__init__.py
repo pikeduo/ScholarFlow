@@ -11,10 +11,11 @@ from backend.app.services.paper_fusion import PaperFusionService  # 对外导出
 from backend.app.services.query_planning import QueryPlanningService  # 对外导出自然语言查询规划服务。
 from backend.app.services.query_evolution import QueryEvolutionService  # 对外导出覆盖缺口驱动的查询演化服务。
 from backend.app.services.semantic_ranking import SemanticRanker  # 对外导出 BGE-M3 语义粗排服务。
+from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore  # 对外导出可替换的搜索运行状态存储边界。
 from backend.app.services.paper_text import BuiltText, PaperTextBuilder, PaperTextBuilderError  # 对外导出统一文本构造与哈希边界。
 from backend.app.services.embedding import EmbeddingBatch, EmbeddingService, EmbeddingServiceConfig, EmbeddingServiceError  # 对外导出批量嵌入服务与稳定结果契约。
 from backend.app.services.library_vector_index import LibraryVectorIndexResult, LibraryVectorIndexer  # 对外导出文献库收藏后向量写入编排器。
 from backend.app.services.library_semantic_search import LibrarySemanticSearchService  # 对外导出文献库自然语言语义检索服务。
 from backend.app.services.source_router import SourceRouter  # 对外导出动态来源路由服务。
 
-__all__ = ["BuiltText", "CoverageGapAnalyzer", "CrossEncoderReranker", "EmbeddingBatch", "EmbeddingService", "EmbeddingServiceConfig", "EmbeddingServiceError", "LibrarySemanticSearchService", "LibraryVectorIndexResult", "LibraryVectorIndexer", "LlmPaperReranker", "MultiRoundSearchController", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryEvolutionService", "QueryPlanningService", "SemanticRanker", "SourceRouter"]  # 限制服务包的公共接口。
+__all__ = ["BuiltText", "CoverageGapAnalyzer", "CrossEncoderReranker", "EmbeddingBatch", "EmbeddingService", "EmbeddingServiceConfig", "EmbeddingServiceError", "LibrarySemanticSearchService", "LibraryVectorIndexResult", "LibraryVectorIndexer", "LlmPaperReranker", "MultiRoundSearchController", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryEvolutionService", "QueryPlanningService", "SearchRunStateStore", "SemanticRanker", "SourceRouter", "SqliteSearchRunStateStore"]  # 限制服务包的公共接口。

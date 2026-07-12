@@ -12,6 +12,7 @@ from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 构造
 from backend.app.models.search_run import SearchRunState  # 更新可恢复的搜索运行状态。
 from backend.app.services.coverage_analysis import CoverageGapAnalyzer  # 以累计候选重新计算缺口与停止原因。
 from backend.app.services.query_evolution import QueryEvolutionService  # 在存在缺口时生成去重补充子查询。
+from backend.app.services.search_run_store import SearchRunStateStore  # 在每轮边界保存可恢复的轻量状态快照。
 
 
 class SingleRoundRecallCoordinator(Protocol):
@@ -30,6 +31,7 @@ class MultiRoundSearchController:
         coordinator: SingleRoundRecallCoordinator,
         coverage_gap_analyzer: CoverageGapAnalyzer | None = None,
         query_evolution_service: QueryEvolutionService | None = None,
+        state_store: SearchRunStateStore | None = None,
         standard_max_rounds: int = 2,
         deep_max_rounds: int = 3,
     ) -> None:
@@ -39,6 +41,7 @@ class MultiRoundSearchController:
             coordinator：执行单轮来源召回和分层排序的可替换协调器。
             coverage_gap_analyzer：分析累计候选覆盖并给出继续或停止建议的服务。
             query_evolution_service：根据缺口生成去重补充子查询的服务。
+            state_store：可选的运行状态存储，传入后在每轮边界保存轻量快照。
             standard_max_rounds：标准模式允许的最大轮次。
             deep_max_rounds：深度模式允许的最大轮次。
         异常：
@@ -51,6 +54,7 @@ class MultiRoundSearchController:
         self._coordinator = coordinator  # 保存不绑定具体适配器、模型或 API 的单轮边界。
         self._coverage_gap_analyzer = coverage_gap_analyzer or CoverageGapAnalyzer()  # 默认使用纯本地覆盖分析。
         self._query_evolution_service = query_evolution_service or QueryEvolutionService()  # 默认使用不调用外部服务的确定性查询演化。
+        self._state_store = state_store  # 未装配持久化时保持控制器可用于离线单元测试。
         self._standard_max_rounds = standard_max_rounds  # 保存标准模式防无限循环的上限。
         self._deep_max_rounds = deep_max_rounds  # 保存深度模式允许的额外缺口修复轮次。
 
@@ -65,6 +69,7 @@ class MultiRoundSearchController:
         """
         max_rounds = self._deep_max_rounds if query.search_mode == "deep" else self._standard_max_rounds  # 按模式选择明确且有限的成本预算。
         state = SearchRunState(query_intent=query, search_mode=query.search_mode, max_rounds=max_rounds, status="running")  # 创建可被后续持久化和恢复的初始状态。
+        self._persist_state(state)  # 在任何外部来源调用前保存可关联和可恢复的初始运行快照。
         pending_subqueries = list(query.subqueries)  # 先保留 Query Agent 已规划但尚未执行的补充查询。
         executed_subqueries = [query.normalized_query]  # 首轮主查询视为已执行，防止演化服务重新生成等价表达。
         accumulated_papers: list[PaperRecord] = []  # 保存按身份优先级跨轮去重后的最终候选。
@@ -82,6 +87,7 @@ class MultiRoundSearchController:
             except Exception:  # 未预期异常不得形成无限循环或泄露内部细节。
                 logger.exception("多轮搜索单轮协调失败：轮次=%d", next_round)  # 在受控日志记录堆栈而不记录完整用户查询。
                 failed_state = state.model_copy(update={"status": "failed", "current_round": next_round, "stop_reason": "搜索执行出现内部错误", "errors": [*state.errors, "搜索执行出现内部错误"]})  # 返回可恢复的安全失败状态。
+                self._persist_state(failed_state)  # 记录失败终态供 API 查询和后续人工恢复判断。
                 return MultiRoundSearchResult(run_state=failed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 保留此前已获得的最佳结果。
             new_valid_count = _merge_round_papers(accumulated_papers, paper_index, round_result.papers)  # 仅将跨轮首次出现的论文计为本轮新增高质量结果。
             discoveries.extend(round_result.discoveries)  # 网页发现保持独立且允许跨轮累积。
@@ -115,21 +121,34 @@ class MultiRoundSearchController:
                     "coverage_report": coverage_report,
                 }
             )
+            self._persist_state(state)  # 在每轮完整结果、覆盖报告和统计产生后保存轻量快照。
             logger.info("多轮搜索完成一轮：轮次=%d，新增高质量论文=%d，累计论文=%d，来源错误=%d，是否建议继续=%s", next_round, new_valid_count, len(accumulated_papers), len(source_errors), coverage_report.should_continue)  # 仅记录计数、布尔状态和轮次。
             if coverage_report.stop_reason is not None:  # 目标、预算、轮次或边际收益触发时立即停止。
                 completed_state = state.model_copy(update={"status": "completed", "stop_reason": coverage_report.stop_reason})  # 保持当前最佳结果并写入可解释停止原因。
+                self._persist_state(completed_state)  # 保存正常停止终态供轮询、SSE 和恢复读取。
                 return MultiRoundSearchResult(run_state=completed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 返回不额外调用来源的终态。
             evolution_result = self._query_evolution_service.evolve(query, coverage_report, executed_subqueries=executed_subqueries)  # 只针对当前缺口生成下一轮候选查询。
             pending_subqueries = _append_pending_subqueries(pending_subqueries, evolution_result.generated_subqueries, executed_subqueries)  # 追加通过演化去重的新查询并保留原规划顺序。
             if not pending_subqueries:  # 既无原计划也无演化得到的新查询时禁止重复调用首轮表达。
                 coverage_report = self._coverage_gap_analyzer.analyze(query, accumulated_papers, new_valid_count=new_valid_count, source_counts=source_counts, unavailable_sources=tuple(source_errors), current_round=next_round, max_rounds=max_rounds, budget_exhausted=budget_exhausted, has_executable_query=False)  # 重算明确的“没有可执行新查询”停止原因。
                 completed_state = state.model_copy(update={"status": "completed", "stop_reason": coverage_report.stop_reason, "coverage_report": coverage_report, "warnings": [*state.warnings, *evolution_result.warnings]})  # 保留演化跳过提示供 API 或 SSE 展示。
+                self._persist_state(completed_state)  # 保存没有可执行新查询时的最终停止原因。
                 return MultiRoundSearchResult(run_state=completed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 安全停止而不是回退到重复检索。
             next_subquery = pending_subqueries.pop(0)  # 按 Query Agent 原计划优先、再按缺口严重度执行下一条查询。
             executed_subqueries.append(next_subquery.query)  # 在发起下一轮前标记，确保异常恢复也不会重发同一查询。
             current_query = _query_for_subquery(query, next_subquery)  # 将子查询转换为适配器当前可消费的轮次专用 QueryIntent。
         completed_state = state.model_copy(update={"status": "completed", "stop_reason": "已达到最大搜索轮次"})  # 防御性处理循环自然结束的极端路径。
+        self._persist_state(completed_state)  # 保存达到硬轮次上限的最终运行状态。
         return MultiRoundSearchResult(run_state=completed_state, query_intent=query, papers=accumulated_papers, discoveries=discoveries, source_counts=source_counts, source_errors=source_errors, coverage_report=coverage_report)  # 返回最后一轮已获得的最佳候选。
+
+    def _persist_state(self, state: SearchRunState) -> None:
+        """尽力保存轻量运行快照，持久化失败不应丢弃已获得的检索结果。"""
+        if self._state_store is None:  # 离线单元测试或未装配存储时保持纯内存运行。
+            return  # 不要求控制器为可选观测能力创建基础设施。
+        try:  # 状态保存失败不得触发来源重复调用或覆盖已有结果。
+            self._state_store.save(state)  # 存储实现负责剥离大论文集合并原子提交。
+        except RuntimeError:  # 存储适配层已返回不含 SQL、路径和查询内容的稳定异常。
+            logger.exception("多轮搜索状态持久化降级：运行=%s，轮次=%d", state.run_id, state.current_round)  # 记录运行标识和轮次供运维定位。
 
 
 def _merge_round_papers(accumulated_papers: list[PaperRecord], paper_index: dict[str, int], papers: Sequence[PaperRecord]) -> int:

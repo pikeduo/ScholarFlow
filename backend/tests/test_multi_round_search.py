@@ -25,6 +25,22 @@ class _StubCoordinator:
         return self._results.pop(0)  # 返回已完成排序与核验的离线结果。
 
 
+class _RecordingStateStore:
+    """记录控制器每轮保存状态的离线存储替身。"""
+
+    def __init__(self) -> None:
+        """初始化按保存顺序保留的状态快照列表。"""
+        self.saved_states = []  # 保存控制器交给持久化边界的运行状态。
+
+    def save(self, state: object) -> None:
+        """记录状态对象而不访问 SQLite、Redis 或文件系统。"""
+        self.saved_states.append(state)  # 保持调用顺序供轮次边界断言。
+
+    def get(self, _: str) -> None:
+        """满足状态存储协议的读取方法，本用例不需要恢复读取。"""
+        return None  # 控制器只在本轮执行中调用保存操作。
+
+
 def _query(*, target_paper_count: int = 2, search_mode: str = "standard", subqueries: list[QuerySubquery] | None = None) -> QueryIntent:
     """构造可按用例控制目标数量、模式和待执行子查询的查询意图。"""
     return QueryIntent(  # 提供无需 Query Agent 或外部 API 的稳定领域输入。
@@ -102,3 +118,16 @@ def test_controller_stops_when_all_selected_sources_are_unavailable() -> None:
     assert len(coordinator.queries) == 1  # 验证来源全失败时不会继续重复调用。
     assert result.papers == []  # 验证控制器不虚构论文或使用低相关候选填充。
     assert result.run_state.stop_reason == "可用学术来源不足"  # 验证返回安全且可展示的来源不足原因。
+
+
+def test_controller_persists_initial_round_and_completed_snapshots() -> None:
+    """装配状态存储后，控制器应在首轮前、轮次后和终态保存可恢复快照。"""
+    state_store = _RecordingStateStore()  # 构造不访问真实数据库的持久化记录替身。
+    coordinator = _StubCoordinator([_round_result([_paper("paper-1")])])  # 提供首轮后因无新查询停止的固定结果。
+
+    result = asyncio.run(MultiRoundSearchController(coordinator, state_store=state_store).run(_query()))  # 执行带状态存储的标准模式搜索。
+
+    assert len(state_store.saved_states) >= 3  # 验证至少保存初始、首轮和完成状态。
+    assert state_store.saved_states[0].status == "running" and state_store.saved_states[0].current_round == 0  # 验证外部来源调用前已持久化初始状态。
+    assert state_store.saved_states[-1].status == "completed"  # 验证最终停止原因对应的完成状态已持久化。
+    assert state_store.saved_states[-1].stop_reason == result.run_state.stop_reason  # 验证持久化终态与 API 返回保持一致。
