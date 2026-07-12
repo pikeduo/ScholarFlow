@@ -19,7 +19,7 @@ class _FakeReranker:
 def _fake_flag_embedding_module() -> ModuleType:
     """构造同时提供两种模型构造器的离线 FlagEmbedding 模块。"""
     module = ModuleType("FlagEmbedding")  # 使用生产导入名称创建模块。
-    module.BGEM3FlagModel = lambda _model_name, use_fp16=False: _FakeBgeModel()  # 返回不下载权重的 BGE 替身。
+    module.BGEM3FlagModel = lambda _model_name, use_fp16=False, device=None: _FakeBgeModel()  # 接收设备参数并返回不下载权重的 BGE 替身。
     module.FlagReranker = lambda _model_name, use_fp16=False: _FakeReranker()  # 返回不下载权重的重排替身。
     return module  # 返回可注入 sys.modules 的模块对象。
 
