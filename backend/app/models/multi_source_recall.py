@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field  # 提供多源协调结果的结构化校验。
 
+from backend.app.models.coverage import CoverageReport  # 保存本轮排序后生成的覆盖缺口分析。
 from backend.app.models.discovery import SupplementalDiscoveryItem  # 保存不可合并的补充网页发现结果。
 from backend.app.models.paper import PaperRecord  # 保存可进入后续规范化与去重阶段的论文记录。
 from backend.app.models.query_intent import QueryIntent  # 回显自然语言解析后的实际执行计划。
@@ -32,6 +33,7 @@ class MultiSourceRecallResult(BaseModel):
         llm_prompt_tokens：本次 LLM 精排输入 Token 数量。
         llm_completion_tokens：本次 LLM 精排输出 Token 数量。
         work_family_count：融合结果中可识别版本族的唯一数量。
+        coverage_report：当前最终候选的覆盖缺口、边际收益与后续继续建议。
     """
 
     route_plan: SourceRoutePlan  # 保留实际执行的来源选择与预先降级说明。
@@ -59,3 +61,4 @@ class MultiSourceRecallResult(BaseModel):
     llm_prompt_tokens: int = Field(default=0, ge=0)  # 保存本阶段输入 Token 数量。
     llm_completion_tokens: int = Field(default=0, ge=0)  # 保存本阶段输出 Token 数量。
     work_family_count: int = Field(default=0, ge=0)  # 保存融合论文中唯一版本族标识的数量。
+    coverage_report: CoverageReport | None = None  # 保存可供前端展示且供后续多轮控制器消费的本轮报告。

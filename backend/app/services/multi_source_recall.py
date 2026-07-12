@@ -11,6 +11,7 @@ from backend.app.models.paper import PaperRecord  # 保存进入后续规范化�
 from backend.app.models.query_intent import QueryIntent  # 接收已完成查询规划的统一意图。
 from backend.app.services.multi_source_filtering import MultiSourcePaperFilter  # 在语义排序前应用多源确定性规则过滤。
 from backend.app.services.paper_fusion import PaperFusionService  # 在协调器边界执行跨来源身份融合与 RRF 计算。
+from backend.app.services.coverage_analysis import CoverageGapAnalyzer  # 在最终核验后识别下一轮检索需要补足的缺口。
 from backend.app.services.cross_encoder_ranking import CrossEncoderReranker  # 在 BGE-M3 粗排后执行 Cross Encoder 精细重排。
 from backend.app.services.llm_ranking import LlmPaperReranker  # 在 Cross Encoder 后执行约束核验、理由生成与最终截断。
 from backend.app.services.semantic_ranking import SemanticRanker  # 在规则过滤后执行 BGE-M3 粗排和候选截断。
@@ -29,6 +30,7 @@ class MultiSourceRecallCoordinator:
         semantic_ranker：可替换的 BGE-M3 语义粗排服务。
         cross_encoder_reranker：可替换的 Cross Encoder 精细重排服务。
         llm_reranker：可替换的 LLM 约束核验和最终精排服务。
+        coverage_gap_analyzer：可替换的本地覆盖缺口分析服务。
     """
 
     def __init__(
@@ -41,6 +43,7 @@ class MultiSourceRecallCoordinator:
         semantic_ranker: SemanticRanker | None = None,
         cross_encoder_reranker: CrossEncoderReranker | None = None,
         llm_reranker: LlmPaperReranker | None = None,
+        coverage_gap_analyzer: CoverageGapAnalyzer | None = None,
     ) -> None:
         """保存路由器和只读适配器注册表，避免协调器绑定具体供应商实现。"""
         self._source_router = source_router  # 保存可测试的来源路由策略。
@@ -51,6 +54,7 @@ class MultiSourceRecallCoordinator:
         self._semantic_ranker = semantic_ranker or SemanticRanker()  # 默认在规则过滤后执行可降级的 BGE-M3 粗排。
         self._cross_encoder_reranker = cross_encoder_reranker or CrossEncoderReranker()  # 默认在 BGE-M3 后执行可降级的精细重排。
         self._llm_reranker = llm_reranker or LlmPaperReranker()  # 默认在 Cross Encoder 后生成证据化最终结果并允许测试替换。
+        self._coverage_gap_analyzer = coverage_gap_analyzer or CoverageGapAnalyzer()  # 默认在最终核验后生成无副作用的覆盖报告。
 
     async def recall(self, query: QueryIntent) -> MultiSourceRecallResult:
         """按路由计划并发召回学术论文和补充网页发现项。
@@ -92,6 +96,7 @@ class MultiSourceRecallCoordinator:
         ranking_result = self._semantic_ranker.rank(filter_result.papers, query)  # 按 BGE-M3 语义相关性重排并截断后续候选。
         cross_encoder_result = self._cross_encoder_reranker.rerank(ranking_result.papers, query)  # 按 Cross Encoder 精细相关性重排并截断 LLM 候选。
         llm_result = await self._llm_reranker.rerank(cross_encoder_result.papers, query)  # 核验硬约束、绑定公开证据并截断最终结果。
+        coverage_report = self._coverage_gap_analyzer.analyze(query, llm_result.papers, new_valid_count=len(llm_result.papers), source_counts=source_counts, unavailable_sources=tuple(source_errors))  # 首轮将最终高质量候选数作为新增量，后续控制器会传入跨轮差值。
         logger.info("多源召回完成：原始论文=%d，融合论文=%d，过滤=%d，语义截断=%d，交叉编码截断=%d，LLM淘汰=%d，LLM截断=%d，最终结果=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, filter_result.filtered_count, ranking_result.truncated_count, cross_encoder_result.truncated_count, llm_result.rejected_count, llm_result.truncated_count, len(llm_result.papers), len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。
         return MultiSourceRecallResult(  # 构造供后续规范化、去重与运行状态更新使用的结果。
             route_plan=route_plan,  # 保留本轮真实执行的来源选择计划。
@@ -115,6 +120,7 @@ class MultiSourceRecallCoordinator:
             llm_prompt_tokens=llm_result.prompt_tokens,  # 返回本阶段输入 Token 统计。
             llm_completion_tokens=llm_result.completion_tokens,  # 返回本阶段输出 Token 统计。
             work_family_count=filter_result.work_family_count,  # 返回最终候选中可识别版本族的唯一数量。
+            coverage_report=coverage_report,  # 返回不触发额外检索的本轮覆盖缺口与继续建议。
         )
 
     async def _recall_academic_source(

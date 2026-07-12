@@ -124,6 +124,8 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     assert result.merged_paper_count == 0  # 验证不同论文不会被错误合并。
     assert result.llm_model_name == "test-llm"  # 验证协调器透传实际 LLM 名称。
     assert result.llm_prompt_tokens == 12 and result.llm_completion_tokens == 4  # 验证协调器透传 LLM Token 统计。
+    assert result.coverage_report is not None  # 验证最终核验后会生成可供后续多轮控制器消费的覆盖报告。
+    assert result.coverage_report.should_continue is True  # 验证首轮高相关论文不足目标时报告建议继续而不自行发起调用。
 
 
 def test_coordinator_degrades_single_academic_source_without_discarding_other_results() -> None:

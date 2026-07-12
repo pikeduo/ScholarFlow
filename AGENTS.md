@@ -24,7 +24,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 在确定任务所属阶段后，只读取该阶段对应的一份规划书；不得默认加载全部阶段规划，以避免引入无关上下文和 Token 消耗。
 - 跨阶段任务仅读取确实涉及的最少规划文档，并在交付说明中说明跨阶段读取的原因。
 - 按阶段交付，优先顺序为：基础工程 → 多源检索与规范化/去重 → 排序系统 → 搜索页与文献库/图谱 → 缓存、成本统计与策略优化。
-- 当前实施顺序为：核心领域契约、自然语言 Query Agent、OpenAlex、Semantic Scholar、arXiv、DBLP 与 Tavily 适配器、动态来源路由、多源召回协调、`PaperRecord` 规范化融合、身份去重、版本族关联、RRF、多源稳定 API、多源分层排序与约束核验、搜索结果页基础闭环、可编辑 `QueryIntent` 直接重搜，以及 SQLite 文献库前后端基础闭环均已完成；下一步实现文献库 BGE-M3 向量生成与 FAISS 语义检索，再接入文献库自然语言搜索。自然语言入口必须先生成英文检索式和结构化 `QueryIntent`，并将来源召回规模与最终结果数量分离；用户编辑已有 `QueryIntent` 后应直接进入多源检索，避免重复调用 Query Agent。文献库按 DOI、arXiv ID、PMID、来源平台 ID 和内部论文 ID 的顺序去重。OpenAlex 与已启用的 Semantic Scholar 为核心源；AI/计算机领域按需加入 arXiv 与 DBLP；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用。
+- 当前实施顺序为：核心领域契约、自然语言 Query Agent、OpenAlex、Semantic Scholar、arXiv、DBLP 与 Tavily 适配器、动态来源路由、多源召回协调、`PaperRecord` 规范化融合、身份去重、版本族关联、RRF、多源稳定 API、多源分层排序与约束核验、搜索结果页基础闭环、可编辑 `QueryIntent` 直接重搜，以及 SQLite 文献库前后端基础闭环、文献库 BGE-M3/FAISS 语义检索闭环均已完成；当前优先回到文献搜索，补齐覆盖缺口分析、查询演化、多轮检索控制与停止原因输出。在该搜索闭环验收前，不再扩展文献库功能。自然语言入口必须先生成英文检索式和结构化 `QueryIntent`，并将来源召回规模与最终结果数量分离；用户编辑已有 `QueryIntent` 后应直接进入多源检索，避免重复调用 Query Agent。文献库按 DOI、arXiv ID、PMID、来源平台 ID 和内部论文 ID 的顺序去重。OpenAlex 与已启用的 Semantic Scholar 为核心源；AI/计算机领域按需加入 arXiv 与 DBLP；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用。
 - 一次变更以一个可验收的功能闭环为边界，可合并 2–4 个紧密相关的小任务（如实现、测试及必要配置/文档）；完成后立即停止并等待用户确认下一步。不得将无关模块、多个开发阶段或复杂基础设施一次性混入同一变更。
 - 规划或代码修改完成后，必须在交付说明中明确写出“下一步规划”，并检查本文件是否仍准确；若架构、目录、命令、依赖管理或协作流程发生变化，必须同时更新 `AGENTS.md`，否则说明“AGENTS.md 无需更新”。
 - 每次交付说明必须列出本轮新增或更新的文件，并使用可点击的本地文件链接；说明每个文件的主要变更，方便用户直接审阅。
@@ -45,7 +45,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 不得仅因规划而预装 FastAPI、LangGraph、Redis、FAISS、模型库等依赖；仅在相关代码真正落地时加入。
 - 由用户负责实际运行服务、下载数据集和下载模型。助手可以进行静态检查或 `python -m compileall`，但不得主动启动服务、执行会访问网络的下载、调用外部 API、写入真实业务数据或运行长时任务。
 - 后端是根目录下的 `backend` Python 包。后端代码与测试统一使用 `backend.app...` 绝对导入；从仓库根目录使用 `uvicorn backend.app.main:app --reload` 启动、使用 `pytest` 运行测试，不得依赖 `--app-dir` 或 `pythonpath` 改写导入路径。
-- 本项目的 Python 命令统一使用 Conda 环境 `scholarflow`；不得回退到系统或全局 Python。执行测试、静态检查或后端命令前，先运行 `conda run -n scholarflow python -m pytest --version` 验证解释器与测试依赖；后续命令使用 `conda run -n scholarflow python -m pytest ...`、`conda run -n scholarflow python -m compileall ...` 或在已激活该环境的终端中执行等价命令。PyCharm 项目解释器也应指向同一环境。
+- 后端测试直接使用当前项目解释器已安装的 `pytest`，例如 `pytest backend/tests/test_xxx.py`；不得为执行测试额外探测、切换或包装解释器，也不要求 Conda 预检命令。PyCharm 项目解释器应保持与用户当前可运行测试的解释器一致。
 - 提供可复制的运行、迁移、测试或模型下载命令，并说明其前置条件；不要声称未经用户执行验证的运行结果。
 - 每次交付必须明确列出用户应手动运行的具体文件或目标命令，例如指定的 `pytest backend/tests/test_xxx.py`、迁移脚本或服务入口；不得只笼统要求运行全部 `pytest`。
 - 仓库文本统一使用 UTF-8；Python 文本读写和文本子进程必须显式指定编码。Windows 入口应配置 UTF-8 输出，终端日志使用 `[OK]`、`[WARN]`、`[ERROR]` 等 ASCII 标记，JSON 需要可读中文时使用 `ensure_ascii=False`。
