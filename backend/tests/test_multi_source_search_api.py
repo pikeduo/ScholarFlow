@@ -66,9 +66,10 @@ class FakeMultiRoundSearchController:
 class FakeSearchRunStateStore:
     """为运行状态读取接口返回固定状态或模拟存储错误的离线替身。"""
 
-    def __init__(self, state: object | None = None, should_fail: bool = False) -> None:
+    def __init__(self, state: object | None = None, result: MultiRoundSearchResult | None = None, should_fail: bool = False) -> None:
         """保存无需 SQLite 的固定状态和失败开关。"""
         self._state = state  # 保存查询命中时应返回的运行状态。
+        self._result = result  # 保存 SSE 完成后可读取的最终结果。
         self._should_fail = should_fail  # 保存是否模拟存储读取故障。
 
     def save(self, _: object) -> None:
@@ -81,6 +82,20 @@ class FakeSearchRunStateStore:
             from backend.app.services.search_run_store import SearchRunStoreError  # 延迟导入稳定服务异常避免无关测试耦合。
             raise SearchRunStoreError("模拟状态存储故障")  # 让路由转换为不泄露内部细节的 503。
         return self._state  # 返回固定状态或不存在标识的空值。
+
+    def save_result(self, result: MultiRoundSearchResult) -> None:
+        """记录 SSE 同次搜索的最终结果，模拟独立结果存储。"""
+        if self._should_fail:  # 复用错误开关覆盖保存边界。
+            from backend.app.services.search_run_store import SearchRunStoreError  # 延迟导入稳定服务异常避免无关测试耦合。
+            raise SearchRunStoreError("模拟结果存储故障")  # 让路由仅记录降级日志并结束事件流。
+        self._result = result  # 保存控制器返回的完整公开结果。
+
+    def get_result(self, _: str) -> MultiRoundSearchResult | None:
+        """按测试配置返回已完成结果、空值或触发安全错误边界。"""
+        if self._should_fail:  # 仅在存储错误边界用例模拟异常。
+            from backend.app.services.search_run_store import SearchRunStoreError  # 延迟导入稳定服务异常避免无关测试耦合。
+            raise SearchRunStoreError("模拟结果存储故障")  # 让路由转换为不泄露内部细节的 503。
+        return self._result  # 返回固定结果或尚未完成时的空值。
 
 
 @pytest.fixture
@@ -217,6 +232,7 @@ def test_multi_round_search_endpoint_hides_unexpected_controller_error(api_clien
 def test_multi_round_event_endpoint_streams_safe_lifecycle_frames(api_client: TestClient) -> None:
     """SSE 端点应按 EventSource 帧格式输出创建和完成事件。"""
     app.dependency_overrides[get_multi_round_search_controller] = lambda: FakeMultiRoundSearchController(result=_build_multi_round_result())  # 注入会发布离线事件的控制器替身。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeSearchRunStateStore()  # 注入内存结果存储避免测试访问用户 SQLite。
 
     response = api_client.post("/api/v1/search/multi-round/events", json=_valid_query_payload())  # 发起一次流式多轮搜索请求。
 
@@ -224,6 +240,20 @@ def test_multi_round_event_endpoint_streams_safe_lifecycle_frames(api_client: Te
     assert response.headers["content-type"].startswith("text/event-stream")  # 验证响应使用 EventSource 所需媒体类型。
     assert "event: run_created" in response.text and "event: completed" in response.text  # 验证创建和完成事件均已输出。
     assert "检索 Transformer 预测论文" not in response.text  # 验证流式事件不会包含用户完整查询正文。
+
+
+def test_search_run_result_endpoint_returns_sse_completed_result_and_404_when_missing(api_client: TestClient) -> None:
+    """最终结果接口应读取 SSE 同次结果，而未完成运行返回稳定 404。"""
+    expected_result = _build_multi_round_result()  # 构造与 SSE 完成后持久化一致的结果。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeSearchRunStateStore(result=expected_result)  # 注入无需 SQLite 的固定完成结果。
+
+    response = api_client.get(f"/api/v1/search/runs/{expected_result.run_state.run_id}/result")  # 读取已完成运行的最终论文集合。
+
+    assert response.status_code == 200  # 验证完整结果可由 REST 安全读取。
+    assert response.json()["papers"][0]["paper_id"] == "W1"  # 验证返回 SSE 同次搜索的论文而非重新检索。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeSearchRunStateStore()  # 切换为尚无完成结果的运行。
+    missing_response = api_client.get("/api/v1/search/runs/missing-run/result")  # 查询未知或未完成运行的结果。
+    assert missing_response.status_code == 404 and missing_response.json()["detail"] == "搜索最终结果尚未就绪"  # 验证前端可据此继续等待或提示恢复失败。
 
 
 def test_search_run_state_endpoint_returns_latest_snapshot_and_404_when_missing(api_client: TestClient) -> None:

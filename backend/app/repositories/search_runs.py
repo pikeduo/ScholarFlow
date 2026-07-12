@@ -6,6 +6,7 @@ from sqlalchemy import DateTime, String, Text, select  # 声明运行表字段�
 from sqlalchemy.orm import Mapped, Session, mapped_column  # 声明 ORM 映射和请求级事务边界。
 
 from backend.app.models.search_run import SearchRunState  # 读写统一且已校验的搜索运行领域状态。
+from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保存 SSE 完成后可按运行标识读取的最终结果。
 from backend.app.repositories.database import Base  # 注册到统一 SQLite 元数据。
 
 
@@ -19,6 +20,16 @@ class SearchRunRow(Base):
     state_json: Mapped[str] = mapped_column(Text)  # 保存不含完整论文集合的 SearchRunState JSON 快照。
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)  # 保存首次创建时间便于审计与清理。
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)  # 保存最近一次节点或轮次更新时刻。
+
+
+class SearchRunResultRow(Base):
+    """映射 SQLite 中与运行状态分离的最终多轮搜索结果快照。"""
+
+    __tablename__ = "search_run_results"  # 使用独立表避免运行中状态重复保存完整论文集合。
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)  # 与 SearchRunState 使用同一稳定运行标识。
+    result_json: Mapped[str] = mapped_column(Text)  # 仅在控制器完成时保存完整公共结果供前端读取。
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)  # 记录最终结果写入或重试更新时刻。
 
 
 class SearchRunRepository:
@@ -63,6 +74,27 @@ class SearchRunRepository:
         """
         row = self._session.scalar(select(SearchRunRow).where(SearchRunRow.run_id == run_id))  # 通过主键语义读取单个最新运行。
         return SearchRunState.model_validate_json(row.state_json) if row is not None else None  # 统一从 JSON 恢复并重新校验领域状态。
+
+    def save_result(self, result: MultiRoundSearchResult) -> None:
+        """保存同次运行的完整最终结果，仅供 SSE 完成后的前端读取。
+
+        参数：
+            result：多轮控制器已经完成、可安全展示的最终结果。
+        """
+        row = self._session.get(SearchRunResultRow, result.run_state.run_id)  # 查询同一运行是否已有旧完成结果。
+        now = datetime.now(timezone.utc)  # 为本次完成结果写入生成统一 UTC 时间。
+        if row is None:  # 首次完成时创建独立结果行。
+            row = SearchRunResultRow(run_id=result.run_state.run_id, result_json=result.model_dump_json(exclude_none=False), updated_at=now)  # 构造完整公共结果快照。
+            self._session.add(row)  # 加入当前事务等待提交。
+        else:  # 重试或恢复完成时覆盖为最新最终结果。
+            row.result_json = result.model_dump_json(exclude_none=False)  # 保持读取端只看到最新完成结果。
+            row.updated_at = now  # 记录最近结果更新时刻。
+        self._session.commit()  # 原子提交完整最终结果快照。
+
+    def get_result(self, run_id: str) -> MultiRoundSearchResult | None:
+        """按运行标识读取已完成的完整结果快照，不存在时返回空值。"""
+        row = self._session.scalar(select(SearchRunResultRow).where(SearchRunResultRow.run_id == run_id))  # 读取独立结果表避免解析轻量状态。
+        return MultiRoundSearchResult.model_validate_json(row.result_json) if row is not None else None  # 恢复完整公开结果供搜索页展示。
 
 
 def _lightweight_snapshot(state: SearchRunState) -> SearchRunState:

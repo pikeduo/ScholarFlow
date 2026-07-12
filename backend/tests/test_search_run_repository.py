@@ -4,6 +4,7 @@ from sqlalchemy import create_engine  # 创建不访问本地文件的内存 SQL
 from sqlalchemy.orm import sessionmaker  # 为每个用例创建独立短生命周期会话。
 
 from backend.app.models.paper import PaperRecord  # 构造不应被完整持久化的候选论文。
+from backend.app.models.multi_round_search import MultiRoundSearchResult  # 构造与 SSE 完成后持久化一致的最终结果。
 from backend.app.models.query_intent import QueryIntent  # 构造运行状态必须保留的检索意图。
 from backend.app.models.search_run import SearchRunState  # 构造可恢复的搜索运行状态。
 from backend.app.repositories.database import Base  # 创建已注册的搜索运行 ORM 表。
@@ -35,6 +36,10 @@ def test_repository_persists_lightweight_snapshot_and_overwrites_latest_state() 
         latest = repository.get(initial_state.run_id)  # 再次恢复应得到终态而非旧快照。
         assert latest is not None and latest.status == "completed"  # 验证状态列和 JSON 快照均已更新。
         assert latest.stop_reason == "已获得目标数量的高相关论文且关键约束已覆盖"  # 验证停止原因可供恢复和 SSE 补偿读取。
+        completed_result = MultiRoundSearchResult(run_state=completed_state, query_intent=completed_state.query_intent, papers=completed_state.final_papers)  # 构造应与轻量状态分离保存的完整终态结果。
+        repository.save_result(completed_result)  # 写入 SSE 完成后供前端 REST 读取的结果快照。
+        recovered_result = repository.get_result(initial_state.run_id)  # 按同一运行标识恢复完整结果。
+        assert recovered_result is not None and recovered_result.papers[0].paper_id == "paper-1"  # 验证完整论文只从独立结果表读取。
     finally:  # 无论断言是否失败都关闭会话和引擎。
         session.close()  # 释放内存数据库会话。
         engine.dispose()  # 释放测试引擎资源。

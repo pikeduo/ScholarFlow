@@ -82,6 +82,12 @@ export async function searchPapers(form, fetchImpl = globalThis.fetch, apiBaseUr
   return postSearch('/api/v1/search/natural-multi-round', naturalRequest, fetchImpl, apiBaseUrl) // 调用先规划再执行有限轮次检索的自然语言入口。
 }
 
+/** 使用 SSE 流执行自然语言多轮检索，并在完成后读取同次运行的最终结果。 */
+export async function streamSearchPapers(form, onEvent, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面消费进度且测试注入离线 fetch。
+  const naturalRequest = createNaturalSearchRequest(form) // 在连接 SSE 前复用自然语言请求校验。
+  return streamSearch('/api/v1/search/natural-multi-round/events', naturalRequest, onEvent, fetchImpl, apiBaseUrl) // 使用不重复检索的自然语言事件流入口。
+}
+
 /** 校验并复制用户编辑后的 QueryIntent，避免直接修改上一轮响应。 */
 export function validateQueryIntent(intent) { // 接收查询解析面板提交的完整意图。
   if (!intent || typeof intent !== 'object') throw new SearchApiError('查询解析结果不完整') // 拒绝空对象或错误类型。
@@ -118,6 +124,12 @@ export async function searchWithIntent(intent, fetchImpl = globalThis.fetch, api
   return postSearch('/api/v1/search/multi-round', validatedIntent, fetchImpl, apiBaseUrl) // 直接进入多轮检索并保持跳过 Query Agent。
 }
 
+/** 使用 SSE 流直接执行已编辑 QueryIntent，并在完成后读取同次运行的最终结果。 */
+export async function streamSearchWithIntent(intent, onEvent, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 保持编辑重搜跳过 Query Agent 且向页面反馈进度。
+  const validatedIntent = validateQueryIntent(intent) // 在建立流前先验证用户编辑后的完整意图。
+  return streamSearch('/api/v1/search/multi-round/events', validatedIntent, onEvent, fetchImpl, apiBaseUrl) // 使用直接意图多轮事件流入口。
+}
+
 /** 提交统一搜索请求并校验 MultiRoundSearchResult 最小契约。 */
 async function postSearch(path, requestBody, fetchImpl, apiBaseUrl) { // 复用自然入口和直接意图入口的错误边界。
   if (typeof fetchImpl !== 'function') throw new SearchApiError('当前环境不支持网络请求') // 在旧环境给出可理解错误。
@@ -149,6 +161,90 @@ async function postSearch(path, requestBody, fetchImpl, apiBaseUrl) { // 复用�
     if (error instanceof SearchApiError) throw error // 保留本地最小契约检查给出的明确消息。
     throw new SearchApiError('检索服务返回了无法解析的结果') // 提示用户重试且不泄露原始正文。
   }
+}
+
+/** 使用 fetch ReadableStream 解析 POST SSE，并在完成事件后读取同次最终结果。 */
+async function streamSearch(path, requestBody, onEvent, fetchImpl, apiBaseUrl) { // EventSource 只支持 GET，因此使用可取消的 fetch 流实现 POST 检索。
+  if (typeof fetchImpl !== 'function') throw new SearchApiError('当前环境不支持网络请求') // 在旧环境给出可理解错误。
+  if (typeof onEvent !== 'function') throw new SearchApiError('检索进度回调不可用') // 防止页面遗漏进度消费函数导致结果无法关联。
+  let response // 保存 SSE HTTP 响应供状态和流读取判断。
+  try { // 将断网和代理错误转换为稳定前端消息。
+    response = await fetchImpl(`${apiBaseUrl}${path}`, { method: 'POST', headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) }) // 明确请求 SSE 并提交 JSON 意图。
+  } catch { // 捕获无法连接后端等浏览器底层错误。
+    throw new SearchApiError('无法连接检索服务，请确认后端已启动') // 不向界面暴露浏览器网络细节。
+  }
+  if (!response.ok) { // SSE 建连失败时复用稳定公共错误处理。
+    throw await parseSearchError(response) // 读取已净化后端 detail 或返回通用错误。
+  }
+  if (!response.body || typeof response.body.getReader !== 'function') throw new SearchApiError('当前浏览器不支持检索进度流') // 拒绝无法解析流的成功响应。
+  const reader = response.body.getReader() // 获取二进制流读取器。
+  const decoder = new TextDecoder('utf-8') // 按 UTF-8 还原中文进度消息。
+  let buffer = '' // 保存跨网络分块尚未形成完整 SSE 帧的文本。
+  let runId = '' // 保存 run_created 事件提供的稳定运行标识。
+  try { // 读取直到服务端完成并关闭流。
+    while (true) { // 流结束前持续消费任意大小的数据块。
+      const { done, value } = await reader.read() // 等待下一块文本或流结束信号。
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done }) // 累积文本并保留不完整 UTF-8 边界。
+      const frames = buffer.split('\n\n') // SSE 空行分隔完整事件帧。
+      buffer = frames.pop() || '' // 保留最后一个未完整帧等待下一块补全。
+      for (const frame of frames) { // 按服务端顺序处理每个完整事件。
+        const event = parseSseFrame(frame) // 解析 event 名称和 JSON data 对象。
+        if (!event) continue // 跳过心跳、空帧或不完整控制行。
+        if (typeof event.run_id === 'string' && event.run_id) runId = event.run_id // 首个创建事件和后续事件均可补充运行标识。
+        onEvent(event) // 立即通知页面更新轮次、消息和候选数量。
+      }
+      if (done) break // 服务端关闭流后退出读取循环。
+    }
+  } catch (error) { // 统一处理流中断或 JSON 解析异常。
+    if (error instanceof SearchApiError) throw error // 保留明确的协议错误。
+    throw new SearchApiError('检索进度流意外中断，请稍后重试') // 不向用户暴露底层流异常。
+  } finally { // 释放读取器避免页面切换后保留网络资源。
+    reader.releaseLock() // 允许浏览器回收响应流锁。
+  }
+  if (!runId) throw new SearchApiError('检索进度流未返回运行标识') // 没有运行标识时无法安全读取同次最终结果。
+  return getSearchRunResult(runId, fetchImpl, apiBaseUrl) // 只读取本次 SSE 已完成运行的结果，不会再次执行检索。
+}
+
+/** 读取由 SSE 同次运行持久化的最终结果。 */
+async function getSearchRunResult(runId, fetchImpl, apiBaseUrl) { // 接收已由服务端生成的稳定运行标识。
+  let response // 保存最终结果 HTTP 响应。
+  try { // 将断网或代理错误转换为统一用户消息。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(runId)}/result`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取同次运行的结果快照。
+  } catch { // 捕获结果读取阶段网络错误。
+    throw new SearchApiError('检索已完成但无法读取最终结果，请稍后重试') // 提示用户可使用 run_id 后续恢复读取。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 结果尚未就绪或服务故障时返回稳定错误。
+  try { // 校验最终结果仍符合页面依赖的多轮响应契约。
+    const result = await response.json() // 解析完成结果 JSON。
+    if (!result || !Array.isArray(result.papers) || typeof result.run_state !== 'object' || typeof result.query_intent !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 防止页面渲染不完整持久化数据。
+    return result // 返回同次多轮搜索得到的完整论文结果。
+  } catch (error) { // 将 JSON 或契约错误转换为统一提示。
+    if (error instanceof SearchApiError) throw error // 保留明确字段缺失错误。
+    throw new SearchApiError('检索服务返回了无法解析的结果') // 避免展示原始响应文本。
+  }
+}
+
+/** 将 SSE 单帧解析为已净化的事件 data JSON。 */
+function parseSseFrame(frame) { // 接收不含结尾空行的 SSE 文本帧。
+  const dataLine = frame.split('\n').find((line) => line.startsWith('data:')) // 仅消费服务端标准 data 行。
+  if (!dataLine) return null // 心跳或非数据帧无需触发页面更新。
+  try { // 事件 JSON 必须能解析才允许进入页面状态。
+    return JSON.parse(dataLine.slice(5).trim()) // 删除 data 前缀后恢复公开事件对象。
+  } catch { // 非法事件不应让长时搜索页面崩溃。
+    throw new SearchApiError('检索进度事件无法解析') // 返回不含原始事件正文的稳定错误。
+  }
+}
+
+/** 将错误响应转换为统一安全前端错误。 */
+async function parseSearchError(response) { // 复用 REST 与 SSE 的错误消息处理逻辑。
+  let message = '论文检索暂时不可用，请稍后重试' // 提供安全默认消息。
+  try { // 优先读取 FastAPI 已净化的 detail 字段。
+    const errorBody = await response.json() // 解析 JSON 错误响应。
+    if (typeof errorBody.detail === 'string') message = errorBody.detail // 仅展示后端提供的公共说明。
+  } catch { // 非 JSON 响应继续使用默认消息。
+    // 不读取 HTML 代理页或底层异常正文，避免泄露无关内容。
+  }
+  return new SearchApiError(message, response.status) // 返回调用方可统一捕获的错误对象。
 }
 
 /** 在浏览器与 Node 测试环境中安全深复制纯 JSON 查询意图。 */

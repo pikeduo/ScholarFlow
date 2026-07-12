@@ -157,6 +157,7 @@ async def search_multi_round(
 async def stream_multi_round_search_events(
     query: QueryIntent,
     controller: Annotated[MultiRoundSearchController, Depends(get_multi_round_search_controller)],
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
 ) -> StreamingResponse:
     """执行多轮搜索并实时返回轻量进度事件，连接断开后可按 run_id 查询状态。
 
@@ -166,25 +167,32 @@ async def stream_multi_round_search_events(
     返回：
         StreamingResponse：`text/event-stream` 响应，事件不携带完整查询或论文摘要。
     """
-    publisher = InMemorySearchRunEventPublisher()  # 为本次 HTTP 请求创建独立且有界的事件队列。
-    task = asyncio.create_task(controller.run(query, event_publisher=publisher))  # 在后台执行来源召回、排序和覆盖控制。
+    return _create_multi_round_sse_response(query, controller, state_store)  # 复用流式执行、结果持久化和连接关闭边界。
 
-    async def event_stream():
-        """持续将控制器事件编码为 SSE，直到任务和队列均结束。"""
-        try:  # 将任务生命周期与客户端连接生命周期绑定。
-            while not task.done() or not publisher.empty():  # 确保终态事件在任务完成后仍会被发送。
-                event = await publisher.next_event()  # 等待下一条由控制器发布的轻量事件。
-                yield _encode_sse_event(event)  # 按 SSE 帧格式发送事件类型和 JSON 数据。
-            await task  # 传播控制器未处理异常以便 ASGI 记录，而正常路径已在事件中结束。
-        finally:  # 客户端中断或事件发送失败时结束后台任务。
-            if not task.done():  # 避免取消已经完成的正常控制器任务。
-                task.cancel()  # 防止断线后继续发起不必要的后续来源调用。
-                try:  # 等待取消完成以避免未检索任务警告。
-                    await task  # 让协程释放可能持有的资源。
-                except asyncio.CancelledError:  # 取消属于正常的 SSE 连接关闭路径。
-                    pass  # 不向客户端或日志暴露无意义的断线堆栈。
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})  # 禁止代理缓冲以尽快向浏览器发送进度。
+@router.post("/natural-multi-round/events", status_code=status.HTTP_200_OK, summary="以 SSE 流返回自然语言多轮检索进度")
+async def stream_natural_multi_round_search_events(
+    request: NaturalSearchRequest,
+    planner: Annotated[QueryPlanningService, Depends(get_query_planning_service)],
+    controller: Annotated[MultiRoundSearchController, Depends(get_multi_round_search_controller)],
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+) -> StreamingResponse:
+    """先生成 QueryIntent，再以 SSE 输出同一次多轮检索进度。
+
+    参数：
+        request：自然语言问题及用户显式条件。
+        planner：可替换的 Query Agent 规划服务。
+        controller：可替换的多轮检索控制器。
+        state_store：保存流结束后的完整结果快照。
+    返回：
+        StreamingResponse：不携带论文摘要的 `text/event-stream` 进度流。
+    """
+    try:  # 规划失败时不能退回到整句低质量学术搜索。
+        planning_result = await planner.plan(request)  # 先得到真实、可编辑的英文结构化查询意图。
+    except QueryPlanningError:  # 适配层已净化密钥、URL 和供应商原始响应。
+        logger.exception("自然语言 SSE 查询规划失败")  # 记录受控堆栈而不记录用户完整问题。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回稳定公共错误。
+    return _create_multi_round_sse_response(planning_result.query_intent, controller, state_store)  # 使用同一流式控制器路径避免重复执行查询。
 
 
 @router.get("/runs/{run_id}", response_model=SearchRunState, status_code=status.HTTP_200_OK, summary="读取可恢复的搜索运行状态")
@@ -210,6 +218,31 @@ def get_search_run_state(
     if state is None:  # 不存在的运行标识属于稳定资源边界。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索运行不存在")  # 避免将不存在误报为服务故障。
     return state  # 返回轻量状态，前端可据此补偿进度显示。
+
+
+@router.get("/runs/{run_id}/result", response_model=MultiRoundSearchResult, status_code=status.HTTP_200_OK, summary="读取已完成搜索的最终结果")
+def get_search_run_result(
+    run_id: str,
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+) -> MultiRoundSearchResult:
+    """按 run_id 读取 SSE 完成后保存的最终论文结果，避免前端重复检索。
+
+    参数：
+        run_id：SSE `run_created` 事件提供的稳定运行标识。
+        state_store：可替换的完成结果存储适配层。
+    返回：
+        MultiRoundSearchResult：与普通多轮搜索接口一致的最终公开结果。
+    异常：
+        HTTPException：结果尚未完成或不存在时返回 404，存储故障返回 503。
+    """
+    try:  # 将结果存储边界统一映射为安全 HTTP 错误。
+        result = state_store.get_result(run_id)  # 读取与 SSE 同次运行关联的完成结果快照。
+    except SearchRunStoreError:  # 不暴露 SQLite、JSON 或内部对象细节。
+        logger.exception("搜索最终结果读取接口失败：运行=%s", run_id)  # 仅记录安全运行标识和堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="搜索最终结果暂时不可用，请稍后重试") from None  # 返回稳定公共错误。
+    if result is None:  # 运行尚未完成或不存在时不能伪造空论文结果。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索最终结果尚未就绪")  # 让前端继续等待或显示明确提示。
+    return result  # 返回同一次多轮搜索得到的真实最终结果。
 
 
 @router.post("/natural", response_model=MultiSourceRecallResult, status_code=status.HTTP_200_OK, summary="按自然语言检索多源论文")
@@ -281,3 +314,43 @@ def _encode_sse_event(event: SearchProgressEvent) -> str:
     """将已校验的进度事件编码为符合 SSE 规范的文本帧。"""
     payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))  # 保持中文提示可读并避免无意义空白。
     return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {payload}\n\n"  # 按 EventSource 可解析的 id、event 和 data 行返回。
+
+
+def _create_multi_round_sse_response(query: QueryIntent, controller: MultiRoundSearchController, state_store: SearchRunStateStore) -> StreamingResponse:
+    """构造执行同次多轮检索、持久化结果并实时发送轻量事件的 SSE 响应。"""
+    publisher = InMemorySearchRunEventPublisher()  # 为当前 HTTP 连接创建独立且有界的事件队列。
+
+    async def run_and_store_result() -> MultiRoundSearchResult:
+        """运行控制器并在完成后保存完整结果，前端可按 run_id 一次读取。"""
+        result = await controller.run(query, event_publisher=publisher)  # 执行一次真实多轮搜索并发布进度事件。
+        try:  # 结果保存失败不应删除已完成运行状态或终态事件。
+            state_store.save_result(result)  # 将完整最终结果与轻量状态分离持久化。
+        except SearchRunStoreError:  # 不向 SSE 客户端暴露数据库路径、SQL 或内部异常。
+            logger.exception("SSE 搜索最终结果持久化降级：运行=%s", result.run_state.run_id)  # 记录运行标识供运维排查。
+        return result  # 由流生成器等待任务结束以释放异常和资源。
+
+    task = asyncio.create_task(run_and_store_result())  # 在后台执行来源调用、排序、事件发布和结果保存。
+
+    async def event_stream():
+        """持续将控制器事件编码为 SSE，直到任务和队列均结束。"""
+        while True:  # 同时观察事件队列与搜索任务，避免任务异常时永久等待空队列。
+            if task.done() and publisher.empty():  # 任务完成且所有已发布事件均已发送。
+                await task  # 传播未处理异常以便 ASGI 记录，正常完成时直接结束生成器。
+                return  # 完成同次 SSE 响应。
+            event_waiter = asyncio.create_task(publisher.next_event())  # 单独等待下一条进度事件，便于与任务完成竞争。
+            try:  # 客户端断线时只取消本次队列等待，不中断后台搜索任务。
+                completed, _ = await asyncio.wait({task, event_waiter}, return_when=asyncio.FIRST_COMPLETED)  # 先处理最早到达的事件或任务终态。
+            except BaseException:  # ASGI 取消生成器或连接异常时释放临时事件等待协程。
+                event_waiter.cancel()  # 避免断线后遗留永不完成的队列等待任务。
+                raise  # 保留原始取消或连接异常供 ASGI 处理。
+            if event_waiter in completed:  # 队列中已有进度事件时优先发送，保留服务端原有顺序。
+                yield _encode_sse_event(event_waiter.result())  # 按 SSE 帧格式发送事件类型和 JSON 数据。
+                continue  # 继续消费下一条事件或观察任务结束。
+            event_waiter.cancel()  # 搜索任务先结束且队列暂为空，不再无期限等待事件。
+            try:  # 等待取消完成以避免遗留异步任务警告。
+                await event_waiter  # 让队列等待协程释放资源。
+            except asyncio.CancelledError:  # 此处取消属于正常的任务完成分支。
+                pass  # 无需向客户端暴露内部调度细节。
+            await task  # 将控制器故障暴露给 ASGI 日志，成功路径则继续下一轮检查队列。
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})  # 禁止代理缓冲以尽快向浏览器发送进度。

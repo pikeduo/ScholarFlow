@@ -5,7 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, searchPapers, searchWithIntent } from '../services/searchApi.js' // 调用自然入口或跳过 Query Agent 的直接意图入口。
+import { SearchApiError, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 接收自然入口或编辑意图重搜的实时进度。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -33,6 +33,7 @@ const showAdvanced = ref(false) // 控制高级约束面板展开状态。
 const savedPaperIds = ref(new Set()) // 保存当前页面已成功收藏的论文 ID。
 const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防止重复点击。
 const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
+const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 
 const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
@@ -65,9 +66,10 @@ async function submitSearch() { // 执行完整多源检索并更新页面状态
   if (loading.value) return // 防止重复点击产生并发外部请求。
   loading.value = true // 立即禁用提交按钮并展示进度。
   errorMessage.value = '' // 清除上一轮错误。
+  progressEvent.value = null // 清除上一轮检索残留的过程提示。
   try { // 捕获 API 客户端已净化错误。
     const formSnapshot = { ...form } // 固定本次请求及结果说明使用的表单快照。
-    const nextResult = await searchPapers(formSnapshot) // 提交快照，避免请求期间编辑影响本次语义。
+    const nextResult = await streamSearchPapers(formSnapshot, handleProgressEvent) // 在同次自然语言多轮检索中实时消费进度并最终读取结果。
     result.value = nextResult // 仅在成功解析响应后替换已有结果。
     submittedQuery.value = formSnapshot.queryText.trim() // 保存结果对应查询供标题回显。
     conditionChips.value = buildConditionChips(formSnapshot) // 保存与当前结果严格对应的条件标签。
@@ -82,8 +84,9 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
   if (loading.value) return // 防止重复点击产生并发外部请求。
   loading.value = true // 禁用搜索和编辑面板。
   errorMessage.value = '' // 清除上一轮错误。
+  progressEvent.value = null // 清除编辑前旧运行的进度提示。
   try { // 捕获统一 API 客户端错误。
-    const nextResult = await searchWithIntent(editedIntent) // 直接进入多轮召回、排序、核验与停止判断链路。
+    const nextResult = await streamSearchWithIntent(editedIntent, handleProgressEvent) // 跳过 Query Agent 并实时消费同次多轮检索进度。
     result.value = nextResult // 成功后替换论文和检索统计。
     submittedQuery.value = editedIntent.original_query // 保持结果对应的原始研究问题。
     conditionChips.value = buildConditionChips({ // 使用编辑后的关键约束更新结果说明。
@@ -99,6 +102,10 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
   } finally { // 无论成功失败都恢复交互。
     loading.value = false // 结束加载状态。
   }
+}
+
+function handleProgressEvent(event) { // 接收客户端已校验的 SSE 事件并更新加载区轻量状态。
+  progressEvent.value = event // 仅保存运行标识、轮次、数量和安全消息。
 }
 
 async function savePaper(paper) { // 将单篇搜索结果去重保存到个人文献库。
@@ -193,8 +200,8 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
     <section v-if="loading" class="loading-state" aria-live="polite">
       <div class="loading-orbit" aria-hidden="true"><span></span><i></i></div>
       <div>
-        <strong>正在执行多源论文检索</strong>
-        <p>OpenAlex / Semantic Scholar → 身份融合 → BGE-M3 → Cross Encoder → LLM 核验 → 覆盖缺口分析</p>
+        <strong>{{ progressEvent?.message || '正在执行多源论文检索' }}</strong>
+        <p>{{ progressEvent ? `第 ${progressEvent.current_round ?? 0} 轮 · ${Math.round((progressEvent.progress || 0) * 100)}% · ${progressEvent.metrics?.candidate_count ?? 0} 篇累计候选` : 'OpenAlex / Semantic Scholar → 身份融合 → BGE-M3 → Cross Encoder → LLM 核验 → 覆盖缺口分析' }}</p>
       </div>
     </section>
 

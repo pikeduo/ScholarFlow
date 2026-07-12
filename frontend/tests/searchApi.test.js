@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, createQueryIntent, searchPapers, searchWithIntent, splitTerms, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数和两种 API 入口。
+import { SearchApiError, createQueryIntent, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST 和 SSE API 入口。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
   queryText: '检索 Transformer forecasting 论文', // 提供中英混合查询。
@@ -83,6 +83,17 @@ const editableIntent = { // 构造查询解析面板可提交的完整最小意�
   source_recall_count: 50, // 设置来源召回数量。
 }
 
+function createSseResponse(events) { // 构造不访问网络且可按块读取的浏览器 SSE 响应替身。
+  const encoder = new TextEncoder() // 使用 UTF-8 编码模拟浏览器网络字节流。
+  const stream = new ReadableStream({ // 创建标准 ReadableStream 以覆盖 fetch SSE 消费路径。
+    start(controller) { // 在读取开始时依次写入测试事件。
+      for (const event of events) controller.enqueue(encoder.encode(event)) // 保持每个事件可被拆分的网络分块边界。
+      controller.close() // 模拟服务端在 completed 后关闭连接。
+    },
+  })
+  return { ok: true, status: 200, body: stream } // 返回符合 streamSearch 所需最小响应契约。
+}
+
 test('searchWithIntent 直接提交编辑后的 QueryIntent 并跳过自然语言入口', async () => { // 验证重搜不会再次调用 Query Agent。
   let capturedUrl = '' // 保存直接意图请求地址。
   let capturedBody = null // 保存编辑后的请求正文。
@@ -99,6 +110,40 @@ test('searchWithIntent 直接提交编辑后的 QueryIntent 并跳过自然语�
   assert.equal(capturedBody.normalized_query, 'edited english query') // 验证英文检索式空白被规范化。
   assert.equal(capturedBody.source_recall_count, 50) // 验证来源召回规模完整保留。
   assert.equal(result, expectedResult) // 验证成功响应返回页面层。
+})
+
+test('streamSearchPapers 消费 SSE 并按运行标识读取同次最终结果', async () => { // 验证自然语言页面不因进度显示重复提交搜索。
+  const runId = 'run-stream-natural' // 构造 SSE 创建事件提供的稳定运行标识。
+  const events = [] // 保存页面应收到的结构化进度事件。
+  const requestUrls = [] // 记录流请求和最终结果读取请求的顺序。
+  const expectedResult = { papers: [], run_state: { run_id: runId, current_round: 1, max_rounds: 2 }, query_intent: editableIntent } // 构造同次运行持久化的最小结果。
+  const fetchStub = async (url) => { // 使用同一替身模拟先 POST 流、后 GET 结果的两次请求。
+    requestUrls.push(url) // 保存请求地址供断言。
+    if (url.endsWith('/events')) return createSseResponse([`event: run_created\ndata: {"run_id":"${runId}","event_type":"run_created"}\n\n`, `event: completed\ndata: {"run_id":"${runId}","event_type":"completed"}\n\n`]) // 返回不含论文正文的进度帧。
+    return { ok: true, status: 200, json: async () => expectedResult } // 返回已持久化的完整最终结果。
+  }
+
+  const result = await streamSearchPapers(baseForm, (event) => events.push(event), fetchStub, 'http://test.local') // 执行自然语言 SSE 请求并接收页面进度回调。
+
+  assert.deepEqual(requestUrls, ['http://test.local/api/v1/search/natural-multi-round/events', `http://test.local/api/v1/search/runs/${runId}/result`]) // 验证只执行一次搜索，第二次请求仅按运行标识读取结果。
+  assert.deepEqual(events.map((event) => event.event_type), ['run_created', 'completed']) // 验证页面依序收到安全生命周期事件。
+  assert.equal(result, expectedResult) // 验证页面最终渲染 REST 返回的完整结果。
+})
+
+test('streamSearchWithIntent 使用直接意图事件入口并保留编辑重搜边界', async () => { // 验证编辑后的 QueryIntent 不会触发自然语言 Query Agent。
+  const runId = 'run-stream-intent' // 构造直接意图流运行标识。
+  const expectedResult = { papers: [], run_state: { run_id: runId, current_round: 1, max_rounds: 2 }, query_intent: editableIntent } // 构造可供页面渲染的最小结果。
+  let firstRequest = '' // 保存首个请求路径以验证直接意图入口。
+  const fetchStub = async (url) => { // 根据路径返回事件流或最终结果。
+    if (!firstRequest) firstRequest = url // 记录第一次请求。
+    if (url.endsWith('/events')) return createSseResponse([`event: completed\ndata: {"run_id":"${runId}","event_type":"completed"}\n\n`]) // completed 事件同样可提供运行标识。
+    return { ok: true, status: 200, json: async () => expectedResult } // 返回同次完成结果。
+  }
+
+  const result = await streamSearchWithIntent(editableIntent, () => {}, fetchStub, 'http://test.local') // 提交编辑意图并忽略仅用于 UI 的进度事件。
+
+  assert.equal(firstRequest, 'http://test.local/api/v1/search/multi-round/events') // 验证直接使用编辑意图 SSE 入口。
+  assert.equal(result, expectedResult) // 验证结果来自同次运行的 REST 读取。
 })
 
 test('validateQueryIntent 拒绝倒置年份、候选不足和条件冲突', () => { // 验证编辑重搜的关键错误边界。
