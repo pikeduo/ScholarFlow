@@ -63,6 +63,10 @@ class VectorMetadataRepository:
         self._session.refresh(row)  # 读取 SQLite 自动分配的稳定整数 ID。
         return row  # 返回可直接传给 FAISS 的映射记录。
 
+    def find(self, index_name: str, paper_id: str, text_hash: str) -> EmbeddingRecordRow | None:
+        """按索引、论文和文本哈希查询可复用或待恢复的向量映射。"""
+        return self._session.scalar(select(EmbeddingRecordRow).where(EmbeddingRecordRow.index_name == index_name, EmbeddingRecordRow.paper_id == paper_id, EmbeddingRecordRow.text_hash == text_hash))  # 返回相同内容的唯一映射或空值。
+
     def activate(self, vector_id: int) -> EmbeddingRecordRow:
         """在 FAISS 原子保存成功后将预写记录切换为 active。"""
         row = self._get_required(vector_id)  # 确保状态转换目标存在。
@@ -71,6 +75,20 @@ class VectorMetadataRepository:
         self._session.commit()  # 持久化活动状态供查询过滤使用。
         self._session.refresh(row)  # 返回数据库最终值。
         return row  # 供调用方记录或组合响应。
+
+    def activate_replacing(self, vector_id: int) -> EmbeddingRecordRow:
+        """激活新向量并在同一事务中逻辑失效该论文在当前索引中的旧 active 向量。"""
+        row = self._get_required(vector_id)  # 读取刚完成 FAISS 原子写入的 pending 映射。
+        now = datetime.now(timezone.utc)  # 使用同一 UTC 时间标记替换事务。
+        previous_rows = self._session.scalars(select(EmbeddingRecordRow).where(EmbeddingRecordRow.index_name == row.index_name, EmbeddingRecordRow.paper_id == row.paper_id, EmbeddingRecordRow.status == "active", EmbeddingRecordRow.vector_id != row.vector_id)).all()  # 查找同一论文文本更新前仍在检索中的旧向量。
+        for previous_row in previous_rows:  # 一篇论文可能因历史异常存在多个活跃向量。
+            previous_row.status = "inactive"  # 防止旧摘要或旧模型文本继续被检索命中。
+            previous_row.updated_at = now  # 记录统一替换时间供后续重建策略使用。
+        row.status = "active"  # 新索引文件已成功发布后才允许当前向量进入检索集合。
+        row.updated_at = now  # 记录新向量激活时间。
+        self._session.commit()  # 原子提交新旧映射切换，避免同时活跃的长期状态。
+        self._session.refresh(row)  # 读取数据库最终状态。
+        return row  # 返回当前激活映射。
 
     def mark_inactive(self, vector_id: int) -> EmbeddingRecordRow:
         """逻辑失效旧向量，不在删除时重建整个 FAISS 索引。"""
@@ -96,6 +114,10 @@ class VectorMetadataRepository:
             return set()  # 返回稳定空集合。
         rows = self._session.scalars(select(EmbeddingRecordRow.vector_id).where(EmbeddingRecordRow.index_name == index_name, EmbeddingRecordRow.status == "active", EmbeddingRecordRow.vector_id.in_(vector_ids))).all()  # 仅查询本索引内仍有效的映射。
         return {int(vector_id) for vector_id in rows}  # 转换为供 FAISS 搜索结果过滤使用的整数集合。
+
+    def active_count(self, index_name: str) -> int:
+        """返回指定索引在 SQLite 映射中仍有效的向量数量。"""
+        return len(self._session.scalars(select(EmbeddingRecordRow.vector_id).where(EmbeddingRecordRow.index_name == index_name, EmbeddingRecordRow.status == "active")).all())  # 使用 SQLite 状态而非 FAISS 总数统计逻辑失效后的真实可检索数量。
 
     def upsert_index_metadata(self, index_name: str, dimension: int, model_name: str, model_revision: str | None, active_vector_count: int) -> IndexMetadataRow:
         """创建或刷新索引元数据，记录可重建模型和活动向量统计。"""

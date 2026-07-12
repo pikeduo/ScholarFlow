@@ -10,8 +10,11 @@ from sqlalchemy.orm import Session  # 标注请求级 SQLAlchemy 会话。
 from backend.app.core.logging import logger  # 记录数据库故障完整堆栈。
 from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 声明公共请求与响应契约。
 from backend.app.repositories.database import SessionLocal  # 为每个请求创建独立数据库会话。
+from backend.app.repositories.faiss_index import FaissIndexManager  # 管理默认文献库 FAISS 索引文件。
 from backend.app.repositories.library import LibraryRepository  # 装配 SQLite 文献库仓储。
+from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 装配 SQLite 向量映射仓储。
 from backend.app.services.library import LibraryItemNotFoundError, LibraryService  # 编排文献库业务并映射不存在错误。
+from backend.app.services.library_vector_index import DEFAULT_LIBRARY_INDEX_PATH, LIBRARY_INDEX_NAME, LibraryPaperIndexer, LibraryVectorIndexer  # 装配可覆盖的收藏后向量索引依赖。
 
 
 router = APIRouter(prefix="/library/items")  # 将个人文献库端点组织到稳定资源路径。
@@ -26,9 +29,17 @@ def get_database_session() -> Iterator[Session]:
         session.close()  # 防止连接长期占用。
 
 
-def get_library_service(session: Annotated[Session, Depends(get_database_session)]) -> LibraryService:
+_library_paper_indexer = LibraryVectorIndexer(index_manager=FaissIndexManager(LIBRARY_INDEX_NAME, DEFAULT_LIBRARY_INDEX_PATH))  # 创建进程级懒加载模型和索引管理器，构造阶段不触发 I/O。
+
+
+def get_library_paper_indexer() -> LibraryPaperIndexer:
+    """提供可由测试覆盖的进程级文献库向量索引器。"""
+    return _library_paper_indexer  # 复用模型和索引实例，避免每次收藏重复加载权重。
+
+
+def get_library_service(session: Annotated[Session, Depends(get_database_session)], paper_indexer: Annotated[LibraryPaperIndexer, Depends(get_library_paper_indexer)]) -> LibraryService:
     """使用请求级会话构造文献库服务。"""
-    return LibraryService(LibraryRepository(session))  # 集中装配仓储和业务层。
+    return LibraryService(LibraryRepository(session), VectorMetadataRepository(session), paper_indexer)  # 集中装配文献库、向量状态和懒加载索引器。
 
 
 @router.post("", response_model=LibrarySaveResult, status_code=status.HTTP_200_OK, summary="收藏论文")

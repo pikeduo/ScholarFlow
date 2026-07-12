@@ -3,6 +3,8 @@
 from backend.app.core.logging import logger  # 记录收藏数量和操作类型等非敏感统计。
 from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 接收稳定请求并返回公共领域模型。
 from backend.app.repositories.library import LibraryRepository  # 依赖可替换 SQLite 仓储。
+from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 使用请求级 SQLite 会话维护向量映射状态。
+from backend.app.services.library_vector_index import LibraryPaperIndexer  # 依赖可替换的收藏后语义索引编排器。
 
 
 class LibraryItemNotFoundError(LookupError):
@@ -12,13 +14,18 @@ class LibraryItemNotFoundError(LookupError):
 class LibraryService:
     """提供去重收藏、筛选、属性更新和删除的业务边界。"""
 
-    def __init__(self, repository: LibraryRepository) -> None:
+    def __init__(self, repository: LibraryRepository, vector_metadata_repository: VectorMetadataRepository | None = None, paper_indexer: LibraryPaperIndexer | None = None) -> None:
         """保存由 API 或测试注入的文献库仓储。"""
         self._repository = repository  # 服务不依赖全局数据库会话。
+        self._vector_metadata_repository = vector_metadata_repository  # 保存可选向量元数据仓储以保持既有直接服务测试兼容。
+        self._paper_indexer = paper_indexer  # 保存可选索引器，允许测试或降级场景不加载模型。
 
     def save(self, request: SaveLibraryItemRequest) -> LibrarySaveResult:
         """保存论文，并明确返回本次是否创建新收藏。"""
         item, created = self._repository.save(request.paper, request.tags, request.note, request.reading_status)  # 执行身份去重与原子写入。
+        if self._vector_metadata_repository is not None and self._paper_indexer is not None:  # 仅在 API 组合根提供完整阶段五依赖时索引收藏论文。
+            index_result = self._paper_indexer.index(item.paper, self._vector_metadata_repository)  # 在收藏成功后执行可解释的语义索引写入或降级。
+            logger.info("文献库语义索引结果：成功=%s，已复用或写入向量=%s", index_result.indexed, index_result.vector_id is not None)  # 不记录论文标题、ID 或错误底层信息。
         logger.info("文献库保存完成：新建=%s，标签数=%d", created, len(item.tags))  # 不记录标题、备注或完整论文内容。
         return LibrarySaveResult(item=item, created=created)  # 返回稳定保存结果。
 
