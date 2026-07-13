@@ -45,7 +45,8 @@ class DeepSeekPaperTranslationClient:
         """
         source_text = paper.title if field == "title" else paper.abstract  # 只提取用户请求的单一公开文本字段。
         if not source_text.strip():  # 缺失字段不应消耗模型调用。
-            raise PaperTranslationError("论文摘要暂缺，无法翻译")  # 返回可直接展示的明确公共错误。
+            field_label = "标题" if field == "title" else "摘要"  # 为当前缺失字段构造准确公共提示。
+            raise PaperTranslationError(f"论文{field_label}暂缺，无法翻译")  # 返回可直接展示的明确公共错误。
         try:  # 在网络请求前校验密钥配置。
             api_key = self._config.require_deepseek_api_key()  # 仅在适配器请求层解封装密钥。
         except ValueError as exc:  # 缺失配置不应泄露环境字段或原始异常。

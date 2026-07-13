@@ -9,7 +9,7 @@ import pytest  # 提供夹具声明能力。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证翻译路由。
 
 from backend.app.adapters.deepseek_translation import DeepSeekPaperTranslationClient  # 导入待测 DeepSeek 翻译适配器。
-from backend.app.api.routes.papers import get_paper_translation_client  # 覆盖真实翻译依赖避免接口测试访问网络。
+from backend.app.api.routes.papers import get_paper_translation_client, get_paper_translation_store  # 覆盖真实翻译和缓存依赖避免接口测试访问网络。
 from backend.app.api.routes.search import get_search_run_state_store  # 覆盖 SQLite 论文读取依赖。
 from backend.app.core.config import Settings  # 构造隔离且含测试密钥的配置。
 from backend.app.main import app  # 导入已装配版本化路由的 FastAPI 应用。
@@ -37,6 +37,36 @@ class FakeTranslationClient:
         return PaperTranslationResponse(paper_id=paper.paper_id, field=field, text_zh="证据驱动检索", model_name="deepseek-v4-flash")  # 模拟已验证的模型响应。
 
 
+class CountingTranslationClient:
+    """记录模型调用次数，验证缓存命中时不会重复翻译。"""
+
+    def __init__(self) -> None:
+        """初始化可观测的调用计数。"""
+        self.calls = 0  # 从零开始记录实际模型边界调用。
+
+    async def translate(self, paper: PaperRecord, field: str) -> PaperTranslationResponse:
+        """返回固定译文并记录一次模型调用。"""
+        self.calls += 1  # 只应在 SQLite 缓存未命中时增加。
+        return PaperTranslationResponse(paper_id=paper.paper_id, field=field, text_zh="证据驱动检索", model_name="deepseek-v4-flash")  # 返回与字段绑定的稳定结果。
+
+
+class FakeTranslationStore:
+    """为路由测试提供以论文、字段和原文模拟的持久译文缓存。"""
+
+    def __init__(self) -> None:
+        """初始化空缓存字典。"""
+        self._items: dict[tuple[str, str, str], PaperTranslationResponse] = {}  # 用完整原文模拟 SQLite 的原文哈希版本键。
+
+    def get(self, paper_id: str, field: str, source_text: str) -> PaperTranslationResponse | None:
+        """读取与当前字段原文完全匹配的缓存。"""
+        return self._items.get((paper_id, field, source_text))  # 标题和摘要必须使用独立键。
+
+    def save(self, translation: PaperTranslationResponse, source_text: str) -> PaperTranslationResponse:
+        """保存当前字段译文，模拟成功提交的 SQLite 缓存。"""
+        self._items[(translation.paper_id, translation.field, source_text)] = translation  # 仅覆盖同一论文、字段和原文版本。
+        return translation  # 返回与生产缓存服务一致的稳定模型。
+
+
 @pytest.fixture
 def api_client() -> Iterator[TestClient]:
     """提供翻译路由的本地 ASGI 客户端并清理依赖覆盖。"""
@@ -45,6 +75,7 @@ def api_client() -> Iterator[TestClient]:
     client.close()  # 释放测试客户端资源。
     app.dependency_overrides.pop(get_search_run_state_store, None)  # 清理 SQLite 替身避免污染其他测试。
     app.dependency_overrides.pop(get_paper_translation_client, None)  # 清理翻译替身避免污染其他测试。
+    app.dependency_overrides.pop(get_paper_translation_store, None)  # 清理译文缓存替身避免污染其他测试。
 
 
 def _paper() -> PaperRecord:
@@ -73,6 +104,7 @@ def test_paper_translation_endpoint_translates_only_saved_paper(api_client: Test
     """翻译接口应只接受已保存论文标识并返回中文标题与摘要。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(_paper())  # 注入已保存论文读取替身。
     app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 注入无需网络的翻译替身。
+    app.dependency_overrides[get_paper_translation_store] = lambda: FakeTranslationStore()  # 注入不写用户 SQLite 的缓存替身。
 
     response = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 通过查询参数传递稳定论文标识并触发标题翻译。
 
@@ -80,10 +112,28 @@ def test_paper_translation_endpoint_translates_only_saved_paper(api_client: Test
     assert response.json()["text_zh"] == "证据驱动检索"  # 验证响应包含可供卡片显示的标题译文。
 
 
+def test_paper_translation_endpoint_reuses_sqlite_cache_by_field_and_source_text(api_client: TestClient) -> None:
+    """同一论文标题重复请求应命中缓存，摘要仍保留独立翻译边界。"""
+    translation_client = CountingTranslationClient()  # 注入可观测模型替身。
+    translation_store = FakeTranslationStore()  # 注入字段和原文独立的缓存替身。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(_paper())  # 提供可翻译的已保存论文。
+    app.dependency_overrides[get_paper_translation_client] = lambda: translation_client  # 记录模型调用次数。
+    app.dependency_overrides[get_paper_translation_store] = lambda: translation_store  # 避免写入真实 SQLite。
+
+    first_title = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 首次标题请求应调用模型并写缓存。
+    second_title = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 同一标题请求应直接命中缓存。
+    abstract = api_client.post("/api/v1/papers/translation/abstract?paper_id=paper-translation-1")  # 摘要必须作为独立字段单独翻译。
+
+    assert first_title.status_code == second_title.status_code == abstract.status_code == 200  # 三次请求均应获得稳定响应。
+    assert translation_client.calls == 2  # 标题只调用一次，摘要独立调用一次。
+    assert second_title.json()["field"] == "title" and abstract.json()["field"] == "abstract"  # 验证缓存和响应均不会混淆两个字段。
+
+
 def test_paper_translation_endpoint_rejects_unknown_paper(api_client: TestClient) -> None:
     """未知论文不能被前端用来触发任意 DeepSeek 文本翻译。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(None)  # 注入未命中论文的只读替身。
     app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 即使配置翻译替身也不得被调用。
+    app.dependency_overrides[get_paper_translation_store] = lambda: FakeTranslationStore()  # 未知论文不应读取或写入缓存。
 
     response = api_client.post("/api/v1/papers/translation/abstract?paper_id=missing-paper")  # 请求不在保存快照中的论文标识。
 

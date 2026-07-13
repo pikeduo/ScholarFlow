@@ -42,6 +42,7 @@ def build_dblp_search_params(query: QueryIntent) -> dict[str, str | int]:
         "format": "json",  # 请求方便安全映射的官方 JSON 响应格式。
         "h": query.source_recall_count or query.target_paper_count,  # 使用独立来源召回规模并兼容旧调用。
         "f": 0,  # 首版仅请求每次搜索结果的第一页。
+        "c": 0,  # 后端不消费自动补全，关闭其计算以降低泛词在线检索的来源负担与 5xx 风险。
     }
 
 

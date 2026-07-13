@@ -64,3 +64,12 @@ def test_rerank_rejects_invalid_candidate_limit() -> None:
     """候选上限不能为零或负数，避免后续 LLM 核验没有候选。"""
     with pytest.raises(ValueError, match="candidate_limit"):  # 断言返回稳定配置错误。
         CrossEncoderReranker(scorer=_StubScorer([]), candidate_limit=0)  # 构造无效截断策略。
+
+
+def test_rerank_skips_cross_encoder_when_fast_path_is_configured() -> None:
+    """快速路径关闭 Cross Encoder 后不得调用打分器，且应沿用语义排序。"""
+    papers = [_paper("a", 0.9, 0.1), _paper("b", 0.5, 0.3), _paper("c", 0.7, 0.2)]  # 构造既有 BGE-M3 分数顺序。
+    result = CrossEncoderReranker(scorer=_FailingScorer(), candidate_limit=2, enabled=False).rerank(papers, _query())  # 注入会失败的打分器证明快速路径不调用它。
+
+    assert [paper.paper_id for paper in result.papers] == ["a", "c"]  # 验证跳过模型后沿用 BGE-M3 排序并截断。
+    assert result.ranking_error == "Cross Encoder 重排已按配置跳过，已沿用 BGE-M3 或 RRF 排序"  # 验证前端可区分主动跳过与模型故障。

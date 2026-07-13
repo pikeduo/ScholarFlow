@@ -10,15 +10,22 @@ from backend.app.core.logging import logger  # 记录存储边界异常的完整
 from backend.app.models.paper import PaperRecord  # 返回统一的规范化论文领域契约。
 from backend.app.models.paper_translation import PaperTranslationResponse  # 返回稳定的中文翻译响应。
 from backend.app.services.search_run_store import SearchRunStateStore, SearchRunStoreError  # 隔离 SQLite 访问并映射公共错误。
+from backend.app.services.paper_translation_store import PaperTranslationStore, PaperTranslationStoreError, SqlitePaperTranslationStore  # 通过 SQLite 缓存跨浏览器复用字段级译文。
 
 
 router = APIRouter(prefix="/papers")  # 将论文资源归入固定版本化路径。
 paper_translation_client: PaperTranslationClient = DeepSeekPaperTranslationClient()  # 复用无状态翻译适配器且允许测试覆盖依赖。
+paper_translation_store: PaperTranslationStore = SqlitePaperTranslationStore()  # 复用字段级 SQLite 缓存服务且允许测试覆盖依赖。
 
 
 def get_paper_translation_client() -> PaperTranslationClient:
     """返回当前用于按需论文翻译的 DeepSeek 适配器。"""
     return paper_translation_client  # 通过依赖注入隔离真实网络调用。
+
+
+def get_paper_translation_store() -> PaperTranslationStore:
+    """返回当前用于跨浏览器复用译文的 SQLite 缓存服务。"""
+    return paper_translation_store  # 通过依赖注入隔离持久化实现并支持离线测试替换。
 
 
 @router.get("/{paper_id}", response_model=PaperRecord, status_code=status.HTTP_200_OK, summary="读取已保存论文详情")
@@ -55,6 +62,7 @@ async def translate_paper(
     paper_id: Annotated[str, Query(min_length=1)],
     state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
     translation_client: Annotated[PaperTranslationClient, Depends(get_paper_translation_client)],
+    translation_store: Annotated[PaperTranslationStore, Depends(get_paper_translation_store)],
 ) -> PaperTranslationResponse:
     """按用户操作调用 DeepSeek，将已保存论文的指定字段翻译为中文。
 
@@ -63,9 +71,9 @@ async def translate_paper(
         state_store：只读 SQLite 搜索结果快照适配层。
         translation_client：可替换的 DeepSeek 翻译适配器。
     返回：
-        PaperTranslationResponse：包含标题和摘要的简体中文译文。
+        PaperTranslationResponse：包含当前标题或摘要字段的简体中文译文。
     异常：
-        HTTPException：论文不存在、缺少摘要或翻译服务不可用时返回安全公共错误。
+        HTTPException：论文不存在、当前字段缺失或翻译服务不可用时返回安全公共错误。
     """
     normalized_paper_id = paper_id.strip()  # 拒绝空白论文标识进入 SQLite 扫描和模型调用。
     if not normalized_paper_id:  # 空标识不可能对应已保存论文。
@@ -77,10 +85,24 @@ async def translate_paper(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="论文翻译暂时不可用，请稍后重试") from None  # 返回可重试公共错误。
     if paper is None:  # 未保存论文不能触发模型调用。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="论文详情不存在或尚未保存")  # 保持资源读取与翻译的授权边界一致。
-    if not paper.abstract.strip():  # 前端仅在有摘要时显示入口，后端仍需独立保护。
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="论文摘要暂缺，无法翻译")  # 返回用户可理解的输入状态错误。
+    source_text = paper.title if field == "title" else paper.abstract  # 只读取当前用户请求字段，标题翻译不依赖摘要存在。
+    if not source_text.strip():  # 缺失当前字段时不得消耗模型调用或返回错误缓存。
+        field_label = "标题" if field == "title" else "摘要"  # 为用户构造与请求字段一致的公共提示。
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"论文{field_label}暂缺，无法翻译")  # 明确当前字段缺失而不误报摘要。
+    try:  # 先检查当前原文版本的 SQLite 缓存，命中时禁止调用 DeepSeek。
+        cached_translation = translation_store.get(paper.paper_id, field, source_text)  # 缓存键包含论文、字段及原文哈希。
+    except PaperTranslationStoreError:  # 缓存故障不应阻塞按需翻译，应安全降级到模型调用。
+        logger.exception("论文译文缓存读取失败，将直接调用翻译服务：论文=%s，字段=%s", normalized_paper_id, field)  # 不记录标题、摘要或缓存正文。
+        cached_translation = None  # 继续使用受控翻译适配器生成当前字段译文。
+    if cached_translation is not None:  # 当前原文完全匹配的持久化译文可直接复用。
+        return cached_translation  # 避免重复模型请求并支持跨浏览器访问。
     try:  # 将真实模型异常转换为稳定 HTTP 语义。
-        return await translation_client.translate(paper, field)  # 仅翻译用户点击的标题或摘要字段。
+        translated = await translation_client.translate(paper, field)  # 仅翻译用户点击的标题或摘要字段。
     except PaperTranslationError as exc:  # 配置、网络和模型输出错误均已在适配器净化。
         logger.exception("论文翻译调用失败：论文=%s", normalized_paper_id)  # 记录完整受控堆栈但不记录标题或摘要。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from None  # 返回可重试且不泄露内部信息的公共提示。
+    try:  # 模型成功后保存译文，供后续页面和浏览器复用。
+        return translation_store.save(translated, source_text)  # 只写入当前字段和当前原文版本的缓存。
+    except PaperTranslationStoreError:  # 缓存故障不应丢弃已成功生成的可展示译文。
+        logger.exception("论文译文缓存写入失败，将返回本次翻译结果：论文=%s，字段=%s", normalized_paper_id, field)  # 不记录原文或译文内容。
+        return translated  # 保持模型调用成功的用户体验，同时下次请求会重新翻译。

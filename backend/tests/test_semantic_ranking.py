@@ -64,3 +64,12 @@ def test_rank_rejects_invalid_candidate_limit() -> None:
     """候选上限不能为零或负数，避免工作流无法向后续阶段提供候选。"""
     with pytest.raises(ValueError, match="candidate_limit"):  # 断言返回稳定配置错误。
         SemanticRanker(encoder=_StubEncoder([]), candidate_limit=0)  # 构造无效截断策略。
+
+
+def test_rank_skips_bge_m3_when_fast_path_is_configured() -> None:
+    """快速路径关闭 BGE-M3 后不得调用编码器，且应按 RRF 返回候选。"""
+    papers = [_paper("a", 0.1), _paper("b", 0.3), _paper("c", 0.2)]  # 构造可由 RRF 确定的候选顺序。
+    result = SemanticRanker(encoder=_FailingEncoder(), candidate_limit=2, enabled=False).rank(papers, _query())  # 注入会失败的编码器证明快速路径不调用它。
+
+    assert [paper.paper_id for paper in result.papers] == ["b", "c"]  # 验证跳过模型后仍按 RRF 稳定排序并截断。
+    assert result.ranking_error == "BGE-M3 语义粗排已按配置跳过，已按 RRF 排序"  # 验证前端可区分主动跳过与模型故障。

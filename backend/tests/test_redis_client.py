@@ -65,6 +65,7 @@ def test_redis_manager_connects_and_closes_verified_client() -> None:
 
     assert connected is True  # 验证可用 Redis 进入成功状态。
     assert manager.status == "available"  # 验证健康检查会报告可用。
+    assert manager.key_prefix == "ScholarFlow"  # 验证默认项目键前缀可供缓存和限流模块统一复用。
     assert manager.get_client() is client  # 验证后续缓存模块只取得已验证客户端。
     asyncio.run(manager.close())  # 模拟 FastAPI 关闭生命周期。
     assert client.closed is True  # 验证连接池在关闭时被释放。

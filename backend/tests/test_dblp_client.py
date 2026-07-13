@@ -51,7 +51,7 @@ def _build_test_settings() -> Settings:
 def test_search_params_map_query_intent_to_official_fields() -> None:
     """参数构造器应将统一意图映射为 DBLP 的 q、format、h 与 f 参数。"""
     params = build_dblp_search_params(_build_query_intent())  # 构造不含网络或密钥的来源参数。
-    assert params == {"q": "forecasting Transformer", "format": "json", "h": 5, "f": 0}  # 验证官方请求字段及确定性检索词顺序。
+    assert params == {"q": "forecasting Transformer", "format": "json", "h": 5, "f": 0, "c": 0}  # 验证官方请求字段及确定性检索词顺序。
 
 
 def test_client_implements_unified_adapter_and_maps_search_response() -> None:
@@ -64,6 +64,7 @@ def test_client_implements_unified_adapter_and_maps_search_response() -> None:
         assert request.url.params["q"] == "forecasting Transformer"  # 验证查询意图按确定顺序映射为 DBLP 搜索词。
         assert request.url.params["h"] == "5"  # 验证目标结果数量映射为来源最大命中数。
         assert request.url.params["format"] == "json"  # 验证客户端显式请求官方 JSON 响应格式。
+        assert request.url.params["c"] == "0"  # 验证后端搜索关闭不会消费的来源自动补全计算。
         return httpx.Response(200, json=fixture, request=request)  # 返回不依赖网络的 DBLP 响应。
 
     client = DblpClient(  # 使用 mock 传输层构造统一来源客户端。

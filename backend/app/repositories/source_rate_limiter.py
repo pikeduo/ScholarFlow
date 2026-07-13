@@ -13,7 +13,12 @@ class SourceCooldownError(RuntimeError):
 
 
 class RedisRateLimitProvider(Protocol):
-    """定义跨进程限流获取 Redis 客户端所需的最小能力。"""
+    """定义跨进程限流获取 Redis 客户端和 ScholarFlow 键前缀所需的最小能力。"""
+
+    @property
+    def key_prefix(self) -> str:
+        """返回已校验的 ScholarFlow Redis 键前缀。"""
+        ...  # 允许单元测试注入内存替身。
 
     def get_client(self) -> RedisAsyncClient | None:
         """返回已通过健康检查的 Redis 客户端或空值。"""
@@ -81,11 +86,11 @@ class SourceRateLimiter:
 
     def _request_key(self, source: str) -> str:
         """构造来源级跨进程请求窗口键。"""
-        return f"source:rate:{source}:request"  # 以模块、子模块和来源请求窗口隔离 DB 0 限流状态。
+        return f"{self._redis_provider.key_prefix}:source:rate:{source}:request"  # 以项目、模块、子模块和来源请求窗口隔离 DB 0 限流状态。
 
     def _cooldown_key(self, source: str) -> str:
         """构造来源级跨进程 429 冷却键。"""
-        return f"source:rate:{source}:cooldown"  # 以模块、子模块和来源冷却状态隔离 DB 0 限流状态。
+        return f"{self._redis_provider.key_prefix}:source:rate:{source}:cooldown"  # 以项目、模块、子模块和来源冷却状态隔离 DB 0 限流状态。
 
 
 def get_source_rate_limiter() -> SourceRateLimiter:

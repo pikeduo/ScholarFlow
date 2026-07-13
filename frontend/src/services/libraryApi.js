@@ -1,0 +1,110 @@
+/** 表示个人文献库请求失败且可安全展示的公共错误。 */
+export class LibraryApiError extends Error { // 继承标准错误供页面统一捕获。
+  constructor(message, status = null) { // 接收展示消息和可选 HTTP 状态码。
+    super(message) // 保存安全错误说明。
+    this.name = 'LibraryApiError' // 提供稳定错误类型名称。
+    this.status = status // 保存状态码供界面判断记录是否不存在。
+  }
+}
+
+const DEFAULT_API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/$/, '') // 默认使用 Vite 代理并允许部署覆盖 API 根地址。
+
+/** 将论文保存到个人文献库并返回去重结果。 */
+export async function saveLibraryPaper(paper, options = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许测试注入离线 fetch。
+  if (!paper || typeof paper !== 'object' || !paper.paper_id) throw new LibraryApiError('论文信息不完整，无法收藏') // 在网络调用前拒绝无稳定身份论文。
+  const requestBody = { // 只提交后端收藏契约允许的字段。
+    paper, // 保留完整 PaperRecord 供 SQLite 建立论文快照。
+    tags: normalizeTags(options.tags || []), // 清理默认或用户提供的标签。
+    note: options.note ?? null, // 保留可选备注。
+    reading_status: options.readingStatus || 'unread', // 新收藏默认未读。
+  }
+  const result = await requestLibrary('/api/v1/library/items', { method: 'POST', body: JSON.stringify(requestBody) }, fetchImpl, apiBaseUrl) // 调用去重保存端点。
+  if (!result?.item || typeof result.created !== 'boolean') throw new LibraryApiError('文献库服务返回了不完整的保存结果') // 验证页面依赖的最小响应。
+  return result // 返回收藏记录和新建标记。
+}
+
+/** 查询可按标签和阅读状态筛选的文献库列表。 */
+export async function listLibraryItems(filters = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收可选筛选器和测试替身。
+  const params = new URLSearchParams() // 使用浏览器标准编码查询参数。
+  if (String(filters.tag || '').trim()) params.set('tag', String(filters.tag).trim()) // 仅提交有效标签。
+  if (filters.readingStatus) params.set('reading_status', filters.readingStatus) // 仅提交明确阅读状态。
+  const suffix = params.toString() ? `?${params.toString()}` : '' // 空筛选时避免多余问号。
+  const result = await requestLibrary(`/api/v1/library/items${suffix}`, { method: 'GET' }, fetchImpl, apiBaseUrl) // 获取筛选结果。
+  if (!result || !Array.isArray(result.items) || typeof result.total !== 'number') throw new LibraryApiError('文献库服务返回了不完整的列表') // 防止页面渲染无效响应。
+  return result // 返回稳定列表与总数。
+}
+
+/** 使用自然语言在当前标签和阅读状态筛选范围内检索收藏论文。 */
+export async function searchLibraryItemsSemantically(query, filters = {}, options = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收查询、结构化筛选、结果数量和测试替身。
+  const normalizedQuery = String(query || '').trim() // 清理用户输入首尾空白。
+  if (normalizedQuery.length < 2) throw new LibraryApiError('请输入至少两个字符的文献库检索内容') // 在网络请求前阻止无意义自然语言查询。
+  const topK = Number(options.topK || 20) // 读取可选结果数量并保持默认二十篇。
+  if (!Number.isInteger(topK) || topK < 1 || topK > 50) throw new LibraryApiError('文献库语义检索结果数量必须在 1 到 50 之间') // 对齐后端 Query 参数边界。
+  const params = new URLSearchParams({ query: normalizedQuery, top_k: String(topK) }) // 使用浏览器标准编码文本和数值查询参数。
+  if (String(filters.tag || '').trim()) params.set('tag', String(filters.tag).trim()) // 保留当前标签筛选范围。
+  if (filters.readingStatus) params.set('reading_status', filters.readingStatus) // 保留当前阅读状态筛选范围。
+  const result = await requestLibrary(`/api/v1/library/items/semantic-search?${params.toString()}`, { method: 'GET' }, fetchImpl, apiBaseUrl) // 调用版本化自然语言语义检索端点。
+  if (!result || !Array.isArray(result.items) || typeof result.total !== 'number' || typeof result.degraded !== 'boolean') throw new LibraryApiError('文献库语义检索服务返回了不完整的结果') // 防止页面渲染不完整或不兼容响应。
+  if (result.items.some((entry) => !entry?.item?.item_id || typeof entry.semantic_score !== 'number')) throw new LibraryApiError('文献库语义检索结果缺少论文或相似度信息') // 验证每个结果可安全转换为页面卡片。
+  return result // 返回论文、相似度和安全降级状态。
+}
+
+/** 更新收藏标签、备注或阅读状态。 */
+export async function updateLibraryItem(itemId, changes, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收内部收藏 ID 和明确变更。
+  if (!itemId) throw new LibraryApiError('缺少文献库记录标识') // 阻止构造无效资源路径。
+  const requestBody = {} // 只序列化调用方明确提供的字段。
+  if (Object.hasOwn(changes, 'tags')) requestBody.tags = normalizeTags(changes.tags || []) // 支持清空或替换标签。
+  if (Object.hasOwn(changes, 'note')) requestBody.note = changes.note // 支持文本或 null 清空备注。
+  if (Object.hasOwn(changes, 'readingStatus')) requestBody.reading_status = changes.readingStatus // 映射前端字段到后端契约。
+  const result = await requestLibrary(`/api/v1/library/items/${encodeURIComponent(itemId)}`, { method: 'PATCH', body: JSON.stringify(requestBody) }, fetchImpl, apiBaseUrl) // 提交局部更新。
+  if (!result?.item_id || !result.paper) throw new LibraryApiError('文献库服务返回了不完整的记录') // 验证更新响应。
+  return result // 返回更新后的完整收藏。
+}
+
+/** 删除指定文献库记录。 */
+export async function deleteLibraryItem(itemId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收内部收藏 ID。
+  if (!itemId) throw new LibraryApiError('缺少文献库记录标识') // 阻止无效删除请求。
+  await requestLibrary(`/api/v1/library/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' }, fetchImpl, apiBaseUrl, true) // 允许 204 无正文响应。
+}
+
+/** 清理标签并执行大小写无关去重。 */
+export function normalizeTags(tags) { // 接收标签数组或逗号分隔文本。
+  const values = Array.isArray(tags) ? tags : String(tags || '').split(/[,，\n]/) // 同时支持表单文本和数组。
+  const seen = new Set() // 保存大小写无关比较键。
+  return values.map((tag) => String(tag).trim()).filter((tag) => { // 清除空白并保留首次有效标签。
+    const key = tag.toLocaleLowerCase() // 生成稳定比较键。
+    if (!tag || seen.has(key)) return false // 跳过空值和重复项。
+    seen.add(key) // 标记当前标签已接受。
+    return true // 保留首次显示形式。
+  })
+}
+
+/** 执行文献库 HTTP 请求并统一解析公共错误。 */
+async function requestLibrary(path, options, fetchImpl, apiBaseUrl, allowEmpty = false) { // 复用所有文献库请求的网络边界。
+  if (typeof fetchImpl !== 'function') throw new LibraryApiError('当前环境不支持网络请求') // 为旧环境提供明确错误。
+  let response // 保存网络响应供状态处理。
+  try { // 将断网和代理故障转换为安全消息。
+    response = await fetchImpl(`${apiBaseUrl}${path}`, { // 调用版本化后端端点。
+      ...options, // 保留调用方提供的方法和正文。
+      headers: options.body ? { 'Content-Type': 'application/json' } : undefined, // 仅在有 JSON 正文时声明内容类型。
+    })
+  } catch { // 不暴露浏览器底层网络异常。
+    throw new LibraryApiError('无法连接文献库服务，请确认后端已启动') // 返回可操作提示。
+  }
+  if (!response.ok) { // 非成功响应不得进入页面数据流。
+    let message = response.status === 404 ? '文献库记录不存在' : '文献库服务暂时不可用，请稍后重试' // 提供状态相关默认消息。
+    try { // 优先读取后端已净化的公共错误。
+      const errorBody = await response.json() // 解析 FastAPI 错误响应。
+      if (typeof errorBody.detail === 'string') message = errorBody.detail // 只接受安全字符串字段。
+    } catch { // 非 JSON 响应保持默认说明。
+      // 无需展示代理页面或内部响应正文。
+    }
+    throw new LibraryApiError(message, response.status) // 携带状态码供页面决定刷新策略。
+  }
+  if (allowEmpty || response.status === 204) return null // 删除成功时不尝试解析空正文。
+  try { // 将成功状态的无效 JSON 转换为稳定错误。
+    return await response.json() // 返回后端领域响应。
+  } catch { // 避免页面因代理返回空正文而崩溃。
+    throw new LibraryApiError('文献库服务返回了无法解析的结果') // 提示用户重试。
+  }
+}

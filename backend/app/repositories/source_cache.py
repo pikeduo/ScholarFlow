@@ -44,7 +44,12 @@ def record_source_cache_hit() -> None:
 
 
 class RedisClientProvider(Protocol):
-    """定义来源缓存获取 Redis 客户端所需的最小能力。"""
+    """定义来源缓存获取 Redis 客户端和 ScholarFlow 键前缀所需的最小能力。"""
+
+    @property
+    def key_prefix(self) -> str:
+        """返回已校验的 ScholarFlow Redis 键前缀。"""
+        ...  # 允许测试使用不连接真实 Redis 的替身。
 
     def get_client(self) -> RedisAsyncClient | None:
         """返回已验证 Redis 客户端，不可用时返回空值。"""
@@ -77,7 +82,7 @@ class SourceResponseCache:
             sort_keys=True,  # 保证嵌套字典键顺序稳定。
         )
         digest = hashlib.sha256(normalized_payload.encode("utf-8")).hexdigest()  # 使用 UTF-8 生成固定长度不可逆键摘要。
-        return f"source:cache:{source}:{operation}:{adapter_version}:{digest}"  # 以模块、子模块与复合唯一标识隔离同一 DB 0 中的缓存键。
+        return f"{self._redis_provider.key_prefix}:source:cache:{source}:{operation}:{adapter_version}:{digest}"  # 以项目、模块、子模块与复合唯一标识隔离同一 DB 0 中的缓存键。
 
     async def get_list(self, key: str, source: str, operation: str) -> list[object] | None:
         """读取缓存的 JSON 数组；连接、解码或结构异常均安全回退未命中。"""
