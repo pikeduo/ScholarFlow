@@ -5,7 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、用量与路线。
+import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、历史、用量与路线。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -57,6 +57,10 @@ const resultSort = ref('relevance') // 保存服务端支持的当前展示排�
 const resultPageData = ref({ items: [], total: 0, page: 1, page_size: 5, total_pages: 1 }) // 保存服务端返回的当前结果页及分页元数据。
 const resultPageLoading = ref(false) // 标记已保存结果页是否正在读取。
 const resultPageError = ref('') // 保存服务端筛选、排序或分页读取的安全错误。
+const searchHistory = ref([]) // 保存不含查询正文和论文内容的本地运行索引。
+const searchHistoryLoading = ref(false) // 标记运行历史是否正在读取。
+const searchHistoryError = ref('') // 保存历史读取或清理的安全错误。
+const deletingRunId = ref('') // 标记当前经用户确认正在清理的终态运行。
 const RESULT_PAGE_SIZE = 5 // 限制单页论文卡片数量，避免结果较多时页面过长。
 const RECOVERY_POLL_INTERVAL_MS = 3000 // 使用短周期只读轮询作为刷新后无法重连 POST SSE 的回退。
 const RECOVERY_POLL_MAX_ATTEMPTS = 20 // 最多轮询一分钟，避免异常状态无限占用浏览器和后端资源。
@@ -230,6 +234,71 @@ function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在
   resultPage.value = Math.min(Math.max(nextPage, 1), paperPagination.value.total_pages) // 防止筛选变化或按钮连点导致越界。
 }
 
+function formatHistoryTime(value) { // 将服务端 UTC 时间转换为浏览器本地可读的紧凑时间文本。
+  const date = new Date(value) // 解析后端序列化的 ISO 时间。
+  return Number.isNaN(date.getTime()) ? '时间暂缺' : date.toLocaleString() // 历史 JSON 异常时不抛出页面渲染错误。
+}
+
+function clearRunIdFromUrl(runId) { // 删除当前运行后移除地址中的失效恢复标识。
+  if (!globalThis.location?.href || !globalThis.history?.replaceState) return // 非浏览器环境保持函数安全无副作用。
+  const url = new URL(globalThis.location.href) // 从当前页面地址构造可安全修改的 URL。
+  if (url.searchParams.get('run_id') !== runId) return // 仅清除与被删除记录完全一致的标识。
+  url.searchParams.delete('run_id') // 删除失效运行标识避免刷新后继续恢复。
+  globalThis.history.replaceState(null, '', url) // 使用替换避免额外污染浏览历史。
+}
+
+async function loadSearchHistory() { // 读取有限本地运行索引，不加载查询正文、论文或外部来源。
+  searchHistoryLoading.value = true // 展示历史面板的读取中状态。
+  searchHistoryError.value = '' // 清除旧的读取或清理错误。
+  try { // 通过客户端公共边界读取最近运行。
+    const history = await listSearchRuns(10) // 固定读取最近十条，避免列表无限增长。
+    searchHistory.value = history.items // 仅保存后端允许展示的最小索引字段。
+  } catch (error) { // 将客户端已净化错误映射为折叠面板提示。
+    searchHistoryError.value = error instanceof SearchApiError ? error.message : '读取搜索运行历史时出现未知错误，请稍后重试' // 不展示存储或网络内部细节。
+  } finally { // 无论成功失败都结束历史加载状态。
+    searchHistoryLoading.value = false // 恢复历史面板操作。
+  }
+}
+
+async function restoreSearchHistoryRun(runId) { // 从用户选择的历史索引恢复同次运行，不重新执行检索。
+  if (loading.value) return // 当前搜索或恢复进行中时避免并发覆盖页面状态。
+  stopRecoveryPolling() // 停止旧运行的恢复轮询，防止其覆盖新选择。
+  loading.value = true // 在历史恢复期间禁用新搜索提交。
+  errorMessage.value = '' // 清除旧搜索或恢复错误。
+  recoveryMessage.value = '' // 清除旧恢复提示。
+  try { // 只使用既有 REST 恢复边界。
+    const recovered = await restoreSearchRun(runId) // 读取轻量状态，终态再读取同次完整结果。
+    const hasResult = applyRecoveredRun(recovered) // 复用统一恢复映射并保持结果来源一致。
+    syncRunIdToUrl(recovered.state.run_id) // 让刷新后的页面继续关联用户选择的历史运行。
+    if (shouldPollRecoveredRun(recovered.state, hasResult)) startRecoveryPolling(recovered.state.run_id) // 尚未形成最终结果时继续有限只读轮询。
+  } catch (error) { // 将历史条目过期或读取失败转换为安全页面错误。
+    errorMessage.value = error instanceof SearchApiError ? error.message : '恢复历史搜索运行时出现未知错误，请稍后重试' // 不展示底层存储细节。
+  } finally { // 所有恢复分支都恢复页面交互。
+    loading.value = false // 结束恢复加载状态。
+  }
+}
+
+async function removeSearchHistoryRun(run) { // 在用户确认后清理一条终态本地运行及同次完整结果。
+  if (deletingRunId.value || !run?.run_id) return // 防止并发删除或损坏历史索引进入删除边界。
+  if (globalThis.confirm && !globalThis.confirm('将永久清理该搜索运行及同次结果，是否继续？')) return // 浏览器确认取消时保持本地快照不变。
+  deletingRunId.value = run.run_id // 立即标记当前条目，避免重复点击造成重复 DELETE。
+  searchHistoryError.value = '' // 清除旧删除错误。
+  try { // 由后端校验终态并原子删除两类快照。
+    await deleteSearchRun(run.run_id) // 不在前端假设删除成功或直接操作本地 SQLite。
+    searchHistory.value = searchHistory.value.filter((item) => item.run_id !== run.run_id) // 成功后仅移除当前索引条目。
+    if (runState.value?.run_id === run.run_id) { // 当前正在展示被清理运行时必须清除失效结果。
+      result.value = null // 不继续展示已经不存在的结果快照。
+      progressEvent.value = null // 清除与已删除运行关联的进度提示。
+      recoveryMessage.value = '当前搜索运行已清理' // 明确告知页面不再可恢复该结果。
+      clearRunIdFromUrl(run.run_id) // 防止刷新后使用失效运行标识再次恢复。
+    }
+  } catch (error) { // 将运行中 409、过期 404 或服务故障映射为公共提示。
+    searchHistoryError.value = error instanceof SearchApiError ? error.message : '清理搜索运行时出现未知错误，请稍后重试' // 不展示持久化堆栈或路径。
+  } finally { // 无论成功失败均解除当前条目操作锁。
+    deletingRunId.value = '' // 允许用户继续处理其他历史条目或重试。
+  }
+}
+
 async function loadSearchResultPage(runId = runState.value?.run_id) { // 从服务端读取当前筛选、排序和页码对应的已保存结果页。
   const normalizedRunId = String(runId || '').trim() // 规范化当前完整结果关联的稳定运行标识。
   if (!normalizedRunId) return // 尚未获得完成结果或运行标识时不请求资源。
@@ -286,6 +355,7 @@ async function submitSearch() { // 执行完整多源检索并更新页面状态
     submittedQuery.value = formSnapshot.queryText.trim() // 保存结果对应查询供标题回显。
     conditionChips.value = buildConditionChips(formSnapshot) // 保存与当前结果严格对应的条件标签。
     recoveryMessage.value = '' // 新搜索成功后清除旧运行恢复提示。
+    void loadSearchHistory() // 搜索完成后刷新本地运行索引以提供恢复和清理入口。
   } catch (error) { // 将已知和未知错误转换为安全界面消息。
     errorMessage.value = error instanceof SearchApiError ? error.message : '检索过程中出现未知错误，请稍后重试' // 不展示堆栈或响应正文。
   } finally { // 无论成功失败都恢复表单操作。
@@ -313,6 +383,7 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
       exclude: (editedIntent.exclude || []).join(', '), // 映射排除条件。
     })
     recoveryMessage.value = '' // 编辑重搜成功后清除旧运行恢复提示。
+    void loadSearchHistory() // 编辑重搜完成后同步刷新历史索引。
   } catch (error) { // 将已知和未知错误转换为安全界面消息。
     errorMessage.value = error instanceof SearchApiError ? error.message : '重新检索过程中出现未知错误，请稍后重试' // 不展示内部堆栈。
   } finally { // 无论成功失败都恢复交互。
@@ -327,6 +398,7 @@ function handleProgressEvent(event) { // 接收客户端已校验的 SSE 事件�
 
 onMounted(() => { // Vue 页面首次显示后读取地址中的可恢复运行标识。
   void restoreRunFromUrl() // 恢复过程不阻塞首屏挂载或输入框渲染。
+  void loadSearchHistory() // 并行读取有限历史索引，不阻塞新搜索输入。
 })
 
 onBeforeUnmount(() => { // 页面切换到文献库或应用卸载时释放恢复轮询。
@@ -521,6 +593,19 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
       <p v-if="recoveryMessage" class="recovery-message" role="status">{{ recoveryMessage }}</p>
       </form>
+      <details class="search-history" :open="searchHistoryLoading || Boolean(searchHistoryError)">
+        <summary>已保存的搜索运行 <span>{{ searchHistory.length }}</span></summary>
+        <p>仅显示本地运行状态与时间，不展示查询正文或论文内容。</p>
+        <p v-if="searchHistoryLoading" class="history-message">正在读取运行历史…</p>
+        <p v-else-if="searchHistoryError" class="history-message is-error" role="alert">{{ searchHistoryError }}</p>
+        <ul v-else-if="searchHistory.length">
+          <li v-for="item in searchHistory" :key="item.run_id">
+            <div><strong>{{ item.status }}</strong><span>{{ `${item.current_round} / ${item.max_rounds} 轮 · ${formatHistoryTime(item.updated_at)}` }}</span><small>{{ item.stop_reason || (item.result_ready ? '结果已保存' : '结果尚未就绪') }}</small></div>
+            <div class="history-actions"><button type="button" :disabled="loading" @click="restoreSearchHistoryRun(item.run_id)">{{ item.result_ready ? '恢复结果' : '查看状态' }}</button><button type="button" class="history-delete" :disabled="deletingRunId === item.run_id || !['completed', 'failed', 'cancelled'].includes(item.status)" @click="removeSearchHistoryRun(item)">{{ deletingRunId === item.run_id ? '正在清理…' : '清理' }}</button></div>
+          </li>
+        </ul>
+        <p v-else class="history-message">暂无可恢复的本地搜索运行。</p>
+      </details>
       <div class="example-row" aria-label="示例查询">
         <span>试试这些问题</span>
         <button v-for="(example, index) in examples" :key="example" type="button" :disabled="loading" @click="useExample(example)">示例 {{ index + 1 }}</button>
@@ -755,6 +840,107 @@ h1 em { /* 突出“编织”产品隐喻。 */
   color: #334e68; /* 使用正文深色。 */
   font-size: 0.78rem; /* 保持表单标签紧凑。 */
   font-weight: 800; /* 提升字段辨识度。 */
+}
+
+.search-history { /* 提供可按需展开的本地运行恢复和清理入口。 */
+  margin-top: 0.75rem; /* 与主搜索表单保持紧凑层级。 */
+  padding: 0.75rem 0.9rem; /* 为索引条目提供舒适留白。 */
+  border: 1px solid #d7e4ea; /* 使用轻量边框区别于主检索操作。 */
+  border-radius: 0.75rem; /* 与页面面板保持一致圆角。 */
+  background: rgba(255, 255, 255, 0.68); /* 保持历史为次级但可读的本地功能。 */
+}
+
+.search-history summary { /* 突出历史面板的可展开入口。 */
+  display: flex; /* 让标题和数量在一行可扫读。 */
+  align-items: center; /* 垂直对齐标题与数量。 */
+  justify-content: space-between; /* 将数量置于右侧。 */
+  color: #31566e; /* 使用中层级蓝色。 */
+  cursor: pointer; /* 明确该标题可展开。 */
+  font-size: 0.73rem; /* 保持在主搜索表单之下的视觉层级。 */
+  font-weight: 800; /* 提升小字号入口辨识度。 */
+}
+
+.search-history summary span { /* 展示有限历史条目数量。 */
+  padding: 0.14rem 0.42rem; /* 提供紧凑胶囊留白。 */
+  border-radius: 999px; /* 使用数量胶囊强调索引规模。 */
+  color: #54758a; /* 使用辅助蓝色文字。 */
+  background: #e8f2f5; /* 与面板背景形成轻微层次。 */
+}
+
+.search-history > p { /* 说明历史隐私边界或展示空、错误状态。 */
+  margin: 0.55rem 0 0; /* 与展开标题建立稳定距离。 */
+  color: #718496; /* 使用辅助文字色。 */
+  font-size: 0.67rem; /* 控制说明信息密度。 */
+  line-height: 1.55; /* 提升多行状态文本可读性。 */
+}
+
+.search-history ul { /* 纵向组织最近运行索引项。 */
+  display: grid; /* 使用网格保持条目间距稳定。 */
+  gap: 0.45rem; /* 分隔相邻运行。 */
+  margin: 0.7rem 0 0; /* 与说明文字分隔。 */
+  padding: 0; /* 移除默认列表缩进。 */
+  list-style: none; /* 使用卡片条目而非圆点。 */
+}
+
+.search-history li { /* 为单条历史索引提供恢复和清理操作。 */
+  display: flex; /* 在宽屏并列索引信息与操作。 */
+  align-items: center; /* 对齐多行元数据和按钮。 */
+  justify-content: space-between; /* 将操作保持在条目右侧。 */
+  gap: 0.7rem; /* 防止窄屏元数据贴近操作。 */
+  padding: 0.58rem 0.65rem; /* 提供紧凑且可点击的条目留白。 */
+  border-radius: 0.58rem; /* 与其它次级控件协调。 */
+  background: #f5f9fb; /* 与页面背景建立轻微层次。 */
+}
+
+.search-history li > div:first-child { /* 纵向排列安全状态、轮次和停止原因。 */
+  display: grid; /* 保持三行元数据清晰分隔。 */
+  gap: 0.12rem; /* 减少紧凑索引的垂直占用。 */
+  min-width: 0; /* 允许较长停止原因在窄屏换行。 */
+}
+
+.search-history strong { /* 突出运行状态，便于判断是否可清理。 */
+  color: #31566e; /* 使用可读的中层级蓝色。 */
+  font-size: 0.68rem; /* 保持与索引内容一致。 */
+}
+
+.search-history li span, .search-history li small { /* 展示轮次、更新时间和停止原因。 */
+  overflow-wrap: anywhere; /* 防止长停止原因撑破窄屏。 */
+  color: #718496; /* 使用辅助文字色。 */
+  font-size: 0.62rem; /* 控制历史信息密度。 */
+  line-height: 1.45; /* 提升多行元数据可读性。 */
+}
+
+.history-actions { /* 并列恢复与清理两个显式用户操作。 */
+  display: flex; /* 横向组织操作按钮。 */
+  flex: 0 0 auto; /* 不让操作区被长元数据挤压消失。 */
+  gap: 0.35rem; /* 分隔恢复与清理入口。 */
+}
+
+.history-actions button { /* 设置历史恢复与清理的紧凑按钮。 */
+  padding: 0.35rem 0.5rem; /* 提供适中的点击面积。 */
+  border: 1px solid #b8ccdc; /* 使用蓝灰边框保持次级层级。 */
+  border-radius: 0.45rem; /* 与索引条目圆角协调。 */
+  color: #2e6f95; /* 使用品牌强调文字。 */
+  background: #ffffff; /* 与条目背景形成可点击对比。 */
+  cursor: pointer; /* 明确用户可以恢复或清理。 */
+  font: inherit; /* 继承页面字体。 */
+  font-size: 0.62rem; /* 保持操作紧凑。 */
+  font-weight: 800; /* 提升小字号按钮可辨识度。 */
+}
+
+.history-actions .history-delete { /* 将永久清理操作显示为克制警示。 */
+  border-color: #e6c9c5; /* 使用浅红边框提示不可逆性。 */
+  color: #9b4b45; /* 使用克制红色文字。 */
+  background: #fff8f7; /* 保持背景低饱和。 */
+}
+
+.history-actions button:disabled { /* 标记运行中或请求中的不可清理状态。 */
+  cursor: default; /* 避免暗示当前可点击。 */
+  opacity: 0.5; /* 视觉弱化不可用操作。 */
+}
+
+.history-message.is-error { /* 区分历史读取或清理失败与普通空状态。 */
+  color: #9b4b45; /* 使用安全错误色。 */
 }
 
 .query-box { /* 组合文本域与底部操作栏。 */

@@ -22,6 +22,7 @@ from backend.app.models.query_intent import QueryIntent  # 接收已规划完成
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
 from backend.app.models.search_run import SearchRunState  # 声明可按运行标识读取的持久化状态响应。
 from backend.app.models.search_result_page import SearchResultRelevance, SearchResultSort, SearchRunPaperPage  # 声明已保存结果分页读取契约。
+from backend.app.models.search_run_history import SearchRunHistoryPage  # 声明不含查询正文的运行历史响应。
 from backend.app.models.paper import PaperSource  # 限制结果来源筛选只能使用已知学术来源。
 from backend.app.models.search_event import SearchProgressEvent  # 传递不含敏感查询和论文摘要的 SSE 事件。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
@@ -207,6 +208,29 @@ async def stream_natural_multi_round_search_events(
     return _create_multi_round_sse_response(planning_result.query_intent, controller, state_store)  # 使用同一流式控制器路径避免重复执行查询。
 
 
+@router.get("/runs", response_model=SearchRunHistoryPage, status_code=status.HTTP_200_OK, summary="读取本地搜索运行历史")
+def list_search_run_history(
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+    limit: int = Query(default=10, ge=1, le=50),
+) -> SearchRunHistoryPage:
+    """读取不含查询正文和论文内容的有限本地运行历史。
+
+    参数：
+        state_store：可替换的 SQLite 搜索运行快照存储适配层。
+        limit：最近更新时间倒序返回的最大历史数量。
+    返回：
+        SearchRunHistoryPage：可恢复或清理的运行元数据索引。
+    异常：
+        HTTPException：本地存储不可用时返回不泄露内部细节的 503。
+    """
+    try:  # 将 SQLite 读取故障隔离为稳定 HTTP 错误。
+        items = state_store.list_history(limit)  # 只读取轻量状态索引，不解析完整查询或论文内容。
+    except SearchRunStoreError:  # 不向前端暴露数据库路径、SQL 或状态 JSON。
+        logger.exception("搜索运行历史读取接口失败：数量上限=%s", limit)  # 仅记录数量参数和受控堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="搜索运行历史暂时不可用，请稍后重试") from None  # 返回稳定公共错误。
+    return SearchRunHistoryPage(items=items, limit=limit)  # 返回按最近更新时间倒序的最小运行索引。
+
+
 @router.get("/runs/{run_id}", response_model=SearchRunState, status_code=status.HTTP_200_OK, summary="读取可恢复的搜索运行状态")
 def get_search_run_state(
     run_id: str,
@@ -230,6 +254,30 @@ def get_search_run_state(
     if state is None:  # 不存在的运行标识属于稳定资源边界。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索运行不存在")  # 避免将不存在误报为服务故障。
     return state  # 返回轻量状态，前端可据此补偿进度显示。
+
+
+@router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT, summary="清理终态搜索运行")
+def delete_search_run(
+    run_id: str,
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+) -> None:
+    """显式清理一条终态运行及同次完整结果，不取消运行中的工作流。
+
+    参数：
+        run_id：用户已确认要清理的稳定运行标识。
+        state_store：可替换的 SQLite 搜索运行快照存储适配层。
+    异常：
+        HTTPException：不存在时返回 404，运行中时返回 409，存储故障时返回 503。
+    """
+    try:  # 由存储层原子校验终态并删除状态与完整结果快照。
+        deletion_result = state_store.delete_terminal_run(run_id)  # 删除路径不调用控制器、来源或模型。
+    except SearchRunStoreError:  # 不向前端泄露 SQLite、事务或状态 JSON 细节。
+        logger.exception("搜索运行清理接口失败：运行=%s", run_id)  # 仅记录安全运行标识和堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="搜索运行暂时无法清理，请稍后重试") from None  # 返回稳定公共错误。
+    if deletion_result == "missing":  # 不存在记录无法清理，保持 REST 资源语义明确。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索运行不存在")  # 返回可由前端消除过期条目的公共错误。
+    if deletion_result == "active":  # 运行中清理会与后台持久化竞争，必须拒绝。
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="搜索运行仍在执行，暂不能清理")  # 不隐式取消用户仍在等待的检索。
 
 
 @router.get("/runs/{run_id}/result", response_model=MultiRoundSearchResult, status_code=status.HTTP_200_OK, summary="读取已完成搜索的最终结果")

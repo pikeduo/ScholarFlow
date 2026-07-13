@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column  # 声明 ORM 映射�
 from backend.app.models.search_run import SearchRunState  # 读写统一且已校验的搜索运行领域状态。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保存 SSE 完成后可按运行标识读取的最终结果。
 from backend.app.models.paper import PaperRecord  # 从已保存最终结果中恢复单篇论文详情。
+from backend.app.models.search_run_history import SearchRunHistoryItem  # 返回不含查询正文的本地运行索引。
 from backend.app.repositories.database import Base  # 注册到统一 SQLite 元数据。
 
 
@@ -98,6 +99,46 @@ class SearchRunRepository:
         row = self._session.scalar(select(SearchRunResultRow).where(SearchRunResultRow.run_id == run_id))  # 读取独立结果表避免解析轻量状态。
         return MultiRoundSearchResult.model_validate_json(row.result_json) if row is not None else None  # 恢复完整公开结果供搜索页展示。
 
+    def list_history(self, limit: int) -> list[SearchRunHistoryItem]:
+        """按最近更新时间倒序读取有限运行索引，不返回查询正文或论文内容。
+
+        参数：
+            limit：已由 API 限制在合理范围内的最大返回数量。
+        返回：
+            list[SearchRunHistoryItem]：可恢复、可清理的本地运行元数据。
+        """
+        rows = self._session.scalars(  # 仅读取轻量状态表，避免列表页解析完整论文结果 JSON。
+            select(SearchRunRow).order_by(SearchRunRow.updated_at.desc()).limit(limit)
+        ).all()
+        result_ids = set(  # 一次查询取得存在完整结果的运行标识，避免逐条查询导致 N+1。
+            self._session.scalars(select(SearchRunResultRow.run_id).where(SearchRunResultRow.run_id.in_([row.run_id for row in rows]))).all()
+        ) if rows else set()
+        return [  # 仅投影页面和删除边界所需的安全字段。
+            _history_item_from_row(row, result_ready=row.run_id in result_ids)  # 重新校验轻量状态后构造稳定索引。
+            for row in rows  # 保持 SQLite 按更新时间给出的稳定倒序。
+        ]
+
+    def delete_terminal_run(self, run_id: str) -> str:
+        """删除一条终态运行的轻量状态和同次完整结果快照。
+
+        参数：
+            run_id：用户显式确认后请求清理的稳定运行标识。
+        返回：
+            str：``deleted``、``missing`` 或 ``active`` 三种受控删除结果。
+        """
+        state_row = self._session.get(SearchRunRow, run_id)  # 先读取状态以确认运行存在且可安全删除。
+        if state_row is None:  # 不存在运行无需执行删除事务。
+            return "missing"  # 让 API 映射为稳定 404。
+        state = SearchRunState.model_validate_json(state_row.state_json)  # 重新校验状态，避免仅信任冗余状态列。
+        if state.status not in {"completed", "failed", "cancelled"}:  # 运行中删除会与后台写入竞争，必须拒绝。
+            return "active"  # 让 API 返回明确 409 而非尝试中断工作流。
+        result_row = self._session.get(SearchRunResultRow, run_id)  # 同时读取可选完整结果快照。
+        if result_row is not None:  # 已完成结果存在时必须与状态一起清理。
+            self._session.delete(result_row)  # 先删除依赖同一运行标识的结果行。
+        self._session.delete(state_row)  # 删除终态轻量运行状态行。
+        self._session.commit()  # 原子提交两张表的清理，避免留下可恢复孤儿数据。
+        return "deleted"  # 通知调用方本地快照已彻底清理。
+
     def get_paper(self, paper_id: str) -> PaperRecord | None:
         """从 SQLite 最终结果快照中读取一篇论文的最新可展示详情。
 
@@ -138,3 +179,19 @@ class SearchRunRepository:
 def _lightweight_snapshot(state: SearchRunState) -> SearchRunState:
     """移除大论文集合，保留可恢复控制流、统计、候选 ID 与覆盖报告。"""
     return state.model_copy(update={"normalized_papers": [], "final_papers": []})  # 遵循工作流状态不重复存储完整候选的大小控制规则。
+
+
+def _history_item_from_row(row: SearchRunRow, *, result_ready: bool) -> SearchRunHistoryItem:
+    """将 ORM 轻量状态行投影为不含查询文本的历史索引项。"""
+    state = SearchRunState.model_validate_json(row.state_json)  # 复用领域模型校验历史 JSON 格式。
+    return SearchRunHistoryItem(  # 只返回恢复、展示轮次和删除边界所需字段。
+        run_id=state.run_id,
+        status=state.status,
+        current_round=state.current_round,
+        max_rounds=state.max_rounds,
+        selected_sources=state.selected_sources,
+        stop_reason=state.stop_reason,
+        result_ready=result_ready,
+        created_at=row.created_at,
+        updated_at=max(row.updated_at, row.created_at),
+    )

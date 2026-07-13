@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, comparePapers, createQueryIntent, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱、分页、用量与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱、分页、历史、用量与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -257,6 +257,24 @@ test('getSearchRunPapers 提交服务端筛选排序和分页参数', async () =
   assert.equal(capturedUrl, 'http://test.local/api/v1/search/runs/run-1/papers?page=1&page_size=5&sort=year_desc&source=openalex&relevance=satisfied&year_start=2020&year_end=2025') // 验证查询参数固定、完整且顺序稳定。
   assert.equal(page, expectedPage) // 验证服务端分页响应原样返回给页面。
   await assert.rejects(() => getSearchRunPapers('', {}, fetchStub), /缺少需要读取结果/) // 验证空运行标识在网络请求前被拒绝。
+})
+
+test('listSearchRuns 与 deleteSearchRun 只处理受控本地运行索引', async () => { // 验证历史读取不会传递查询正文，清理只接受 204 成功响应。
+  const calls = [] // 保存替身收到的只读和显式删除请求。
+  const fetchStub = async (url, options) => { // 提供不访问网络的运行历史替身。
+    calls.push({ url, options }) // 记录请求以验证稳定资源路径和方法。
+    if (options.method === 'GET') return { ok: true, status: 200, json: async () => ({ items: [{ run_id: 'run-1', status: 'completed', result_ready: true }], limit: 10 }) } // 返回最小安全历史索引。
+    return { ok: true, status: 204, json: async () => ({}) } // 返回符合删除契约的无正文状态码。
+  }
+
+  const history = await listSearchRuns(10, fetchStub, 'http://test.local') // 读取最近十条运行索引。
+  await deleteSearchRun('run-1', fetchStub, 'http://test.local') // 显式清理用户已选择的终态运行。
+
+  assert.equal(history.items[0].run_id, 'run-1') // 验证历史响应可供恢复入口使用。
+  assert.equal(calls[0].url, 'http://test.local/api/v1/search/runs?limit=10') // 验证历史不传递完整查询文本。
+  assert.equal(calls[1].options.method, 'DELETE') // 验证清理由显式 DELETE 请求触发。
+  await assert.rejects(() => listSearchRuns(0, fetchStub), /数量上限必须在 1 至 50/) // 验证无效数量不进入网络层。
+  await assert.rejects(() => deleteSearchRun('', fetchStub), /缺少需要清理/) // 验证空运行标识不进入删除边界。
 })
 
 test('filterSearchPapers 按来源、年份与核验状态筛选且保持原始排序', () => { // 验证本地筛选不改变后端相关性排序或发起新请求。

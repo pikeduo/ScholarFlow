@@ -11,6 +11,7 @@ from backend.app.core.logging import logger  # 记录不含完整用户查询的
 from backend.app.models.search_run import SearchRunState  # 读写统一的可恢复运行状态。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保存 SSE 完成后可读取的完整最终结果。
 from backend.app.models.paper import PaperRecord  # 为论文详情读取提供统一领域模型。
+from backend.app.models.search_run_history import SearchRunHistoryItem  # 为历史接口提供最小安全索引模型。
 from backend.app.repositories.database import SessionLocal  # 默认创建独立 SQLite 会话。
 from backend.app.repositories.search_runs import SearchRunRepository  # 使用仓储隔离 ORM 和领域状态。
 
@@ -41,6 +42,14 @@ class SearchRunStateStore(Protocol):
     def get_papers(self, paper_ids: Sequence[str]) -> list[PaperRecord]:
         """按论文标识批量读取已保存搜索结果，供小集合对比使用。"""
         ...  # 不存在标识不在返回结果中，调用方负责统一映射错误。
+
+    def list_history(self, limit: int) -> list[SearchRunHistoryItem]:
+        """按最近更新时间读取不含查询正文的有限运行历史。"""
+        ...  # 具体实现必须只读取本地持久化快照。
+
+    def delete_terminal_run(self, run_id: str) -> str:
+        """删除终态运行及同次完整结果，并返回受控删除结果。"""
+        ...  # 运行中记录必须返回 active，禁止隐式取消工作流。
 
 
 class SearchRunStoreError(RuntimeError):
@@ -155,3 +164,26 @@ class SqliteSearchRunStateStore:
             raise SearchRunStoreError("论文比较数据暂时无法读取") from exc  # 返回稳定公共服务错误。
         finally:  # 成功或失败都释放会话。
             session.close()  # 防止比较请求泄漏数据库连接。
+
+    def list_history(self, limit: int) -> list[SearchRunHistoryItem]:
+        """读取有限本地运行历史，数据库异常时抛出安全服务错误。"""
+        session = self._session_factory()  # 为历史列表读取创建独立短生命周期会话。
+        try:  # 由仓储负责按更新时间排序并隐藏查询正文。
+            return SearchRunRepository(session).list_history(limit)  # 不访问外部来源或完整论文内容。
+        except (SQLAlchemyError, ValueError) as exc:  # 覆盖数据库与历史状态 JSON 解析异常。
+            logger.exception("搜索运行历史读取失败：数量上限=%s", limit)  # 仅记录上限与堆栈，不记录查询文本。
+            raise SearchRunStoreError("搜索运行历史暂时无法读取") from exc  # 返回稳定可处理的服务错误。
+        finally:  # 成功或失败均释放 SQLite 会话。
+            session.close()  # 防止历史抽屉多次打开时积累连接。
+
+    def delete_terminal_run(self, run_id: str) -> str:
+        """删除终态运行及同次完整结果，失败时抛出安全服务错误。"""
+        session = self._session_factory()  # 为显式用户清理动作创建独立事务会话。
+        try:  # 仓储负责终态校验和两张快照表的原子删除。
+            return SearchRunRepository(session).delete_terminal_run(run_id)  # 禁止该路径调用控制器、来源或模型。
+        except (SQLAlchemyError, ValueError) as exc:  # 覆盖数据库事务和历史状态 JSON 解析异常。
+            session.rollback()  # 删除未完成时回滚，避免半清理快照。
+            logger.exception("搜索运行清理失败：运行=%s", run_id)  # 仅记录运行标识与完整堆栈。
+            raise SearchRunStoreError("搜索运行暂时无法清理") from exc  # 返回不泄露数据库细节的错误。
+        finally:  # 所有删除分支均释放会话。
+            session.close()  # 防止清理操作泄漏事务连接。

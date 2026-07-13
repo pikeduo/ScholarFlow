@@ -293,6 +293,41 @@ export async function getSearchRunPapers(runId, options = {}, fetchImpl = global
   }
 }
 
+/** 读取不含查询正文与论文内容的本地搜索运行历史。 */
+export async function listSearchRuns(limit = 10, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页和测试复用受控历史读取请求。
+  const normalizedLimit = Number(limit) // 规范化调用方提供的历史数量上限。
+  if (!Number.isInteger(normalizedLimit) || normalizedLimit < 1 || normalizedLimit > 50) throw new SearchApiError('搜索历史数量上限必须在 1 至 50 之间') // 保持与后端查询参数边界一致。
+  let response // 保存历史读取 HTTP 响应。
+  try { // 只读取本地 SQLite 索引，不触发来源、模型或完整结果读取。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs?limit=${normalizedLimit}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 请求固定数量的最近运行元数据。
+  } catch { // 网络或服务未启动时不伪造本地历史。
+    throw new SearchApiError('无法读取搜索运行历史，请确认后端已启动') // 返回可执行的安全提示。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用后端已净化错误边界。
+  try { // 校验历史抽屉所需的最小索引契约。
+    const history = await response.json() // 解析不含查询正文的历史响应。
+    if (!history || !Array.isArray(history.items) || typeof history.limit !== 'number' || history.items.some((item) => typeof item?.run_id !== 'string' || typeof item.status !== 'string' || typeof item.result_ready !== 'boolean')) throw new SearchApiError('搜索运行历史数据不完整') // 防止页面渲染损坏索引。
+    return history // 返回由服务端排序的有限历史列表。
+  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
+    if (error instanceof SearchApiError) throw error // 保留明确业务错误。
+    throw new SearchApiError('搜索运行历史数据无法解析') // 不展示原始响应正文。
+  }
+}
+
+/** 删除用户确认的终态本地搜索运行及同次完整结果快照。 */
+export async function deleteSearchRun(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面调用受控删除接口而不直接操作 SQLite。
+  const normalizedRunId = String(runId || '').trim() // 规范化用户选择的稳定运行标识。
+  if (!normalizedRunId) throw new SearchApiError('缺少需要清理的搜索运行标识') // 阻止无效删除资源路径进入网络层。
+  let response // 保存删除请求 HTTP 响应。
+  try { // 只发送显式用户触发的 DELETE 请求。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}`, { method: 'DELETE', headers: { Accept: 'application/json' } }) // 由后端校验终态并原子清理两类快照。
+  } catch { // 网络故障时不在前端假定删除成功。
+    throw new SearchApiError('无法清理搜索运行，请确认后端已启动') // 返回可执行的安全提示。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 将 404、409、503 等边界转为稳定公共错误。
+  if (response.status !== 204) throw new SearchApiError('搜索运行清理响应异常', response.status) // 删除接口只接受无正文的成功响应。
+}
+
 /** 按论文标识读取 SQLite 已保存详情，不触发新的学术来源检索。 */
 export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读详情请求。
   const normalizedPaperId = String(paperId || '').trim() // 规范化卡片提供的内部论文标识。

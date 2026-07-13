@@ -1,12 +1,22 @@
 <script setup>
+import { ref } from 'vue' // 管理两个首版一级页面的轻量切换状态。
+
+import LibraryPage from './pages/LibraryPage.vue' // 引入个人文献库基础页面。
 import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可用的文献搜索页面。
+
+const activePage = ref('search') // 默认进入文献搜索模块。
+
+function showPage(pageName) { // 切换一级页面并将视口返回内容顶部。
+  activePage.value = pageName // 更新当前页面。
+  globalThis.scrollTo?.({ top: 0, behavior: 'smooth' }) // 避免从长结果列表中部进入文献库。
+}
 </script>
 
 <template>
   <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
   <div class="app-frame">
     <header class="topbar">
-      <a class="brand" href="#main-content" aria-label="ScholarWeave 文献搜索首页">
+      <a class="brand" href="#main-content" aria-label="ScholarWeave 文献搜索首页" @click.prevent="showPage('search')">
         <span class="brand-mark" aria-hidden="true">研</span>
         <span class="brand-copy">
           <strong>ScholarWeave</strong>
@@ -14,13 +24,14 @@ import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可�
         </span>
       </a>
       <nav class="primary-nav" aria-label="主要功能">
-        <a class="nav-link is-active" href="#main-content" aria-current="page">文献搜索</a>
-        <span class="nav-link is-disabled" aria-disabled="true">我的文献库 <small>即将开放</small></span>
+        <button :class="['nav-link', { 'is-active': activePage === 'search' }]" type="button" :aria-current="activePage === 'search' ? 'page' : undefined" @click="showPage('search')">文献搜索</button>
+        <button :class="['nav-link', { 'is-active': activePage === 'library' }]" type="button" :aria-current="activePage === 'library' ? 'page' : undefined" @click="showPage('library')">我的文献库</button>
       </nav>
       <span class="system-status"><i aria-hidden="true"></i> 多源检索链路就绪</span>
     </header>
     <main id="main-content">
-      <SearchPage />
+      <SearchPage v-if="activePage === 'search'" />
+      <LibraryPage v-else />
     </main>
   </div>
 </template>
@@ -90,20 +101,24 @@ import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可�
   gap: 0.35rem; /* 保持导航项之间紧凑关联。 */
 }
 
-.nav-link { /* 统一活动与禁用导航的基础样式。 */
+.nav-link { /* 统一两个可用一级导航的基础样式。 */
   position: relative; /* 为活动态底线提供定位上下文。 */
   display: inline-flex; /* 对齐标题和即将开放标签。 */
   height: 100%; /* 扩大导航点击区域。 */
   align-items: center; /* 垂直居中文字。 */
   gap: 0.45rem; /* 分隔导航标题和辅助标签。 */
   padding: 0 1rem; /* 提供足够横向点击空间。 */
+  border: 0; /* 移除按钮默认边界。 */
   color: #64748b; /* 默认使用次级文字色。 */
+  background: transparent; /* 让活动底线成为唯一状态装饰。 */
+  cursor: pointer; /* 告知用户两个模块均可进入。 */
+  font-family: inherit; /* 避免按钮使用系统默认字体。 */
   font-size: 0.9rem; /* 保持顶栏导航紧凑。 */
   font-weight: 600; /* 提升导航辨识度。 */
   text-decoration: none; /* 移除链接默认下划线。 */
 }
 
-.nav-link.is-active { /* 标记当前文献搜索模块。 */
+.nav-link.is-active { /* 标记当前一级模块。 */
   color: #173f7a; /* 使用品牌主色突出活动状态。 */
 }
 
@@ -116,18 +131,6 @@ import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可�
   border-radius: 999px; /* 让底线端点圆润。 */
   background: #2e6f95; /* 使用品牌强调色。 */
   content: ""; /* 创建纯装饰伪元素。 */
-}
-
-.nav-link.is-disabled { /* 弱化尚未实现的文献库入口。 */
-  cursor: not-allowed; /* 告知用户当前不可点击。 */
-  opacity: 0.58; /* 降低视觉优先级。 */
-}
-
-.nav-link small { /* 显示功能阶段标签。 */
-  padding: 0.15rem 0.35rem; /* 形成紧凑胶囊。 */
-  border-radius: 999px; /* 使用完整圆角。 */
-  background: #e2e8f0; /* 以中性底色提示未开放。 */
-  font-size: 0.62rem; /* 避免辅助标签抢占导航。 */
 }
 
 .system-status { /* 展示后端功能状态。 */
@@ -153,8 +156,7 @@ import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可�
   }
 
   .brand-copy,
-  .system-status,
-  .nav-link small { /* 隐藏窄屏非核心信息。 */
+  .system-status { /* 隐藏窄屏非核心信息。 */
     display: none; /* 为查询和结果内容保留空间。 */
   }
 
