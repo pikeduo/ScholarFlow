@@ -38,12 +38,12 @@ def _query() -> QueryIntent:
     )
 
 
-def test_filter_retains_only_papers_that_meet_all_hard_constraints() -> None:
-    """过滤器应保留完全匹配论文，并按首个失败约束统计其余论文。"""
+def test_filter_keeps_paper_type_mismatch_for_relevance_ranking() -> None:
+    """类型不匹配论文必须保留，让后续相关性排序而非元数据类型决定名次。"""
     papers = [  # 构造一篇匹配论文和分别违反一项规则的候选论文。
         _paper("keep"),  # 保留全部通过约束的论文。
         _paper("year", year=2020),  # 违反年份范围。
-        _paper("type", paper_type="article"),  # 违反论文类型。
+        _paper("type", paper_type="article"),  # 类型不匹配但仍应进入后续相关性排序。
         _paper("venue", venue="ICML"),  # 违反 venue。
         _paper("author", authors=[PaperAuthor(name="Grace Hopper", institution="Scholar Lab")]),  # 违反作者约束。
         _paper("institution", authors=[PaperAuthor(name="Ada Lovelace", institution="Other Lab")]),  # 违反机构约束。
@@ -53,11 +53,11 @@ def test_filter_retains_only_papers_that_meet_all_hard_constraints() -> None:
 
     result = MultiSourcePaperFilter().filter(papers, _query())  # 执行确定性规则过滤。
 
-    assert [paper.paper_id for paper in result.papers] == ["keep"]  # 验证仅保留完全匹配的论文。
+    assert [paper.paper_id for paper in result.papers] == ["keep", "type"]  # 验证论文类型不匹配不会被提前过滤。
     assert result.input_count == 8  # 验证输入候选统计正确。
-    assert result.filtered_count == 7  # 验证每个失败候选均被移除。
-    assert result.filter_reason_counts == {"year_range": 1, "paper_type": 1, "venue": 1, "author": 1, "institution": 1, "must_include": 1, "exclude": 1}  # 验证按首个失败规则统计。
-    assert result.work_family_count == 1  # 验证版本族统计仅计算最终保留论文。
+    assert result.filtered_count == 6  # 验证仅确定性硬约束失败候选被移除。
+    assert result.filter_reason_counts == {"year_range": 1, "venue": 1, "author": 1, "institution": 1, "must_include": 1, "exclude": 1}  # 验证论文类型不再作为移除原因。
+    assert result.work_family_count == 2  # 验证版本族统计包含保留的类型不匹配候选。
 
 
 def test_filter_keeps_all_papers_when_query_has_no_filterable_hard_constraints() -> None:

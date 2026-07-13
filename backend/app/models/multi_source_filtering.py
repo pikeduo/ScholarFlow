@@ -9,7 +9,7 @@ class MultiSourceFilterResult(BaseModel):
     """保存融合论文按 QueryIntent 执行规则过滤后的记录和统计。
 
     属性：
-        papers：通过全部确定性约束的融合论文。
+        papers：通过年份、venue、作者、机构、关键词和排除词等硬约束的融合论文；论文类型仅作为后续排序偏好。
         input_count：进入过滤阶段的融合论文数量。
         filtered_count：因规则约束被移除的论文数量。
         filter_reason_counts：按首个未通过规则汇总的移除数量。

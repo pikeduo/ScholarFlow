@@ -9,10 +9,10 @@ from backend.app.models.query_intent import QueryIntent  # 使用查询规划输
 
 
 class MultiSourcePaperFilter:
-    """按 QueryIntent 的硬约束过滤融合论文，不承担相关性排序职责。"""
+    """按 QueryIntent 的确定性硬约束过滤融合论文，不以论文类型替代相关性排序。"""
 
     def filter(self, papers: list[PaperRecord], query: QueryIntent) -> MultiSourceFilterResult:
-        """依次应用年份、类型、venue、作者、机构、必须词和排除词规则。
+        """依次应用年份、venue、作者、机构、必须词和排除词等确定性硬规则。
 
         参数：
             papers：已完成身份融合并保留 RRF 的候选论文。
@@ -43,8 +43,6 @@ class MultiSourcePaperFilter:
         """返回论文首个未满足的硬约束原因；全部满足时返回空值。"""
         if not _matches_year_range(paper, query):  # 年份是明确且低成本的首要约束。
             return "year_range"  # 返回稳定的年份过滤原因。
-        if not _matches_paper_type(paper, query):  # 论文类型为来源可验证的硬约束。
-            return "paper_type"  # 返回稳定的类型过滤原因。
         if not _matches_venues(paper, query):  # venue 约束应在语义处理前确定性应用。
             return "venue"  # 返回稳定的 venue 过滤原因。
         if not _matches_authors(paper, query):  # 作者约束可由已融合作者字段直接验证。
@@ -73,11 +71,6 @@ def _matches_year_range(paper: PaperRecord, query: QueryIntent) -> bool:
     if query.year_range is None:  # 未指定年份范围时不施加过滤。
         return True  # 允许论文进入下一项规则。
     return paper.year is not None and query.year_range[0] <= paper.year <= query.year_range[1]  # 指定范围时要求来源提供可验证年份。
-
-
-def _matches_paper_type(paper: PaperRecord, query: QueryIntent) -> bool:
-    """判断论文是否属于任一指定类型；来源未知时保留并交给后续核验。"""
-    return not query.paper_types or paper.paper_type is None or paper.paper_type in query.paper_types  # 只过滤来源明确提供且与约束不匹配的类型。
 
 
 def _matches_venues(paper: PaperRecord, query: QueryIntent) -> bool:

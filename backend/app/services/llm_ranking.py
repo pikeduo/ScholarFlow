@@ -63,7 +63,7 @@ class LlmPaperReranker:
                     }
                 )
             )
-        ranked_papers = sorted(assessed_papers, key=_ranking_key)  # 先按约束状态，再按 LLM、Cross Encoder、BGE 与 RRF 稳定排序。
+        ranked_papers = sorted(assessed_papers, key=_ranking_key)  # 先按相关性分层分数排序，约束状态只在相关性并列时打破平局。
         retained_papers = ranked_papers[:target_count]  # 截断为用户目标和系统上限中的较小值。
         result = LlmRankingResult(  # 构造含 Token、淘汰和截断统计的正常结果。
             papers=retained_papers,
@@ -120,9 +120,9 @@ def _safe_status(status: ConstraintMatchStatus, valid_evidence: list[str]) -> Co
 
 
 def _ranking_key(paper: PaperRecord) -> tuple[float, float, float, float, float, str]:
-    """构造约束优先且能稳定回退到既有分层分数的排序键。"""
-    status_priority = 0.0 if paper.constraint_status == "satisfied" else 1.0  # 已满足候选优先于证据不足候选。
-    return (status_priority, -_score_or_negative_infinity(paper.llm_relevance_score), -_score_or_negative_infinity(paper.cross_encoder_score), -_score_or_negative_infinity(paper.semantic_score), -paper.rrf_score, paper.paper_id)  # 依次使用各层分数和 ID 消除并列不确定性。
+    """构造相关性优先、约束状态仅作同分决策的稳定排序键。"""
+    status_priority = 0.0 if paper.constraint_status == "satisfied" else 1.0  # 仅在所有相关性层分数相同后，优先有证据支持的约束状态。
+    return (-_score_or_negative_infinity(paper.llm_relevance_score), -_score_or_negative_infinity(paper.cross_encoder_score), -_score_or_negative_infinity(paper.semantic_score), -paper.rrf_score, status_priority, paper.paper_id)  # 相关性永远优先于约束展示状态，再以来源融合分数、状态和标识稳定消除并列。
 
 
 def _score_or_negative_infinity(score: float | None) -> float:

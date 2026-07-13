@@ -50,7 +50,7 @@ class MultiSourceRecallCoordinator:
         self._academic_adapters = dict(academic_adapters)  # 复制注册表避免调用期间外部修改来源映射。
         self._web_discovery_adapters = dict(web_discovery_adapters or {})  # 保存可选网页发现注册表并默认空映射。
         self._paper_fusion_service = paper_fusion_service or PaperFusionService()  # 默认使用统一融合策略并允许测试替换。
-        self._paper_filter = paper_filter or MultiSourcePaperFilter()  # 默认在排序前应用 QueryIntent 硬约束过滤。
+        self._paper_filter = paper_filter or MultiSourcePaperFilter()  # 默认在排序前应用 QueryIntent 的确定性硬约束过滤，论文类型保留为软偏好。
         self._semantic_ranker = semantic_ranker or SemanticRanker()  # 默认在规则过滤后执行可降级的 BGE-M3 粗排。
         self._cross_encoder_reranker = cross_encoder_reranker or CrossEncoderReranker()  # 默认在 BGE-M3 后执行可降级的精细重排。
         self._llm_reranker = llm_reranker or LlmPaperReranker()  # 默认在 Cross Encoder 后生成证据化最终结果并允许测试替换。

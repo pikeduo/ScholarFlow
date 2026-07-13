@@ -10,8 +10,8 @@ from backend.app.models.search_result_page import SearchResultRelevance, SearchR
 class SearchResultPageService:
     """仅处理持久化结果快照的筛选、排序和分页，不执行任何检索。
 
-    本服务有意保留最终搜索链路给出的相关性顺序；可选年份和引用量排序仅改变展示顺序，
-    不会写回 SQLite、改写模型分数或触发学术来源调用。
+    相关性排序会从快照中的分层分数重新计算稳定展示顺序，确保历史运行也遵守
+    “相关性优先、约束状态仅作同分决策”的规则；不会写回 SQLite、改写模型分数或触发学术来源调用。
     """
 
     def build_page(
@@ -85,13 +85,24 @@ class SearchResultPageService:
         ]
 
     def _sort_papers(self, papers: list[PaperRecord], sort: SearchResultSort) -> list[PaperRecord]:
-        """按公开排序选项返回新列表，相关性模式保留搜索链路原顺序。
+        """按公开排序选项返回新列表，相关性模式使用已保存分数稳定重排。
 
         返回：
             list[PaperRecord]：已按展示策略排序的论文副本。
         """
-        if sort == "relevance":  # 多轮结果已完成分层排序，此处必须保留其可审计原序。
-            return list(papers)  # 创建列表副本以避免调用方修改原始结果集合。
+        if sort == "relevance":  # 历史快照也必须纠正旧版“约束状态优先”的展示顺序。
+            return sorted(papers, key=_relevance_key)  # 仅使用已保存分数重排，不重新调用模型或来源。
         if sort == "year_desc":  # 用户要求最新优先时按年份倒序排列。
             return sorted(papers, key=lambda paper: (paper.year is not None, paper.year or 0, paper.paper_id), reverse=True)  # 缺失年份稳定置后并以标识打破并列。
         return sorted(papers, key=lambda paper: (paper.citation_count, paper.year or 0, paper.paper_id), reverse=True)  # 引用量排序时以年份和标识提供确定性并列顺序。
+
+
+def _relevance_key(paper: PaperRecord) -> tuple[float, float, float, float, float, str]:
+    """构造与最终精排一致的展示排序键，使相关性始终高于约束展示状态。"""
+    status_priority = 0.0 if paper.constraint_status == "satisfied" else 1.0  # 仅在全部相关性分数并列时优先可验证约束。
+    return (-_score_or_negative_infinity(paper.llm_relevance_score), -_score_or_negative_infinity(paper.cross_encoder_score), -_score_or_negative_infinity(paper.semantic_score), -paper.rrf_score, status_priority, paper.paper_id)  # 使用快照已有分数保证历史和新运行的排序规则一致。
+
+
+def _score_or_negative_infinity(score: float | None) -> float:
+    """将缺失相关性分数放在已知分数之后，保持降级运行的确定性。"""
+    return score if score is not None else float("-inf")  # 缺失模型分数时由后续层次和标识稳定排序。

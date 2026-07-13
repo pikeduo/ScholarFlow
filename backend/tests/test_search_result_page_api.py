@@ -44,16 +44,16 @@ def api_client() -> Iterator[TestClient]:
 
 
 def _build_result() -> MultiRoundSearchResult:
-    """构造三篇具有来源、年份、核验状态和引用量差异的完成结果。"""
+    """构造三篇具有来源、相关度、年份、核验状态和引用量差异的完成结果。"""
     intent = QueryIntent(  # 构造完成运行所需的最小结构化检索意图。
         original_query="查找时间序列预测论文",
         normalized_query="time series forecasting",
         query_language="zh",
     )
-    papers = [  # 保留默认相关性顺序，用于验证 relevance 排序不改写它。
-        PaperRecord(paper_id="paper-1", title="Highest relevance", source="openalex", year=2021, citation_count=5, constraint_status="satisfied"),
-        PaperRecord(paper_id="paper-2", title="Newest paper", source="semantic_scholar", year=2024, citation_count=20, constraint_status="uncertain"),
-        PaperRecord(paper_id="paper-3", title="Most cited", source="openalex", year=2019, citation_count=80, constraint_status="satisfied"),
+    papers = [  # 故意保留旧错误顺序，验证读取接口会基于快照分数修正展示顺序。
+        PaperRecord(paper_id="paper-1", title="Low relevance satisfied", source="openalex", year=2021, citation_count=5, constraint_status="satisfied", llm_relevance_score=0.2),
+        PaperRecord(paper_id="paper-2", title="Highest relevance uncertain", source="semantic_scholar", year=2024, citation_count=20, constraint_status="uncertain", llm_relevance_score=0.9),
+        PaperRecord(paper_id="paper-3", title="Most cited", source="openalex", year=2019, citation_count=80, constraint_status="satisfied", llm_relevance_score=0.7),
     ]
     state = SearchRunState(  # 构造与完成结果持久化一致的运行状态。
         run_id="run-page-1",
@@ -82,6 +82,10 @@ def test_result_page_endpoint_filters_sorts_and_paginates_saved_papers(api_clien
     citation_response = api_client.get("/api/v1/search/runs/run-page-1/papers?sort=citation_desc")  # 请求引用量展示排序。
 
     assert [paper["paper_id"] for paper in citation_response.json()["items"]] == ["paper-3", "paper-2", "paper-1"]  # 验证排序不触发重新检索且顺序确定。
+
+    relevance_response = api_client.get("/api/v1/search/runs/run-page-1/papers?sort=relevance")  # 读取故意按旧错误顺序保存的结果快照。
+
+    assert [paper["paper_id"] for paper in relevance_response.json()["items"]] == ["paper-2", "paper-3", "paper-1"]  # 验证高相关待核验论文不会被低相关已满足论文压低。
 
 
 def test_result_page_endpoint_rejects_invalid_range_and_missing_result(api_client: TestClient) -> None:
