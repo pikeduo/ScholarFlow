@@ -1,18 +1,24 @@
 <script setup>
-import { computed, ref } from 'vue' // 派生卡片信息并管理按需翻译状态。
+import { computed, ref, useSlots } from 'vue' // 派生卡片信息、插槽和按需翻译状态。
 
 import { SearchApiError, translatePaperToChinese } from '../services/searchApi.js' // 仅在用户展开摘要后请求后端 DeepSeek 翻译。
 import { buildDoiUrl, buildPublicPdfUrl } from '../utils/doi.js' // 将 DOI 和来源明确提供的公开 PDF 链接规范化。
 
 const props = defineProps({ // 声明论文和列表序号输入。
   paper: { type: Object, required: true }, // 接收后端 PaperRecord。
-  rank: { type: Number, required: true }, // 接收从一开始的结果排名。
+  rank: { type: Number, default: 0 }, // 接收从一开始的结果排名，文献库可隐藏排名列。
+  keywords: { type: Array, default: () => [] }, // 接收用户维护或来源提供的关键词。
+  showRank: { type: Boolean, default: true }, // 控制文献库是否展示搜索相关度排名列。
+  showScore: { type: Boolean, default: true }, // 控制非搜索场景是否展示相关度分数。
+  enableTranslation: { type: Boolean, default: true }, // 控制仅搜索结果可用的字段翻译入口。
+  showSearchActions: { type: Boolean, default: true }, // 控制收藏、详情和比较等搜索专属操作。
   saved: { type: Boolean, default: false }, // 标记当前搜索会话中是否已收藏。
   saving: { type: Boolean, default: false }, // 标记收藏请求是否进行中。
   comparisonSelected: { type: Boolean, default: false }, // 标记当前论文是否已加入比较集合。
   comparisonDisabled: { type: Boolean, default: false }, // 标记达到比较上限时是否禁止新增选择。
 })
 const emit = defineEmits(['save', 'detail', 'compare']) // 将收藏、详情与比较选择操作交给搜索页统一调用 API。
+const slots = useSlots() // 检查调用方是否提供卡片尾部自定义操作。
 const titleTranslation = ref(null) // 保存当前卡片独立获得的中文标题译文。
 const abstractTranslation = ref(null) // 保存当前卡片独立获得的中文摘要译文。
 const titleTranslationLoading = ref(false) // 仅标记标题翻译请求，绝不影响摘要按钮状态。
@@ -35,6 +41,12 @@ const sources = computed(() => { // 优先展示完整多源溯源列表。
 
 const doiUrl = computed(() => buildDoiUrl(props.paper.doi)) // 仅为符合 DOI 格式的论文渲染固定 doi.org 链接。
 const publicPdfUrl = computed(() => buildPublicPdfUrl(props.paper.open_access_url)) // 仅为来源明确提供的公开 PDF 渲染独立按钮。
+const displayKeywords = computed(() => { // 优先展示用户维护关键词，并补充来源返回的论文关键词。
+  const values = [...props.keywords, ...(props.paper.keywords || [])] // 合并两个关键词来源供文献库和搜索页共用。
+  const seen = new Set() // 保存大小写无关去重键。
+  return values.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 12) // 保留最多十二个可扫读关键词。
+})
+const hasCustomActions = computed(() => Boolean(slots.actions)) // 判断文献库是否注入编辑或删除操作。
 
 const statusMeta = computed(() => { // 将后端三态核验映射为中文展示。
   const mapping = { // 定义稳定状态标签和样式名。
@@ -80,23 +92,23 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
 
 <template>
   <!-- 单篇论文卡片将身份元数据、核验证据和推荐理由保持在同一阅读单元。 -->
-  <article class="paper-card">
-    <div class="rank-column" aria-label="结果排名">
+  <article :class="['paper-card', { 'without-rank': !showRank }]">
+    <div v-if="showRank" class="rank-column" aria-label="结果排名">
       <span>{{ String(rank).padStart(2, '0') }}</span>
-      <small>相关度</small>
-      <strong>{{ scoreLabel }}</strong>
+      <template v-if="showScore"><small>相关度</small><strong>{{ scoreLabel }}</strong></template>
     </div>
     <div class="paper-content">
       <div class="paper-badges">
         <span v-for="source in sources" :key="source" class="source-badge">{{ source }}</span>
         <span :class="['status-badge', statusMeta.className]">{{ statusMeta.label }}</span>
         <span v-if="paper.paper_type" class="type-badge">{{ paper.paper_type }}</span>
+        <span v-for="keyword in displayKeywords" :key="keyword" class="keyword-badge">{{ keyword }}</span>
       </div>
       <h3>
         <a v-if="doiUrl" :href="doiUrl" target="_blank" rel="noopener noreferrer">{{ paper.title }}</a>
         <span v-else>{{ paper.title }}</span>
       </h3>
-      <div class="title-translation">
+      <div v-if="enableTranslation" class="title-translation">
         <button type="button" class="translate-button" :disabled="titleTranslationLoading" @click="translateTitle">{{ titleTranslationLoading ? '正在翻译…' : showTitleTranslation ? '已显示中文标题' : '翻译标题' }}</button>
         <p v-if="titleTranslationError" class="translation-error" role="alert">{{ titleTranslationError }}</p>
         <p v-if="showTitleTranslation && titleTranslation" class="translated-title" lang="zh-CN">{{ titleTranslation.text_zh }}</p>
@@ -117,9 +129,9 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
       <details v-if="paper.abstract" class="abstract-details">
         <summary>查看摘要</summary>
         <p>{{ paper.abstract }}</p>
-        <button type="button" class="translate-button" :disabled="abstractTranslationLoading" @click="translateAbstract">{{ abstractTranslationLoading ? '正在翻译…' : showAbstractTranslation ? '已显示中文摘要' : '翻译摘要' }}</button>
-        <p v-if="abstractTranslationError" class="translation-error" role="alert">{{ abstractTranslationError }}</p>
-        <section v-if="showAbstractTranslation && abstractTranslation" class="translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
+        <button v-if="enableTranslation" type="button" class="translate-button" :disabled="abstractTranslationLoading" @click="translateAbstract">{{ abstractTranslationLoading ? '正在翻译…' : showAbstractTranslation ? '已显示中文摘要' : '翻译摘要' }}</button>
+        <p v-if="enableTranslation && abstractTranslationError" class="translation-error" role="alert">{{ abstractTranslationError }}</p>
+        <section v-if="enableTranslation && showAbstractTranslation && abstractTranslation" class="translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
           <strong>中文摘要</strong>
           <p>{{ abstractTranslation.text_zh }}</p>
           <small>{{ `由 ${abstractTranslation.model_name} 翻译` }}</small>
@@ -132,10 +144,13 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
           <span v-else-if="paper.arxiv_id">arXiv {{ paper.arxiv_id }}</span>
         </div>
         <div class="paper-actions">
-          <a v-if="publicPdfUrl" class="public-pdf-link" :href="publicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
-          <button type="button" :class="{ 'is-selected': comparisonSelected }" :disabled="comparisonDisabled && !comparisonSelected" @click="emit('compare', paper)">{{ comparisonSelected ? '已加入比较' : '加入比较' }}</button>
-          <button type="button" class="detail-button" @click="emit('detail', paper)">查看详情</button>
-          <button type="button" :class="{ 'is-saved': saved }" :disabled="saving || saved" @click="emit('save', paper)">{{ saving ? '正在收藏…' : saved ? '已收藏' : '收藏到文献库' }}</button>
+          <slot v-if="hasCustomActions" name="actions" :paper="paper" />
+          <template v-else-if="showSearchActions">
+            <a v-if="publicPdfUrl" class="public-pdf-link" :href="publicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
+            <button type="button" :class="{ 'is-selected': comparisonSelected }" :disabled="comparisonDisabled && !comparisonSelected" @click="emit('compare', paper)">{{ comparisonSelected ? '已加入比较' : '加入比较' }}</button>
+            <button type="button" class="detail-button" @click="emit('detail', paper)">查看详情</button>
+            <button type="button" :class="{ 'is-saved': saved }" :disabled="saving || saved" @click="emit('save', paper)">{{ saving ? '正在收藏…' : saved ? '已收藏' : '收藏到文献库' }}</button>
+          </template>
         </div>
       </div>
     </div>
@@ -152,6 +167,10 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
   background: #ffffff; /* 确保长文本阅读对比度。 */
   box-shadow: 0 10px 28px rgba(30, 64, 92, 0.045); /* 提供轻微层次。 */
   transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease; /* 平滑响应悬停反馈。 */
+}
+
+.paper-card.without-rank { /* 文献库复用卡片时移除搜索专属排名列。 */
+  grid-template-columns: minmax(0, 1fr); /* 让正文占满整张收藏卡片。 */
 }
 
 .paper-card:hover { /* 强化当前扫读的论文卡片。 */
@@ -202,7 +221,8 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
 
 .source-badge,
 .status-badge,
-.type-badge { /* 统一标签基础样式。 */
+.type-badge,
+.keyword-badge { /* 统一标签基础样式。 */
   padding: 0.22rem 0.48rem; /* 形成紧凑胶囊。 */
   border-radius: 999px; /* 使用完整圆角。 */
   font-size: 0.64rem; /* 控制元数据密度。 */
@@ -218,6 +238,11 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
 .type-badge { /* 展示论文类型。 */
   color: #667085; /* 使用中性文字。 */
   background: #f0f2f5; /* 使用中性背景。 */
+}
+
+.keyword-badge { /* 展示用户或来源提供的论文关键词。 */
+  color: #6a4d1f; /* 使用暖色与来源和核验状态区分。 */
+  background: #fff3dc; /* 以低饱和背景保持关键词可扫读。 */
 }
 
 .status-badge.is-satisfied { /* 标记证据支持的约束满足。 */

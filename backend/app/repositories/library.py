@@ -20,7 +20,7 @@ class LibraryItemRow(Base):
     item_id: Mapped[str] = mapped_column(String(36), primary_key=True)  # 保存 UUID 文本主键。
     identity_key: Mapped[str] = mapped_column(String(1024), unique=True, index=True)  # 保存按论文身份优先级生成的唯一去重键。
     paper_json: Mapped[str] = mapped_column(Text)  # 保存完整 PaperRecord JSON 快照。
-    tags_json: Mapped[str] = mapped_column(Text, default="[]")  # 保存规范化标签数组。
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")  # 沿用历史列名保存规范化用户关键词数组。
     note: Mapped[str | None] = mapped_column(Text, nullable=True)  # 保存可选个人备注。
     reading_status: Mapped[str] = mapped_column(String(16), default="unread")  # 保存受领域契约限制的阅读状态。
     saved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # 保存首次收藏 UTC 时间。
@@ -34,19 +34,19 @@ class LibraryRepository:
         """保存由 API 或测试注入的数据库会话。"""
         self._session = session  # 每次请求使用独立会话避免跨请求事务污染。
 
-    def save(self, paper: PaperRecord, tags: list[str], note: str | None, reading_status: ReadingStatus) -> tuple[LibraryItem, bool]:
-        """按稳定论文身份去重保存，并在重复时合并标签、刷新快照。"""
+    def save(self, paper: PaperRecord, keywords: list[str], note: str | None, reading_status: ReadingStatus) -> tuple[LibraryItem, bool]:
+        """按稳定论文身份去重保存，并在重复时合并关键词、刷新快照。"""
         identity_key = build_library_identity_key(paper)  # 生成唯一论文身份键。
         row = self._session.scalar(select(LibraryItemRow).where(LibraryItemRow.identity_key == identity_key))  # 查询是否已收藏同一论文。
         now = datetime.now(timezone.utc)  # 为本次写入生成统一 UTC 时间。
         created = row is None  # 记录本次操作是否实际插入新记录。
         if row is None:  # 首次收藏时创建完整记录。
-            row = LibraryItemRow(item_id=str(uuid4()), identity_key=identity_key, paper_json=_dump_paper(paper), tags_json=_dump_tags(tags), note=note, reading_status=reading_status, saved_at=now, updated_at=now)  # 构造待插入行。
+            row = LibraryItemRow(item_id=str(uuid4()), identity_key=identity_key, paper_json=_dump_paper(paper), tags_json=_dump_keywords(keywords), note=note, reading_status=reading_status, saved_at=now, updated_at=now)  # 构造待插入行。
             self._session.add(row)  # 将新记录加入当前事务。
         else:  # 重复收藏时保留首次收藏时间并更新可变内容。
-            existing_tags = _load_tags(row.tags_json)  # 读取已有标签供无损合并。
+            existing_keywords = _load_keywords(row.tags_json)  # 读取已有关键词供无损合并。
             row.paper_json = _dump_paper(paper)  # 使用最新检索元数据刷新论文快照。
-            row.tags_json = _dump_tags(_merge_tags(existing_tags, tags))  # 合并新旧标签且保持顺序。
+            row.tags_json = _dump_keywords(_merge_keywords(existing_keywords, keywords))  # 合并新旧关键词且保持顺序。
             row.note = note if note is not None else row.note  # 仅在新请求提供备注时覆盖旧备注。
             row.reading_status = reading_status if reading_status != "unread" else row.reading_status  # 默认未读不应意外覆盖已有进度。
             row.updated_at = now  # 更新最近修改时间。
@@ -54,15 +54,15 @@ class LibraryRepository:
         self._session.refresh(row)  # 读取数据库最终值供响应使用。
         return _to_library_item(row), created  # 返回领域模型和新建标记。
 
-    def list(self, tag: str | None = None, reading_status: ReadingStatus | None = None) -> list[LibraryItem]:
-        """按可选标签和阅读状态筛选收藏，并按最近更新倒序返回。"""
+    def list(self, keyword: str | None = None, reading_status: ReadingStatus | None = None) -> list[LibraryItem]:
+        """按可选关键词和阅读状态筛选收藏，并按最近更新倒序返回。"""
         statement = select(LibraryItemRow)  # 从完整文献库集合开始构造查询。
         if reading_status is not None:  # 阅读状态可在 SQLite 中直接精确筛选。
             statement = statement.where(LibraryItemRow.reading_status == reading_status)  # 添加状态条件。
         rows = list(self._session.scalars(statement.order_by(LibraryItemRow.updated_at.desc(), LibraryItemRow.item_id)).all())  # 保持稳定倒序。
-        if tag is not None:  # JSON 文本标签使用规范化后内存筛选避免模糊匹配误命中。
-            tag_key = tag.strip().casefold()  # 规范化查询标签。
-            rows = [row for row in rows if tag_key in {item.casefold() for item in _load_tags(row.tags_json)}]  # 只保留精确标签命中的记录。
+        if keyword is not None:  # JSON 论文快照和用户关键词使用内存精确筛选，避免 SQLite 模糊匹配误命中。
+            keyword_key = keyword.strip().casefold()  # 规范化查询关键词。
+            rows = [row for row in rows if keyword_key in _keyword_keys(row)]  # 同时匹配用户维护和来源提供的关键词。
         return [_to_library_item(row) for row in rows]  # 将 ORM 行转换为公共领域模型。
 
     def get(self, item_id: str) -> LibraryItem | None:
@@ -71,12 +71,12 @@ class LibraryRepository:
         return _to_library_item(row) if row is not None else None  # 不存在时返回空值交由服务映射。
 
     def update(self, item_id: str, changes: dict[str, object]) -> LibraryItem | None:
-        """只更新请求明确提交的标签、备注或阅读状态。"""
+        """只更新请求明确提交的关键词、备注或阅读状态。"""
         row = self._session.get(LibraryItemRow, item_id)  # 定位待更新收藏。
         if row is None:  # 不存在时不创建隐式记录。
             return None  # 交由 API 返回稳定 404。
-        if "tags" in changes:  # 允许明确提交空列表以清除标签。
-            row.tags_json = _dump_tags(changes["tags"] if isinstance(changes["tags"], list) else [])  # 保存已由请求模型校验的标签。
+        if "keywords" in changes:  # 允许明确提交空列表以清除关键词。
+            row.tags_json = _dump_keywords(changes["keywords"] if isinstance(changes["keywords"], list) else [])  # 保存已由请求模型校验的关键词。
         if "note" in changes:  # 允许明确提交 null 清空备注。
             row.note = changes["note"] if isinstance(changes["note"], str) else None  # 保存文本或空值。
         if "reading_status" in changes and isinstance(changes["reading_status"], str):  # 仅处理已校验状态文本。
@@ -132,29 +132,36 @@ def _dump_paper(paper: PaperRecord) -> str:
     return paper.model_dump_json(exclude_none=False)  # Pydantic 负责 datetime 等字段的稳定编码。
 
 
-def _dump_tags(tags: list[str]) -> str:
-    """将标签数组编码为不转义中文的 JSON。"""
-    return json.dumps(tags, ensure_ascii=False)  # 保持 SQLite 调试时中文可读。
+def _dump_keywords(keywords: list[str]) -> str:
+    """将用户关键词数组编码为不转义中文的 JSON。"""
+    return json.dumps(keywords, ensure_ascii=False)  # 保持 SQLite 调试时中文可读。
 
 
-def _load_tags(value: str) -> list[str]:
-    """从数据库 JSON 文本恢复标签数组。"""
+def _load_keywords(value: str) -> list[str]:
+    """从数据库历史 tags_json 列恢复用户关键词数组。"""
     parsed = json.loads(value)  # 数据由本仓储写入，可按稳定 JSON 解析。
     return [str(item) for item in parsed] if isinstance(parsed, list) else []  # 防御异常历史数据形状。
 
 
-def _merge_tags(first: list[str], second: list[str]) -> list[str]:
-    """大小写无关合并新旧标签并保持首次顺序。"""
+def _merge_keywords(first: list[str], second: list[str]) -> list[str]:
+    """大小写无关合并新旧关键词并保持首次顺序。"""
     merged: list[str] = []  # 保存合并后的标签。
     seen: set[str] = set()  # 保存规范化比较键。
-    for tag in [*first, *second]:  # 已有标签在前，新标签在后。
-        key = tag.casefold()  # 使用大小写无关键。
+    for keyword in [*first, *second]:  # 已有关键词在前，新关键词在后。
+        key = keyword.casefold()  # 使用大小写无关键。
         if key not in seen:  # 只保留首次出现的标签。
-            merged.append(tag)  # 保存原显示形式。
+            merged.append(keyword)  # 保存原显示形式。
             seen.add(key)  # 标记已出现。
-    return merged  # 返回稳定合并结果。
+    return merged  # 返回稳定关键词列表。
+
+
+def _keyword_keys(row: LibraryItemRow) -> set[str]:
+    """合并用户关键词和论文来源关键词，供精确关键词筛选使用。"""
+    paper = PaperRecord.model_validate_json(row.paper_json)  # 读取保存的论文快照以获得来源关键词。
+    return {value.strip().casefold() for value in [*_load_keywords(row.tags_json), *paper.keywords] if value and value.strip()}  # 统一清理并返回大小写无关键集合。
 
 
 def _to_library_item(row: LibraryItemRow) -> LibraryItem:
     """将持久化行转换为经过校验的公共领域模型。"""
-    return LibraryItem(item_id=row.item_id, paper=PaperRecord.model_validate_json(row.paper_json), tags=_load_tags(row.tags_json), note=row.note, reading_status=row.reading_status, saved_at=row.saved_at, updated_at=row.updated_at)  # 集中隔离 ORM 与 API 契约。
+    keywords = _load_keywords(row.tags_json)  # 从历史列读取规范化的用户关键词。
+    return LibraryItem(item_id=row.item_id, paper=PaperRecord.model_validate_json(row.paper_json), keywords=keywords, tags=keywords, note=row.note, reading_status=row.reading_status, saved_at=row.saved_at, updated_at=row.updated_at)  # 同时提供新关键词字段和旧标签镜像以兼容外部调用方。

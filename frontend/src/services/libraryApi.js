@@ -14,7 +14,7 @@ export async function saveLibraryPaper(paper, options = {}, fetchImpl = globalTh
   if (!paper || typeof paper !== 'object' || !paper.paper_id) throw new LibraryApiError('论文信息不完整，无法收藏') // 在网络调用前拒绝无稳定身份论文。
   const requestBody = { // 只提交后端收藏契约允许的字段。
     paper, // 保留完整 PaperRecord 供 SQLite 建立论文快照。
-    tags: normalizeTags(options.tags || []), // 清理默认或用户提供的标签。
+    keywords: normalizeKeywords(options.keywords || options.tags || []), // 新接口使用关键词，兼容旧调用方的标签选项。
     note: options.note ?? null, // 保留可选备注。
     reading_status: options.readingStatus || 'unread', // 新收藏默认未读。
   }
@@ -23,25 +23,26 @@ export async function saveLibraryPaper(paper, options = {}, fetchImpl = globalTh
   return result // 返回收藏记录和新建标记。
 }
 
-/** 查询可按标签和阅读状态筛选的文献库列表。 */
+/** 查询可按关键词和阅读状态筛选的文献库列表。 */
 export async function listLibraryItems(filters = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收可选筛选器和测试替身。
   const params = new URLSearchParams() // 使用浏览器标准编码查询参数。
-  if (String(filters.tag || '').trim()) params.set('tag', String(filters.tag).trim()) // 仅提交有效标签。
+  if (String(filters.keyword || '').trim()) params.set('keyword', String(filters.keyword).trim()) // 仅提交由关键词面板选中的有效关键词。
   if (filters.readingStatus) params.set('reading_status', filters.readingStatus) // 仅提交明确阅读状态。
   const suffix = params.toString() ? `?${params.toString()}` : '' // 空筛选时避免多余问号。
   const result = await requestLibrary(`/api/v1/library/items${suffix}`, { method: 'GET' }, fetchImpl, apiBaseUrl) // 获取筛选结果。
-  if (!result || !Array.isArray(result.items) || typeof result.total !== 'number') throw new LibraryApiError('文献库服务返回了不完整的列表') // 防止页面渲染无效响应。
+  if (!result || !Array.isArray(result.items) || typeof result.total !== 'number' || !Array.isArray(result.keyword_facets)) throw new LibraryApiError('文献库服务返回了不完整的列表') // 防止页面渲染无效响应。
+  if (result.keyword_facets.some((facet) => !facet?.keyword || !Number.isInteger(facet.count) || facet.count < 1)) throw new LibraryApiError('文献库关键词筛选结果不完整') // 防止页面渲染无法选择的关键词面板。
   return result // 返回稳定列表与总数。
 }
 
-/** 使用自然语言在当前标签和阅读状态筛选范围内检索收藏论文。 */
+/** 使用自然语言在当前关键词和阅读状态筛选范围内检索收藏论文。 */
 export async function searchLibraryItemsSemantically(query, filters = {}, options = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收查询、结构化筛选、结果数量和测试替身。
   const normalizedQuery = String(query || '').trim() // 清理用户输入首尾空白。
   if (normalizedQuery.length < 2) throw new LibraryApiError('请输入至少两个字符的文献库检索内容') // 在网络请求前阻止无意义自然语言查询。
   const topK = Number(options.topK || 20) // 读取可选结果数量并保持默认二十篇。
   if (!Number.isInteger(topK) || topK < 1 || topK > 50) throw new LibraryApiError('文献库语义检索结果数量必须在 1 到 50 之间') // 对齐后端 Query 参数边界。
   const params = new URLSearchParams({ query: normalizedQuery, top_k: String(topK) }) // 使用浏览器标准编码文本和数值查询参数。
-  if (String(filters.tag || '').trim()) params.set('tag', String(filters.tag).trim()) // 保留当前标签筛选范围。
+  if (String(filters.keyword || '').trim()) params.set('keyword', String(filters.keyword).trim()) // 保留当前关键词筛选范围。
   if (filters.readingStatus) params.set('reading_status', filters.readingStatus) // 保留当前阅读状态筛选范围。
   const result = await requestLibrary(`/api/v1/library/items/semantic-search?${params.toString()}`, { method: 'GET' }, fetchImpl, apiBaseUrl) // 调用版本化自然语言语义检索端点。
   if (!result || !Array.isArray(result.items) || typeof result.total !== 'number' || typeof result.degraded !== 'boolean') throw new LibraryApiError('文献库语义检索服务返回了不完整的结果') // 防止页面渲染不完整或不兼容响应。
@@ -49,11 +50,11 @@ export async function searchLibraryItemsSemantically(query, filters = {}, option
   return result // 返回论文、相似度和安全降级状态。
 }
 
-/** 更新收藏标签、备注或阅读状态。 */
+/** 更新收藏关键词、备注或阅读状态。 */
 export async function updateLibraryItem(itemId, changes, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收内部收藏 ID 和明确变更。
   if (!itemId) throw new LibraryApiError('缺少文献库记录标识') // 阻止构造无效资源路径。
   const requestBody = {} // 只序列化调用方明确提供的字段。
-  if (Object.hasOwn(changes, 'tags')) requestBody.tags = normalizeTags(changes.tags || []) // 支持清空或替换标签。
+  if (Object.hasOwn(changes, 'keywords')) requestBody.keywords = normalizeKeywords(changes.keywords || []) // 支持清空或替换关键词。
   if (Object.hasOwn(changes, 'note')) requestBody.note = changes.note // 支持文本或 null 清空备注。
   if (Object.hasOwn(changes, 'readingStatus')) requestBody.reading_status = changes.readingStatus // 映射前端字段到后端契约。
   const result = await requestLibrary(`/api/v1/library/items/${encodeURIComponent(itemId)}`, { method: 'PATCH', body: JSON.stringify(requestBody) }, fetchImpl, apiBaseUrl) // 提交局部更新。
@@ -67,9 +68,9 @@ export async function deleteLibraryItem(itemId, fetchImpl = globalThis.fetch, ap
   await requestLibrary(`/api/v1/library/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' }, fetchImpl, apiBaseUrl, true) // 允许 204 无正文响应。
 }
 
-/** 清理标签并执行大小写无关去重。 */
-export function normalizeTags(tags) { // 接收标签数组或逗号分隔文本。
-  const values = Array.isArray(tags) ? tags : String(tags || '').split(/[,，\n]/) // 同时支持表单文本和数组。
+/** 清理关键词并执行大小写无关去重。 */
+export function normalizeKeywords(keywords) { // 接收关键词数组或逗号分隔文本。
+  const values = Array.isArray(keywords) ? keywords : String(keywords || '').split(/[,，\n]/) // 同时支持表单文本和数组。
   const seen = new Set() // 保存大小写无关比较键。
   return values.map((tag) => String(tag).trim()).filter((tag) => { // 清除空白并保留首次有效标签。
     const key = tag.toLocaleLowerCase() // 生成稳定比较键。
@@ -78,6 +79,9 @@ export function normalizeTags(tags) { // 接收标签数组或逗号分隔文本
     return true // 保留首次显示形式。
   })
 }
+
+/** 兼容旧页面或插件对标签工具函数的导入，新增调用应使用关键词名称。 */
+export const normalizeTags = normalizeKeywords // 避免仅因命名升级破坏现有前端调用方。
 
 /** 执行文献库 HTTP 请求并统一解析公共错误。 */
 async function requestLibrary(path, options, fetchImpl, apiBaseUrl, allowEmpty = false) { // 复用所有文献库请求的网络边界。

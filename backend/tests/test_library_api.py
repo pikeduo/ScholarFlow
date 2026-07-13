@@ -67,9 +67,9 @@ class _NoopLibrarySemanticSearcher:
         return LibrarySemanticSearchResult()  # 维持 API 响应契约且不触发模型加载。
 
 
-def _paper_payload(paper_id: str = "paper-1", doi: str = "10.1000/library-test", title: str = "Evidence-Grounded Retrieval") -> dict[str, object]:
+def _paper_payload(paper_id: str = "paper-1", doi: str = "10.1000/library-test", title: str = "Evidence-Grounded Retrieval", keywords: list[str] | None = None) -> dict[str, object]:
     """构造满足 PaperRecord 契约的最小论文 JSON。"""
-    return {"paper_id": paper_id, "title": title, "abstract": "A retrieval study.", "authors": [{"name": "Ada Lovelace"}], "year": 2025, "doi": doi, "source": "manual"}  # 返回可直接提交的 JSON 对象。
+    return {"paper_id": paper_id, "title": title, "abstract": "A retrieval study.", "authors": [{"name": "Ada Lovelace"}], "year": 2025, "doi": doi, "source": "manual", "keywords": keywords or []}  # 返回可直接提交的 JSON 对象。
 
 
 def test_library_identity_uses_doi_then_source_identifiers() -> None:
@@ -84,16 +84,17 @@ def test_library_identity_uses_doi_then_source_identifiers() -> None:
 
 
 def test_library_starts_empty_and_deduplicates_doi_saves(library_client: TestClient) -> None:
-    """空文献库应可查询，重复 DOI 收藏应刷新快照并合并标签。"""
+    """空文献库应可查询，重复 DOI 收藏应刷新快照并合并关键词。"""
     empty_response = library_client.get("/api/v1/library/items")  # 查询尚未保存论文的文献库。
-    first_response = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(), "tags": ["LLM", "检索"], "note": "首次收藏"})  # 创建首条收藏。
-    duplicate_response = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(paper_id="other-source-id", doi="https://doi.org/10.1000/LIBRARY-TEST", title="Updated Retrieval Metadata"), "tags": ["llm", "证据"]})  # 使用同 DOI 不同表现形式重复收藏。
+    first_response = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(), "keywords": ["LLM", "检索"], "note": "首次收藏"})  # 创建首条收藏。
+    duplicate_response = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(paper_id="other-source-id", doi="https://doi.org/10.1000/LIBRARY-TEST", title="Updated Retrieval Metadata"), "tags": ["llm", "证据"]})  # 旧标签字段也应兼容同 DOI 重复收藏。
     list_response = library_client.get("/api/v1/library/items")  # 查询去重后的完整集合。
 
-    assert empty_response.status_code == 200 and empty_response.json() == {"items": [], "total": 0}  # 验证空结果边界稳定。
+    assert empty_response.status_code == 200 and empty_response.json() == {"items": [], "total": 0, "keyword_facets": []}  # 验证空结果边界稳定。
     assert first_response.status_code == 200 and first_response.json()["created"] is True  # 验证首次保存实际创建记录。
     assert duplicate_response.status_code == 200 and duplicate_response.json()["created"] is False  # 验证规范化 DOI 命中已有记录。
-    assert duplicate_response.json()["item"]["tags"] == ["LLM", "检索", "证据"]  # 验证标签大小写无关合并并保留首次形式。
+    assert duplicate_response.json()["item"]["keywords"] == ["LLM", "检索", "证据"]  # 验证关键词大小写无关合并并保留首次形式。
+    assert duplicate_response.json()["item"]["tags"] == ["LLM", "检索", "证据"]  # 验证旧标签响应字段在迁移期保持同内容镜像。
     assert duplicate_response.json()["item"]["paper"]["title"] == "Updated Retrieval Metadata"  # 验证重复收藏刷新论文快照。
     assert duplicate_response.json()["item"]["note"] == "首次收藏"  # 验证未提供新备注时保留旧备注。
     assert list_response.json()["total"] == 1  # 验证数据库中只存在一条论文身份记录。
@@ -108,23 +109,36 @@ def test_library_semantic_search_uses_stable_route_and_response_contract(library
 
 
 def test_library_filters_updates_and_deletes_item(library_client: TestClient) -> None:
-    """文献库应支持标签与状态筛选、属性更新、删除及不存在边界。"""
-    saved = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(), "tags": ["检索"], "reading_status": "reading"}).json()["item"]  # 保存阅读中的论文。
+    """文献库应支持关键词与状态筛选、属性更新、删除及不存在边界。"""
+    saved = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(), "keywords": ["检索"], "reading_status": "reading"}).json()["item"]  # 保存阅读中的论文。
     item_id = saved["item_id"]  # 提取内部收藏标识。
-    matching = library_client.get("/api/v1/library/items", params={"tag": "检索", "reading_status": "reading"})  # 使用双条件筛选。
-    missing = library_client.get("/api/v1/library/items", params={"tag": "不存在"})  # 查询无匹配标签。
-    updated = library_client.patch(f"/api/v1/library/items/{item_id}", json={"tags": ["重点"], "note": "", "reading_status": "read"})  # 更新全部用户属性。
+    matching = library_client.get("/api/v1/library/items", params={"keyword": "检索", "reading_status": "reading"})  # 使用双条件筛选。
+    missing = library_client.get("/api/v1/library/items", params={"keyword": "不存在"})  # 查询无匹配关键词。
+    updated = library_client.patch(f"/api/v1/library/items/{item_id}", json={"keywords": ["重点"], "note": "", "reading_status": "read"})  # 更新全部用户属性。
     fetched = library_client.get(f"/api/v1/library/items/{item_id}")  # 读取更新后的单条记录。
     deleted = library_client.delete(f"/api/v1/library/items/{item_id}")  # 删除已有收藏。
     deleted_again = library_client.delete(f"/api/v1/library/items/{item_id}")  # 再次删除验证不存在边界。
 
-    assert matching.status_code == 200 and matching.json()["total"] == 1  # 验证标签和状态联合筛选。
+    assert matching.status_code == 200 and matching.json()["total"] == 1  # 验证关键词和状态联合筛选。
     assert missing.status_code == 200 and missing.json()["total"] == 0  # 验证无匹配时返回空集合而非错误。
-    assert updated.status_code == 200 and updated.json()["tags"] == ["重点"]  # 验证标签整体替换。
+    assert updated.status_code == 200 and updated.json()["keywords"] == ["重点"]  # 验证关键词整体替换。
     assert updated.json()["reading_status"] == "read" and updated.json()["note"] == ""  # 验证阅读状态和空备注更新。
     assert fetched.status_code == 200 and fetched.json()["item_id"] == item_id  # 验证单条读取接口。
     assert deleted.status_code == 204 and deleted.content == b""  # 验证删除成功且无响应正文。
     assert deleted_again.status_code == 404 and deleted_again.json()["detail"] == "文献库记录不存在"  # 验证重复删除返回稳定 404。
+
+
+def test_library_keyword_facets_and_source_keywords_are_selectable(library_client: TestClient) -> None:
+    """关键词面板应聚合用户关键词和来源关键词，并支持两者精确筛选。"""
+    library_client.post("/api/v1/library/items", json={"paper": _paper_payload(keywords=["Retrieval", "LLM"]), "keywords": ["重点"]})  # 保存同时含来源和用户关键词的论文。
+    listed = library_client.get("/api/v1/library/items")  # 读取不带关键词筛选的完整面板。
+    source_keyword = library_client.get("/api/v1/library/items", params={"keyword": "retrieval"})  # 使用来源关键词执行大小写无关筛选。
+    user_keyword = library_client.get("/api/v1/library/items", params={"keyword": "重点"})  # 使用用户关键词执行筛选。
+
+    facets = listed.json()["keyword_facets"]  # 读取前端关键词选择区依赖的聚合结果。
+    assert {facet["keyword"] for facet in facets} == {"Retrieval", "LLM", "重点"}  # 验证两个关键词来源均被展示。
+    assert source_keyword.status_code == 200 and source_keyword.json()["total"] == 1  # 验证来源关键词可筛选收藏。
+    assert user_keyword.status_code == 200 and user_keyword.json()["total"] == 1  # 验证用户关键词可筛选收藏。
 
 
 def test_library_rejects_invalid_status_and_hides_database_error(library_client: TestClient) -> None:

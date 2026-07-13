@@ -61,7 +61,7 @@ def _item(item_id: str, paper_id: str, title: str) -> LibraryItem:
     """构造当前结构化筛选允许返回的收藏记录。"""
     now = datetime.now(timezone.utc)  # 使用合法 UTC 时间满足响应模型契约。
     paper = PaperRecord(paper_id=paper_id, title=title, abstract="Semantic retrieval benchmark", source="manual", keywords=["retrieval"])  # 提供降级词项和向量映射所需公开元数据。
-    return LibraryItem(item_id=item_id, paper=paper, tags=["检索"], note=None, reading_status="unread", saved_at=now, updated_at=now)  # 返回完整收藏对象。
+    return LibraryItem(item_id=item_id, paper=paper, keywords=["检索"], note=None, reading_status="unread", saved_at=now, updated_at=now)  # 返回完整收藏对象。
 
 
 def test_search_filters_faiss_hits_by_active_mapping_and_current_items() -> None:

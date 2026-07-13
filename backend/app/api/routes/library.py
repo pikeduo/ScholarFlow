@@ -52,7 +52,7 @@ def get_library_service(session: Annotated[Session, Depends(get_database_session
 
 @router.post("", response_model=LibrarySaveResult, status_code=status.HTTP_200_OK, summary="收藏论文")
 def save_library_item(request: SaveLibraryItemRequest, service: Annotated[LibraryService, Depends(get_library_service)]) -> LibrarySaveResult:
-    """去重保存一篇论文；重复收藏返回已有记录并合并标签。"""
+    """去重保存一篇论文；重复收藏返回已有记录并合并关键词。"""
     try:  # 将数据库故障隔离为稳定公共错误。
         return service.save(request)  # 执行身份去重和持久化。
     except SQLAlchemyError:  # 不暴露 SQL、数据库路径或内部表结构。
@@ -61,20 +61,20 @@ def save_library_item(request: SaveLibraryItemRequest, service: Annotated[Librar
 
 
 @router.get("", response_model=LibraryItemList, status_code=status.HTTP_200_OK, summary="查询文献库")
-def list_library_items(service: Annotated[LibraryService, Depends(get_library_service)], tag: Annotated[str | None, Query(min_length=1, max_length=100)] = None, reading_status: ReadingStatus | None = None) -> LibraryItemList:
-    """按可选标签和阅读状态筛选个人文献库。"""
+def list_library_items(service: Annotated[LibraryService, Depends(get_library_service)], keyword: Annotated[str | None, Query(min_length=1, max_length=200)] = None, tag: Annotated[str | None, Query(min_length=1, max_length=200, deprecated=True)] = None, reading_status: ReadingStatus | None = None) -> LibraryItemList:
+    """按可选关键词和阅读状态筛选个人文献库，并兼容旧标签查询参数。"""
     try:  # 将数据库故障隔离为稳定公共错误。
-        return service.list(tag=tag, reading_status=reading_status)  # 返回确定性筛选结果。
+        return service.list(keyword=keyword or tag, reading_status=reading_status)  # 新参数优先，旧标签参数仅作兼容回退。
     except SQLAlchemyError:  # 不向前端暴露查询实现细节。
         logger.exception("文献库查询失败")  # 记录完整堆栈供排查。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库服务暂时不可用，请稍后重试") from None  # 返回安全错误。
 
 
 @router.get("/semantic-search", response_model=LibrarySemanticSearchResult, status_code=status.HTTP_200_OK, summary="自然语言检索文献库")
-async def search_library_items_semantically(query: Annotated[str, Query(min_length=2, max_length=1000)], service: Annotated[LibraryService, Depends(get_library_service)], top_k: Annotated[int, Query(ge=1, le=50)] = 20, tag: Annotated[str | None, Query(min_length=1, max_length=100)] = None, reading_status: ReadingStatus | None = None) -> LibrarySemanticSearchResult:
+async def search_library_items_semantically(query: Annotated[str, Query(min_length=2, max_length=1000)], service: Annotated[LibraryService, Depends(get_library_service)], top_k: Annotated[int, Query(ge=1, le=50)] = 20, keyword: Annotated[str | None, Query(min_length=1, max_length=200)] = None, tag: Annotated[str | None, Query(min_length=1, max_length=200, deprecated=True)] = None, reading_status: ReadingStatus | None = None) -> LibrarySemanticSearchResult:
     """按可选结构化筛选检索收藏论文，并返回语义分数或安全降级结果。"""
     try:  # 将数据库故障和未装配依赖隔离为稳定公共错误。
-        return await service.search_semantic(query, top_k=top_k, tag=tag, reading_status=reading_status)  # 先筛选再执行 BGE、FAISS 和 SQLite 映射过滤。
+        return await service.search_semantic(query, top_k=top_k, keyword=keyword or tag, reading_status=reading_status)  # 先筛选再执行 BGE、FAISS 和 SQLite 映射过滤。
     except RuntimeError:  # 仅处理未装配语义服务等稳定基础设施错误。
         logger.exception("文献库语义检索服务不可用")  # 记录完整受控堆栈，不记录查询正文。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库语义检索暂不可用，请稍后重试") from None  # 返回安全错误。
@@ -97,7 +97,7 @@ def get_library_item(item_id: str, service: Annotated[LibraryService, Depends(ge
 
 @router.patch("/{item_id}", response_model=LibraryItem, status_code=status.HTTP_200_OK, summary="更新收藏")
 def update_library_item(item_id: str, request: UpdateLibraryItemRequest, service: Annotated[LibraryService, Depends(get_library_service)]) -> LibraryItem:
-    """更新收藏标签、备注或阅读状态。"""
+    """更新收藏关键词、备注或阅读状态。"""
     try:  # 区分不存在和数据库故障。
         return service.update(item_id, request)  # 只更新请求明确提交的字段。
     except LibraryItemNotFoundError:  # 不允许 PATCH 创建不存在资源。
