@@ -985,7 +985,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
 
 .query-actions > span { /* 显示字符计数。 */
   color: #a0adba; /* 使用低权重文字。 */
-  font-size: 0.66rem; /* 避免干扰提交操作。 */
+  font-size: 0.75rem; /* 提升字符计数在高分辨率屏幕上的可辨识度。 */
 }
 
 .search-button { /* 设置主提交按钮。 */
@@ -1003,7 +1003,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   box-shadow: 0 8px 18px rgba(23, 63, 122, 0.2); /* 突出主要操作。 */
   cursor: pointer; /* 告知用户可点击。 */
   font: inherit; /* 使用全局字体。 */
-  font-size: 0.8rem; /* 保持按钮紧凑。 */
+  font-size: 0.88rem; /* 提升主操作文字可读性且保持按钮紧凑。 */
   font-weight: 800; /* 强调提交动作。 */
 }
 
@@ -1033,7 +1033,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   display: grid; /* 纵向排列开关和风险提示以避免窄屏拥挤。 */
   gap: 0.35rem; /* 保持各项之间可读的紧凑间距。 */
   color: #52616b; /* 使用辅助正文色避免压过主检索操作。 */
-  font-size: 0.68rem; /* 保持选项与模式说明的视觉层级一致。 */
+  font-size: 0.82rem; /* 让本地模型选择和时长风险提示易于阅读。 */
 }
 
 .ranking-options label { /* 让复选框与功能名称保持可点击关联。 */
@@ -1063,7 +1063,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   background: transparent; /* 保持轻量。 */
   cursor: pointer; /* 告知用户可展开。 */
   font: inherit; /* 使用全局字体。 */
-  font-size: 0.72rem; /* 作为次级操作。 */
+  font-size: 0.82rem; /* 保持次级层级但提高触控设备上的可读性。 */
   font-weight: 800; /* 提升可发现性。 */
 }
 
@@ -1092,7 +1092,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
 
 .field-group > label { /* 设置高级字段标签。 */
   color: #536b7f; /* 使用次级正文色。 */
-  font-size: 0.68rem; /* 保持高级区紧凑。 */
+  font-size: 0.78rem; /* 提升高级条件标签的辨识度。 */
   font-weight: 800; /* 提升字段辨识。 */
 }
 
@@ -1106,7 +1106,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   color: #334e68; /* 使用正文输入色。 */
   background: #fbfdfe; /* 与主输入保持统一。 */
   font: inherit; /* 使用全局字体。 */
-  font-size: 0.72rem; /* 控制字段密度。 */
+  font-size: 0.82rem; /* 提升输入内容和占位文本的可读性。 */
 }
 
 .field-group input:focus { /* 标记高级输入焦点。 */
@@ -1122,7 +1122,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
 
 .year-group span { /* 设置年份分隔词。 */
   color: #91a0ae; /* 使用辅助文字色。 */
-  font-size: 0.65rem; /* 保持紧凑。 */
+  font-size: 0.75rem; /* 避免年份范围分隔词过小。 */
 }
 
 .web-evidence-option { /* 设置网页证据开关卡。 */
@@ -1146,12 +1146,12 @@ textarea::placeholder { /* 设置查询示例占位。 */
 
 .web-evidence-option strong { /* 显示开关名称。 */
   color: #536b7f; /* 使用正文色。 */
-  font-size: 0.68rem; /* 匹配高级字段标签。 */
+  font-size: 0.78rem; /* 匹配放大的高级字段标签。 */
 }
 
 .web-evidence-option small { /* 说明网页发现隔离边界。 */
   color: #91a0ae; /* 使用辅助文字色。 */
-  font-size: 0.58rem; /* 控制说明密度。 */
+  font-size: 0.72rem; /* 保持辅助层级并避免说明文字难以辨认。 */
 }
 
 .form-error { /* 展示前端校验或后端公共错误。 */
@@ -1160,7 +1160,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   border-radius: 0.65rem; /* 使用提示条圆角。 */
   color: #9b3c36; /* 使用克制红色。 */
   background: #fff0ee; /* 使用浅红背景。 */
-  font-size: 0.72rem; /* 保持错误可读。 */
+  font-size: 0.82rem; /* 让错误提示无需放大即可阅读。 */
 }
 
 .recovery-message { /* 展示不会触发重新检索的运行恢复提示。 */
@@ -1169,7 +1169,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   border-radius: 0.65rem; /* 与表单错误提示保持视觉一致。 */
   color: #386277; /* 使用中性蓝色而非成功或错误色。 */
   background: #eef6fa; /* 区分于搜索结果和错误状态。 */
-  font-size: 0.72rem; /* 保持辅助信息层级。 */
+  font-size: 0.82rem; /* 让恢复状态说明保持清晰。 */
 }
 
 .example-row { /* 横向展示查询示例入口。 */
