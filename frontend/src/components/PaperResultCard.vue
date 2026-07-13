@@ -1,5 +1,7 @@
 <script setup>
-import { computed } from 'vue' // 派生作者、来源、状态和安全链接展示值。
+import { computed, ref } from 'vue' // 派生卡片信息并管理按需翻译状态。
+
+import { SearchApiError, translatePaperToChinese } from '../services/searchApi.js' // 仅在用户展开摘要后请求后端 DeepSeek 翻译。
 
 const props = defineProps({ // 声明论文和列表序号输入。
   paper: { type: Object, required: true }, // 接收后端 PaperRecord。
@@ -10,6 +12,9 @@ const props = defineProps({ // 声明论文和列表序号输入。
   comparisonDisabled: { type: Boolean, default: false }, // 标记达到比较上限时是否禁止新增选择。
 })
 const emit = defineEmits(['save', 'detail', 'compare']) // 将收藏、详情与比较选择操作交给搜索页统一调用 API。
+const translation = ref(null) // 保存当前卡片按需获得的中文标题和摘要译文。
+const translationLoading = ref(false) // 标记当前论文翻译请求进行中以避免重复调用模型。
+const translationError = ref('') // 保存可安全展示的翻译失败原因。
 
 const authors = computed(() => { // 将作者列表压缩为适合卡片的文本。
   const names = (props.paper.authors || []).map((author) => author.name).filter(Boolean) // 提取有效作者名称。
@@ -46,6 +51,19 @@ const scoreLabel = computed(() => { // 将归一化 LLM 分数转为百分比。
   const score = props.paper.llm_relevance_score ?? props.paper.cross_encoder_score // LLM 缺失时回退 Cross Encoder 分数。
   return typeof score === 'number' ? `${Math.round(score * 100)}%` : '—' // 缺失分数时不虚构数值。
 })
+
+async function translateAbstract() { // 在用户已展开摘要后按需请求标题与摘要的中文翻译。
+  if (translation.value || translationLoading.value) return // 已完成或正在翻译时禁止重复消耗模型调用。
+  translationLoading.value = true // 立即反馈按钮状态并锁定当前卡片请求。
+  translationError.value = '' // 清除用户重试前的旧错误。
+  try { // 通过受控后端边界调用 DeepSeek，浏览器不持有任何密钥。
+    translation.value = await translatePaperToChinese(props.paper.paper_id) // 仅传递已保存论文的稳定内部标识。
+  } catch (error) { // 将客户端公共错误映射到当前摘要区域。
+    translationError.value = error instanceof SearchApiError ? error.message : '论文翻译暂时不可用，请稍后重试' // 不展示网络或服务端内部细节。
+  } finally { // 无论成功失败都恢复用户重试能力。
+    translationLoading.value = false // 结束当前卡片的翻译加载状态。
+  }
+}
 </script>
 
 <template>
@@ -66,6 +84,7 @@ const scoreLabel = computed(() => { // 将归一化 LLM 分数转为百分比。
         <a v-if="safePaperUrl" :href="safePaperUrl" target="_blank" rel="noopener noreferrer">{{ paper.title }}</a>
         <span v-else>{{ paper.title }}</span>
       </h3>
+      <p v-if="translation" class="translated-title" lang="zh-CN">中文标题：{{ translation.title_zh }}</p>
       <p class="bibliography">
         <span>{{ authors }}</span>
         <span>{{ paper.year || '年份暂缺' }}</span>
@@ -82,6 +101,13 @@ const scoreLabel = computed(() => { // 将归一化 LLM 分数转为百分比。
       <details v-if="paper.abstract" class="abstract-details">
         <summary>查看摘要</summary>
         <p>{{ paper.abstract }}</p>
+        <button type="button" class="translate-button" :disabled="translationLoading" @click="translateAbstract">{{ translationLoading ? '正在翻译…' : translation ? '已翻译为中文' : '翻译为中文' }}</button>
+        <p v-if="translationError" class="translation-error" role="alert">{{ translationError }}</p>
+        <section v-if="translation" class="translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
+          <strong>中文摘要</strong>
+          <p>{{ translation.abstract_zh }}</p>
+          <small>{{ `由 ${translation.model_name} 翻译` }}</small>
+        </section>
       </details>
       <div class="paper-footer">
         <div>
@@ -208,6 +234,14 @@ h3 a { /* 设置可访问论文标题链接。 */
   text-underline-offset: 0.2em; /* 提升中英文标题可读性。 */
 }
 
+.translated-title { /* 展示用户主动请求的中文标题译文。 */
+  margin: 0 0 0.55rem; /* 与原文标题和书目信息保持紧凑层级。 */
+  color: #2e6f95; /* 使用品牌色区分原文与译文。 */
+  font-size: 0.82rem; /* 保持译文为标题的辅助信息。 */
+  font-weight: 700; /* 提升中文标题的扫读辨识度。 */
+  line-height: 1.6; /* 保证长中文标题舒适换行。 */
+}
+
 .bibliography { /* 横向展示作者、年份、venue 和引用数。 */
   display: flex; /* 使用弹性布局。 */
   flex-wrap: wrap; /* 窄屏允许元数据换行。 */
@@ -287,6 +321,54 @@ h3 a { /* 设置可访问论文标题链接。 */
   margin: 0.6rem 0 0; /* 与摘要操作分隔。 */
   color: #52697d; /* 使用舒适正文色。 */
   line-height: 1.75; /* 提升长摘要阅读体验。 */
+}
+
+.translate-button { /* 提供仅在摘要展开后出现的按需翻译入口。 */
+  margin-top: 0.7rem; /* 与原文摘要区分开来。 */
+  padding: 0.42rem 0.68rem; /* 保持与卡片其他次级按钮一致的点击面积。 */
+  border: 1px solid #b8ccdc; /* 使用低强调蓝灰边界。 */
+  border-radius: 0.5rem; /* 延续卡片圆角语言。 */
+  color: #2e6f95; /* 使用品牌交互色。 */
+  background: #f3f8fb; /* 表达该操作不会默认触发模型调用。 */
+  cursor: pointer; /* 明确用户可主动请求翻译。 */
+  font-size: 0.7rem; /* 保持摘要区域操作紧凑。 */
+  font-weight: 800; /* 小字号下保持操作可见。 */
+}
+
+.translate-button:disabled { /* 翻译完成或请求期间防止重复模型调用。 */
+  cursor: default; /* 禁止重复交互的视觉反馈。 */
+  opacity: 0.7; /* 降低已完成或加载状态的强调度。 */
+}
+
+.translation-error { /* 展示不泄露内部细节的翻译失败提示。 */
+  color: #a44c45; /* 使用克制红色标记当前摘要操作失败。 */
+  font-size: 0.72rem; /* 保持错误提示属于局部辅助信息。 */
+}
+
+.translated-abstract { /* 将中文摘要译文与原文明确分层。 */
+  margin-top: 0.75rem; /* 与翻译按钮和原文摘要拉开距离。 */
+  padding: 0.75rem 0.85rem; /* 为长中文译文提供稳定阅读留白。 */
+  border-left: 3px solid #7eafc4; /* 使用细色条标记机器翻译内容。 */
+  border-radius: 0 0.55rem 0.55rem 0; /* 保持与推荐理由区一致的视觉语言。 */
+  background: #f5fafc; /* 使用浅色背景避免与原文混淆。 */
+}
+
+.translated-abstract strong { /* 标记中文摘要译文标题。 */
+  color: #2e6f95; /* 使用品牌色强调译文标签。 */
+  font-size: 0.72rem; /* 保持辅助标题层级。 */
+}
+
+.translated-abstract p { /* 设置中文摘要译文正文。 */
+  margin: 0.4rem 0 0; /* 与译文标签保持紧凑关联。 */
+  color: #405b6d; /* 保持长中文内容的舒适可读性。 */
+  line-height: 1.8; /* 提升中文段落阅读体验。 */
+}
+
+.translated-abstract small { /* 说明译文由实际模型生成。 */
+  display: block; /* 让模型说明独占一行避免打断译文。 */
+  margin-top: 0.45rem; /* 与译文正文建立清晰间距。 */
+  color: #8295a4; /* 使用弱化文字避免喧宾夺主。 */
+  font-size: 0.64rem; /* 保持来源说明为最低视觉层级。 */
 }
 
 .paper-footer { /* 展示 DOI 和版本族等身份信息。 */
