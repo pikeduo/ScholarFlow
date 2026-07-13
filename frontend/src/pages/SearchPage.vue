@@ -63,6 +63,7 @@ const searchHistory = ref([]) // 保存不含查询正文和论文内容的本�
 const searchHistoryLoading = ref(false) // 标记运行历史是否正在读取。
 const searchHistoryError = ref('') // 保存历史读取或清理的安全错误。
 const searchHistoryExpanded = ref(false) // 控制历史面板展开状态，恢复成功后自动收起。
+const currentRunId = ref(new URLSearchParams(globalThis.location?.search || '').get('run_id')?.trim() || '') // 保存地址中的当前运行标识以区分首页与结果页。
 const deletingRunId = ref('') // 标记当前经用户确认正在清理的终态运行。
 const RESULT_PAGE_SIZE = 5 // 限制单页论文卡片数量，避免结果较多时页面过长。
 const RECOVERY_POLL_INTERVAL_MS = 3000 // 使用短周期只读轮询作为刷新后无法重连 POST SSE 的回退。
@@ -74,6 +75,7 @@ let resultPageRequestVersion = 0 // 标记最新分页请求，防止快速切�
 
 const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
+const showSearchHistory = computed(() => !currentRunId.value) // 仅在不带运行标识的首页展示已保存搜索运行。
 
 const discoveries = computed(() => result.value?.discoveries || []) // 保持补充网页发现与论文结果独立展示。
 const runState = computed(() => result.value?.run_state || null) // 提取多轮运行状态供搜索页展示过程和停止原因。
@@ -146,6 +148,7 @@ function syncRunIdToUrl(runId) { // 将可恢复运行标识写入当前地址�
   const url = new URL(globalThis.location.href) // 从当前地址构造可安全修改的 URL 对象。
   url.searchParams.set('run_id', runId) // 仅保存不可猜测的运行标识，不写入完整研究问题。
   globalThis.history.replaceState(null, '', url) // 使用替换避免每条 SSE 事件污染浏览历史。
+  currentRunId.value = runId // 同步响应式页面状态，使结果页立即隐藏历史入口。
 }
 
 function stopRecoveryPolling() { // 停止当前恢复轮询，避免旧运行在新搜索或页面卸载后继续更新状态。
@@ -251,9 +254,11 @@ function clearRunIdFromUrl(runId) { // 删除当前运行后移除地址中的�
   if (url.searchParams.get('run_id') !== runId) return // 仅清除与被删除记录完全一致的标识。
   url.searchParams.delete('run_id') // 删除失效运行标识避免刷新后继续恢复。
   globalThis.history.replaceState(null, '', url) // 使用替换避免额外污染浏览历史。
+  currentRunId.value = '' // 回到首页状态后允许重新展示历史入口。
 }
 
 async function loadSearchHistory() { // 读取有限本地运行索引，不加载查询正文、论文或外部来源。
+  if (!showSearchHistory.value) return // 当前结果页不展示历史，也不发起无用的索引读取。
   searchHistoryLoading.value = true // 展示历史面板的读取中状态。
   searchHistoryError.value = '' // 清除旧的读取或清理错误。
   try { // 通过客户端公共边界读取最近运行。
@@ -358,6 +363,7 @@ async function submitSearch() { // 执行完整多源检索并更新页面状态
     const formSnapshot = { ...form } // 固定本次请求及结果说明使用的表单快照。
     const nextResult = await streamSearchPapers(formSnapshot, handleProgressEvent) // 在同次自然语言多轮检索中实时消费进度并最终读取结果。
     result.value = nextResult // 仅在成功解析响应后替换已有结果。
+    syncRunIdToUrl(nextResult.run_state?.run_id) // 终态响应也同步运行标识，兼容缺失 SSE 创建事件的情况。
     void loadSearchUsage(nextResult.run_state?.run_id) // 读取已持久化的实际统计，不等待而延迟展示结果。
     submittedQuery.value = formSnapshot.queryText.trim() // 保存结果对应查询供标题回显。
     conditionChips.value = buildConditionChips(formSnapshot) // 保存与当前结果严格对应的条件标签。
@@ -379,6 +385,7 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
   try { // 捕获统一 API 客户端错误。
     const nextResult = await streamSearchWithIntent(editedIntent, handleProgressEvent) // 跳过 Query Agent 并实时消费同次多轮检索进度。
     result.value = nextResult // 成功后替换论文和检索统计。
+    syncRunIdToUrl(nextResult.run_state?.run_id) // 确保编辑重搜完成后立即进入结果页状态。
     void loadSearchUsage(nextResult.run_state?.run_id) // 读取编辑重搜对应的同次实际用量快照。
     submittedQuery.value = editedIntent.original_query // 保持结果对应的原始研究问题。
     conditionChips.value = buildConditionChips({ // 使用编辑后的关键约束更新结果说明。
@@ -406,7 +413,7 @@ function handleProgressEvent(event) { // 接收客户端已校验的 SSE 事件�
 
 onMounted(() => { // Vue 页面首次显示后读取地址中的可恢复运行标识。
   void restoreRunFromUrl() // 恢复过程不阻塞首屏挂载或输入框渲染。
-  void loadSearchHistory() // 并行读取有限历史索引，不阻塞新搜索输入。
+  if (showSearchHistory.value) void loadSearchHistory() // 仅首页读取有限历史索引，不阻塞新搜索输入。
 })
 
 onBeforeUnmount(() => { // 页面切换到文献库或应用卸载时释放恢复轮询。
@@ -595,7 +602,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
       <p v-if="recoveryMessage" class="recovery-message" role="status">{{ recoveryMessage }}</p>
       </form>
-      <details class="search-history" :open="searchHistoryExpanded || searchHistoryLoading || Boolean(searchHistoryError)" @toggle="searchHistoryExpanded = $event.currentTarget.open">
+      <details v-if="showSearchHistory" class="search-history" :open="searchHistoryExpanded || searchHistoryLoading || Boolean(searchHistoryError)" @toggle="searchHistoryExpanded = $event.currentTarget.open">
         <summary>已保存的搜索运行 <span>{{ searchHistory.length }}</span></summary>
         <p>仅显示本地运行状态与时间，不展示查询正文或论文内容。</p>
         <p v-if="searchHistoryLoading" class="history-message">正在读取运行历史…</p>
