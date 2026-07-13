@@ -140,4 +140,4 @@ def test_langgraph_conditional_nodes_do_not_recall_when_budget_is_exhausted() ->
     result = asyncio.run(MultiRoundSearchController(coordinator).run(_query(subqueries=[QuerySubquery(query="ETT time series forecasting", language="en", purpose="dataset")]), budget_exhausted=True))  # 让条件图在首轮覆盖评估后触发预算停止。
 
     assert len(coordinator.queries) == 1  # 验证预算条件边没有进入查询演化后的第二轮召回。
-    assert result.run_state.stop_reason == "已达到 API、Token、费用或时间预算上限"  # 验证最终结果保留覆盖服务给出的稳定停止原因。
+    assert result.run_state.stop_reason == "搜索预算已达到上限"  # 验证最终结果保留覆盖服务定义的稳定且不泄露成本细节的停止原因。
