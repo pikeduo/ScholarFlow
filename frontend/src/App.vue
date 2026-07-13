@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, ref } from 'vue' // 管理页面切换状态，并等待首页内容更新后再定位视口。
+import { ref } from 'vue' // 管理页面切换状态。
 
 import LibraryPage from './pages/LibraryPage.vue' // 引入个人文献库基础页面。
 import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可用的文献搜索页面。
@@ -11,12 +11,13 @@ function showPage(pageName) { // 切换一级页面并将视口返回内容顶�
   globalThis.scrollTo?.({ top: 0, behavior: 'smooth' }) // 避免从长结果列表中部进入文献库。
 }
 
-async function goHome() { // 将品牌点击稳定地处理为返回文献搜索首页。
-  activePage.value = 'search' // 先恢复首页对应的一级页面。
-  await nextTick() // 等待搜索页重新挂载，避免定位到已卸载的文献库内容。
-  const mainContent = globalThis.document?.getElementById('main-content') // 读取可聚焦的首页主内容容器。
-  mainContent?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }) // 优先滚动到主内容起始位置。
-  mainContent?.focus?.({ preventScroll: true }) // 将键盘焦点同步交给首页主内容，提升无障碍体验。
+function scrollToTop() { // 平滑滚动到页面最顶部。
+  globalThis.scrollTo?.({ top: 0, behavior: 'smooth' }) // 复用浏览器原生滚动行为，避免引入额外依赖。
+}
+
+function scrollToBottom() { // 平滑滚动到页面文档底部。
+  const documentHeight = globalThis.document?.documentElement?.scrollHeight ?? 0 // 读取包含长结果列表在内的完整文档高度。
+  globalThis.scrollTo?.({ top: documentHeight, behavior: 'smooth' }) // 将视口定位到当前页面可滚动的最底端。
 }
 </script>
 
@@ -24,7 +25,7 @@ async function goHome() { // 将品牌点击稳定地处理为返回文献搜索
   <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
   <div class="app-frame">
     <header class="topbar">
-      <a class="brand" href="#main-content" aria-label="返回 ScholarFlow 文献搜索首页" @click.prevent="goHome">
+      <a class="brand" href="http://localhost:5173/" aria-label="前往 ScholarFlow 首页">
         <span class="brand-mark" aria-hidden="true">研</span>
         <span class="brand-copy">
           <strong>ScholarFlow</strong>
@@ -41,6 +42,14 @@ async function goHome() { // 将品牌点击稳定地处理为返回文献搜索
       <SearchPage v-if="activePage === 'search'" />
       <LibraryPage v-else />
     </main>
+    <div class="scroll-actions" aria-label="页面滚动快捷操作">
+      <button class="scroll-action" type="button" aria-label="回到页面顶部" title="回到顶部" @click="scrollToTop">
+        <span aria-hidden="true">↑</span>
+      </button>
+      <button class="scroll-action" type="button" aria-label="前往页面底部" title="前往底部" @click="scrollToBottom">
+        <span aria-hidden="true">↓</span>
+      </button>
+    </div>
   </div>
 </template>
 
@@ -158,6 +167,44 @@ async function goHome() { // 将品牌点击稳定地处理为返回文献搜索
   box-shadow: 0 0 0 4px rgba(56, 161, 105, 0.12); /* 增加可辨识的柔和外圈。 */
 }
 
+.scroll-actions { /* 在右下角固定放置页面顶部与底部快捷操作。 */
+  position: fixed; /* 使长搜索结果中始终可访问滚动操作。 */
+  right: clamp(1rem, 3vw, 2rem); /* 兼顾窄屏边距和宽屏留白。 */
+  bottom: clamp(1rem, 3vw, 2rem); /* 避开浏览器边缘并保持触达性。 */
+  z-index: 30; /* 覆盖页面内容但不遮挡更高层级的模态框。 */
+  display: grid; /* 纵向排列两个独立滚动方向按钮。 */
+  gap: 0.55rem; /* 为相邻按钮保留可辨识间距。 */
+}
+
+.scroll-action { /* 统一顶部与底部快捷按钮的视觉和触控区域。 */
+  display: grid; /* 居中箭头图标。 */
+  width: 2.75rem; /* 提供适合鼠标和触摸操作的方形区域。 */
+  height: 2.75rem; /* 保持上下按钮的稳定尺寸。 */
+  place-items: center; /* 让箭头在按钮中水平垂直居中。 */
+  border: 1px solid rgba(46, 111, 149, 0.24); /* 以柔和蓝色保持边界可见。 */
+  border-radius: 50%; /* 使用圆形表达辅助导航动作。 */
+  color: #173f7a; /* 与顶栏主色保持一致。 */
+  background: rgba(255, 255, 255, 0.94); /* 在复杂结果背景上保持清晰对比。 */
+  box-shadow: 0 8px 20px rgba(23, 63, 122, 0.18); /* 轻微投影使控件从内容中分离。 */
+  cursor: pointer; /* 明确按钮可执行交互。 */
+  font-family: inherit; /* 继承应用字体，避免图标字体不一致。 */
+  font-size: 1.35rem; /* 提升箭头的可辨识度。 */
+  font-weight: 700; /* 使线性箭头在浅色背景上保持清晰。 */
+  line-height: 1; /* 消除字符默认行高带来的居中偏移。 */
+  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease; /* 平滑反馈悬停和键盘聚焦状态。 */
+}
+
+.scroll-action:hover { /* 鼠标悬停时强化按钮的可点击反馈。 */
+  background: #edf6fa; /* 使用浅蓝色提示当前动作。 */
+  box-shadow: 0 11px 24px rgba(23, 63, 122, 0.24); /* 轻微抬升视觉层级。 */
+  transform: translateY(-2px); /* 提供克制的向上位移动效。 */
+}
+
+.scroll-action:focus-visible { /* 为键盘用户提供高对比焦点轮廓。 */
+  outline: 3px solid rgba(46, 111, 149, 0.42); /* 不依赖颜色变化单独表达焦点。 */
+  outline-offset: 3px; /* 将轮廓与圆形按钮边界分离。 */
+}
+
 @media (max-width: 720px) { /* 针对手机收敛顶栏信息密度。 */
   .topbar { /* 调整窄屏顶栏。 */
     gap: 0.75rem; /* 缩小品牌与导航间距。 */
@@ -174,6 +221,11 @@ async function goHome() { // 将品牌点击稳定地处理为返回文献搜索
 
   .nav-link { /* 缩小窄屏导航内边距。 */
     padding: 0 0.55rem; /* 避免导航发生换行。 */
+  }
+
+  .scroll-action { /* 在窄屏保持容易触达且不遮挡内容的尺寸。 */
+    width: 2.5rem; /* 适度缩小浮动控件。 */
+    height: 2.5rem; /* 与宽度保持圆形比例。 */
   }
 }
 </style>
