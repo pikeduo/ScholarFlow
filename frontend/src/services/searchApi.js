@@ -339,7 +339,7 @@ export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiB
   if (!normalizedPaperId) throw new SearchApiError('缺少需要读取详情的论文标识') // 防止向后端发起无效资源请求。
   let response // 保存详情读取 HTTP 响应。
   try { // 将网络或代理错误转换为可展示的公共提示。
-    response = await fetchImpl(`${apiBaseUrl}/api/v1/papers/${encodeURIComponent(normalizedPaperId)}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取后端已保存的 SQLite 论文快照。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/papers/detail?paper_id=${encodeURIComponent(normalizedPaperId)}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 使用查询参数传递可能包含斜杠的来源论文标识，并仅读取 SQLite 快照。
   } catch { // 不向页面暴露浏览器底层网络异常。
     throw new SearchApiError('无法读取论文详情，请确认后端已启动') // 给出可操作且不泄露实现的信息。
   }

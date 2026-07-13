@@ -28,9 +28,9 @@ def get_paper_translation_store() -> PaperTranslationStore:
     return paper_translation_store  # 通过依赖注入隔离持久化实现并支持离线测试替换。
 
 
-@router.get("/{paper_id}", response_model=PaperRecord, status_code=status.HTTP_200_OK, summary="读取已保存论文详情")
+@router.get("/detail", response_model=PaperRecord, status_code=status.HTTP_200_OK, summary="读取已保存论文详情")
 def get_paper_detail(
-    paper_id: str,
+    paper_id: Annotated[str, Query(min_length=1)],
     state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
 ) -> PaperRecord:
     """按内部论文标识读取 SQLite 中最新保存的规范化详情。
@@ -54,6 +54,22 @@ def get_paper_detail(
     if paper is None:  # 未被任何已完成搜索保存的论文不能由前端伪造读取。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="论文详情不存在或尚未保存")  # 保持不存在与尚未保存的同一安全语义。
     return paper  # 返回统一 PaperRecord，不额外查询供应商 API。
+
+
+@router.get("/{paper_id}", response_model=PaperRecord, status_code=status.HTTP_200_OK, include_in_schema=False)
+def get_legacy_paper_detail(
+    paper_id: str,
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+) -> PaperRecord:
+    """兼容旧版无斜杠论文标识的详情路径，新的前端必须使用查询参数入口。
+
+    参数：
+        paper_id：不含路径分隔符的历史论文标识。
+        state_store：可替换的搜索结果快照读取适配层。
+    返回：
+        PaperRecord：已保存的规范化论文事实。
+    """
+    return get_paper_detail(paper_id=paper_id, state_store=state_store)  # 复用相同读取边界，避免旧路径出现行为分叉。
 
 
 @router.post("/translation/{field}", response_model=PaperTranslationResponse, status_code=status.HTTP_200_OK, summary="翻译已保存论文标题或摘要")

@@ -45,7 +45,7 @@ def test_paper_detail_endpoint_returns_saved_paper_without_external_lookup(api_c
     """存在的论文标识应返回已保存 PaperRecord 的完整公开详情。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore(paper=_paper())  # 注入只读固定快照替身。
 
-    response = api_client.get("/api/v1/papers/paper-detail-1")  # 请求由搜索结果提供的内部论文标识。
+    response = api_client.get("/api/v1/papers/detail?paper_id=paper-detail-1")  # 使用查询参数请求由搜索结果提供的内部论文标识。
 
     assert response.status_code == 200  # 验证详情读取成功。
     payload = response.json()  # 解析公开 JSON 响应。
@@ -53,11 +53,22 @@ def test_paper_detail_endpoint_returns_saved_paper_without_external_lookup(api_c
     assert payload["constraint_evidence"] == ["ETT benchmark"]  # 验证详情保留已有核验证据而不重新生成。
 
 
+def test_paper_detail_endpoint_accepts_source_identifier_with_slashes(api_client: TestClient) -> None:
+    """来源 URL 型论文标识应通过查询参数完整进入 SQLite 详情读取边界。"""
+    source_identifier_paper = _paper().model_copy(update={"paper_id": "https://openalex.org/W4387355843"})  # 构造会破坏旧路径分段的真实来源标识形态。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore(paper=source_identifier_paper)  # 注入同一篇已保存来源论文。
+
+    response = api_client.get("/api/v1/papers/detail?paper_id=https%3A%2F%2Fopenalex.org%2FW4387355843")  # 使用编码查询参数保留完整 URL 型标识。
+
+    assert response.status_code == 200  # 验证路由不会将 URL 中的斜杠当作路径分段。
+    assert response.json()["paper_id"] == "https://openalex.org/W4387355843"  # 验证后端读取并原样返回完整来源标识。
+
+
 def test_paper_detail_endpoint_returns_404_for_unknown_saved_paper(api_client: TestClient) -> None:
     """未知论文标识不能伪造详情，应返回稳定不存在错误。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore()  # 注入不命中的只读替身。
 
-    response = api_client.get("/api/v1/papers/missing-paper")  # 请求未在任何保存结果中出现的标识。
+    response = api_client.get("/api/v1/papers/detail?paper_id=missing-paper")  # 请求未在任何保存结果中出现的标识。
 
     assert response.status_code == 404  # 验证未知详情不会被当成空成功响应。
     assert response.json()["detail"] == "论文详情不存在或尚未保存"  # 验证公共错误不泄露存储结构。
@@ -67,7 +78,7 @@ def test_paper_detail_endpoint_hides_storage_error(api_client: TestClient) -> No
     """SQLite 或快照读取故障必须映射为不泄露内部信息的 503。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore(should_fail=True)  # 注入会抛出安全服务错误的替身。
     with patch("backend.app.api.routes.papers.logger.exception") as log_exception:  # 拦截预期异常日志调用。
-        response = api_client.get("/api/v1/papers/paper-detail-1")  # 触发详情读取错误边界。
+        response = api_client.get("/api/v1/papers/detail?paper_id=paper-detail-1")  # 触发详情读取错误边界。
 
     assert response.status_code == 503  # 验证故障转换为可重试服务不可用状态。
     assert response.json()["detail"] == "论文详情暂时不可用，请稍后重试"  # 验证客户端看不到 SQLite 或快照细节。

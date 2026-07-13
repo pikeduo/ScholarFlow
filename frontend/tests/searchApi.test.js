@@ -220,7 +220,7 @@ test('getPaperDetail 仅读取已保存论文详情并校验最小契约', async
 
   const paper = await getPaperDetail(' paper-detail-1 ', fetchStub, 'http://test.local') // 读取带空白的内部论文标识。
 
-  assert.equal(capturedUrl, 'http://test.local/api/v1/papers/paper-detail-1') // 验证标识被规范化并编码到详情资源路径。
+  assert.equal(capturedUrl, 'http://test.local/api/v1/papers/detail?paper_id=paper-detail-1') // 验证标识通过查询参数传递，避免 URL 型来源标识被路径分段。
   assert.equal(paper, expectedPaper) // 验证页面获得详情抽屉可渲染的统一记录。
 })
 
