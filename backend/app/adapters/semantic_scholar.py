@@ -10,6 +10,7 @@ from backend.app.core.config import Settings, settings  # 读取 Semantic Schola
 from backend.app.core.logging import logger  # 记录不含查询与密钥的来源调用统计。
 from backend.app.models.paper import PaperAuthor, PaperRecord, PaperSourceRecord  # 构造保留来源溯源信息的统一论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一意图。
+from backend.app.repositories.source_cache import SourceResponseCache, get_source_response_cache  # 复用可降级的来源响应缓存边界。
 
 
 SEMANTIC_SCHOLAR_PAPER_FIELDS = (  # 仅请求当前统一模型与溯源需要的最小字段集合。
@@ -69,10 +70,12 @@ class SemanticScholarClient(AcademicSearchAdapter):
         self,
         settings_override: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        response_cache: SourceResponseCache | None = None,
     ) -> None:
         """保存配置、测试传输层和来源级节流状态。"""
         self._settings = settings_override or settings  # 默认复用经环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
+        self._response_cache = response_cache or get_source_response_cache()  # 默认复用应用 Redis 缓存，测试可注入离线替身。
         self._rate_limit_lock = asyncio.Lock()  # 串行化同一客户端的请求起始时间。
         self._next_request_at = 0.0  # 保存下一次允许发起请求的事件循环时间。
         self._cooldown_until = 0.0  # 保存来源返回 429 后的进程内冷却截止时间。
@@ -87,11 +90,15 @@ class SemanticScholarClient(AcademicSearchAdapter):
         异常：
             SemanticScholarClientError：HTTP、网络或响应结构异常时抛出。
         """
-        self._ensure_not_in_cooldown()  # 冷却期内直接降级，避免继续消耗已受限来源调用。
-        await self._wait_for_rate_limit()  # 在请求前遵守配置化的来源级最小间隔。
         params = build_semantic_scholar_search_params(query)  # 构造不含密钥的可测试请求参数。
-        headers = self._build_headers()  # 仅在配置了密钥时构造认证请求头。
-        data = await self._request_search_data(params, headers)  # 执行带有限流重试和安全错误分类的来源请求。
+        cache_key = self._response_cache.build_key("semantic_scholar", "search", params)  # 仅使用不含认证头的规范化参数构造缓存键。
+        data = await self._response_cache.get_list(cache_key, "semantic_scholar", "search")  # 缓存命中不应消耗来源配额或受冷却期影响。
+        if data is None:  # 未命中或 Redis 不可用时才进入既有来源调用路径。
+            self._ensure_not_in_cooldown()  # 冷却期内直接降级，避免继续消耗已受限来源调用。
+            await self._wait_for_rate_limit()  # 在请求前遵守配置化的来源级最小间隔。
+            headers = self._build_headers()  # 仅在配置了密钥时构造认证请求头。
+            data = await self._request_search_data(params, headers)  # 执行带有限流重试和安全错误分类的来源请求。
+            await self._response_cache.set_list(cache_key, "semantic_scholar", "search", data)  # 仅缓存已通过官方 data 数组校验的成功响应。
 
         papers: list[PaperRecord] = []  # 保存成功映射的统一多源论文记录。
         skipped_count = 0  # 统计字段不完整而无法映射的单条结果数量。

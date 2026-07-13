@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", min_length=1)  # 保存仅在启用时使用的 Redis 连接地址。
     redis_key_prefix: str = Field(default="scholarflow", pattern=r"^[a-z0-9][a-z0-9:_-]{0,63}$")  # 限制键前缀以避免产生不可控 Redis 键空间。
     redis_socket_timeout_seconds: float = Field(default=2.0, gt=0, le=30)  # 限制 Redis 不可用时单次连接或命令等待时间。
+    redis_source_search_cache_ttl_seconds: int = Field(default=14400, ge=60, le=86400)  # 限制学术来源搜索响应最多缓存四小时，避免长期保留过时结果。
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
     openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
     openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。

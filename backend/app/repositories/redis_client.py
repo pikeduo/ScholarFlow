@@ -18,6 +18,14 @@ class RedisAsyncClient(Protocol):
         """释放客户端连接池和关联网络资源。"""
         ...  # 真实实现由 redis.asyncio.Redis 提供，测试可注入替身。
 
+    async def get(self, key: str) -> bytes | str | None:
+        """读取短期存储中的二进制或文本值。"""
+        ...  # 缓存层只依赖最小键值读取能力。
+
+    async def set(self, key: str, value: str, ex: int) -> object:
+        """以过期时间写入短期存储值。"""
+        ...  # 缓存层显式要求 TTL，避免形成无限期数据。
+
 
 RedisClientFactory = Callable[[], RedisAsyncClient]  # 允许测试替换客户端构造而不连接真实 Redis。
 
@@ -45,6 +53,11 @@ class RedisClientManager:
     def key_prefix(self) -> str:
         """返回已校验键前缀，供后续缓存和限流适配器构造命名空间。"""
         return self._config.redis_key_prefix  # 统一避免业务模块自行拼接不一致命名空间。
+
+    @property
+    def source_search_cache_ttl_seconds(self) -> int:
+        """返回学术来源搜索响应的 Redis TTL 秒数。"""
+        return self._config.redis_source_search_cache_ttl_seconds  # 集中提供缓存配置，避免泄露内部配置对象。
 
     def get_client(self) -> RedisAsyncClient | None:
         """返回已验证客户端；Redis 禁用或不可用时返回空值以触发调用方降级。"""

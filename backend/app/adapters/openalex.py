@@ -10,6 +10,7 @@ from backend.app.adapters.base import AcademicSearchAdapter  # 声明当前客�
 from backend.app.models.paper import Paper, PaperAuthor, PaperRecord, PaperSourceRecord  # 复用基础模型与多源溯源模型。
 from backend.app.models.query import QuerySchema  # 读取结构化检索约束。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一检索意图。
+from backend.app.repositories.source_cache import SourceResponseCache, get_source_response_cache  # 复用可降级的来源响应缓存边界。
 
 
 OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
@@ -96,10 +97,12 @@ class OpenAlexClient(AcademicSearchAdapter):
         self,
         settings_override: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        response_cache: SourceResponseCache | None = None,
     ) -> None:
         """保存客户端配置与可选的 HTTP 传输层。"""
         self._settings = settings_override or settings  # 默认复用经过环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
+        self._response_cache = response_cache or get_source_response_cache()  # 默认复用应用 Redis 缓存，测试可注入离线替身。
 
     source = "openalex"  # 声明统一适配器协议要求的稳定来源名称。
 
@@ -170,6 +173,10 @@ class OpenAlexClient(AcademicSearchAdapter):
         except ValueError:  # 不将环境变量内容或配置实现细节暴露给上层。
             logger.error("OpenAlex 服务未配置 API 密钥")  # 记录安全的部署错误信息。
             raise OpenAlexClientError("OpenAlex 服务尚未配置") from None  # 返回稳定且不含密钥的领域错误。
+        cache_key = self._response_cache.build_key("openalex", "works", params)  # 仅使用不含密钥的规范化参数构造缓存键。
+        cached_results = await self._response_cache.get_list(cache_key, "openalex", "works")  # Redis 不可用或未命中时自动回退为空值。
+        if cached_results is not None:  # 缓存命中时不消耗 OpenAlex 请求配额。
+            return cached_results  # 返回与网络成功路径一致的原始结果数组。
         try:  # 捕获 HTTP 层异常并转换为不会暴露 URL 参数的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
                 base_url=self._settings.openalex_api_base_url,  # 使用集中配置的 OpenAlex 地址。
@@ -194,7 +201,7 @@ class OpenAlexClient(AcademicSearchAdapter):
         if not isinstance(results, list):  # 缺少结果数组代表 API 响应结构与预期不符。
             logger.error("OpenAlex 响应缺少 results 数组")  # 记录可定位的结构异常。
             raise OpenAlexClientError("OpenAlex 响应缺少 results 数组")  # 阻止错误数据进入后续排序流程。
-
+        await self._response_cache.set_list(cache_key, "openalex", "works", results)  # 仅缓存通过顶层结构校验的成功响应。
         return results  # 将单条映射和模型选择留给兼容入口或统一入口处理。
 
 
