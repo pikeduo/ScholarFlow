@@ -43,7 +43,7 @@ def test_query_planner_generates_english_intent_and_preserves_explicit_constrain
 
     config = Settings(_env_file=None, deepseek_api_key="test-key", academic_source_recall_limit=50)  # 注入无权限测试密钥和召回规模。
     client = DeepSeekQueryPlanningClient(config=config, transport=httpx.MockTransport(handler))  # 构造离线客户端。
-    request = NaturalSearchRequest(query="检索视觉语言模型在医学影像报告生成中的最新研究，优先包含公开数据集", year_range=(2023, 2026), must_include=["medical imaging"], exclude=["survey"], search_mode="deep", enable_semantic_ranking=False, enable_cross_encoder_ranking=True)  # 提供显式约束和独立排序选择。
+    request = NaturalSearchRequest(query="检索视觉语言模型在医学影像报告生成中的最新研究，优先包含公开数据集", year_range=(2023, 2026), must_include=["medical imaging"], exclude=["survey"], search_mode="standard", enable_semantic_ranking=False, enable_cross_encoder_ranking=True)  # 提供显式约束和独立排序选择。
     planning_result = asyncio.run(client.plan(request))  # 执行不访问网络的规划。
     intent = planning_result.query_intent  # 提取可执行意图供语义字段断言。
 

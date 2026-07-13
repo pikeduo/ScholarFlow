@@ -16,9 +16,8 @@ const examples = [ // 提供可直接填入搜索框的复杂查询示例。
 
 const form = reactive({ // 保存搜索页当前可编辑查询条件。
   queryText: '', // 保存自然语言研究问题。
-  searchMode: 'standard', // 默认使用成本更低的标准模式。
-  enableSemanticRanking: true, // 深度模式默认保留既有 BGE-M3 粗排行为。
-  enableCrossEncoderRanking: true, // 深度模式默认保留既有 Cross Encoder 重排行为。
+  enableSemanticRanking: false, // 默认不加载 BGE-M3，保持统一标准搜索的较短等待时间。
+  enableCrossEncoderRanking: false, // 默认不加载 Cross Encoder，避免普通搜索意外变得极慢。
   startYear: '', // 保存可选起始年份。
   endYear: '', // 保存可选结束年份。
   mustInclude: '', // 保存逗号分隔的必须词。
@@ -131,7 +130,8 @@ function useExample(example) { // 将示例查询填入输入框但不自动发�
 
 function buildConditionChipsFromIntent(intent) { // 将已保存 QueryIntent 转换为恢复结果所需的条件标签。
   return buildConditionChips({ // 复用与新提交结果一致的标签规则。
-    searchMode: intent.search_mode, // 回显保存的搜索模式。
+    enableSemanticRanking: Boolean(intent.enable_semantic_ranking), // 回显本次是否实际使用 BGE-M3。
+    enableCrossEncoderRanking: Boolean(intent.enable_cross_encoder_ranking), // 回显本次是否实际使用 Cross Encoder。
     startYear: intent.year_range?.[0] || '', // 回显保存的起始年份。
     endYear: intent.year_range?.[1] || '', // 回显保存的结束年份。
     mustInclude: (intent.must_include || []).join(', '), // 回显保存的硬约束。
@@ -225,7 +225,9 @@ async function restoreRunFromUrl() { // 在页面首次挂载时恢复已有 run
 }
 
 function buildConditionChips(formSnapshot) { // 将已提交表单快照转换为结果区可回顾标签。
-  const chips = [{ label: formSnapshot.searchMode === 'deep' ? '深度模式' : '标准模式', tone: 'neutral' }] // 始终展示搜索模式。
+  const chips = [{ label: '标准检索', tone: 'neutral' }] // 搜索页统一使用两轮标准检索策略。
+  if (formSnapshot.enableSemanticRanking) chips.push({ label: 'BGE-M3 粗排', tone: 'neutral' }) // 标识本次实际启用的本地语义模型。
+  if (formSnapshot.enableCrossEncoderRanking) chips.push({ label: 'Cross Encoder 重排', tone: 'neutral' }) // 标识本次实际启用的本地精排模型。
   if (formSnapshot.startYear && formSnapshot.endYear) chips.push({ label: `${formSnapshot.startYear}–${formSnapshot.endYear}`, tone: 'neutral' }) // 展示年份范围。
   if (formSnapshot.mustInclude) chips.push({ label: `必须：${formSnapshot.mustInclude}`, tone: 'positive' }) // 展示硬约束。
   if (formSnapshot.shouldInclude) chips.push({ label: `优先：${formSnapshot.shouldInclude}`, tone: 'neutral' }) // 展示软偏好。
@@ -378,7 +380,8 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
     void loadSearchUsage(nextResult.run_state?.run_id) // 读取编辑重搜对应的同次实际用量快照。
     submittedQuery.value = editedIntent.original_query // 保持结果对应的原始研究问题。
     conditionChips.value = buildConditionChips({ // 使用编辑后的关键约束更新结果说明。
-      searchMode: editedIntent.search_mode, // 映射搜索模式。
+      enableSemanticRanking: Boolean(editedIntent.enable_semantic_ranking), // 映射编辑重搜的 BGE-M3 选择。
+      enableCrossEncoderRanking: Boolean(editedIntent.enable_cross_encoder_ranking), // 映射编辑重搜的 Cross Encoder 选择。
       startYear: editedIntent.year_range?.[0] || '', // 映射起始年份。
       endYear: editedIntent.year_range?.[1] || '', // 映射结束年份。
       mustInclude: (editedIntent.must_include || []).join(', '), // 映射硬约束。
@@ -550,23 +553,11 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
             </button>
           </div>
         </div>
-        <div class="mode-row">
-          <fieldset>
-            <legend>检索模式</legend>
-            <label :class="['mode-option', { 'is-selected': form.searchMode === 'standard' }]">
-              <input v-model="form.searchMode" type="radio" value="standard" :disabled="loading">
-              <span><strong>标准</strong><small>1–2 轮 · DeepSeek 核验 · 更快</small></span>
-            </label>
-            <label :class="['mode-option', { 'is-selected': form.searchMode === 'deep' }]">
-              <input v-model="form.searchMode" type="radio" value="deep" :disabled="loading">
-              <span><strong>深度</strong><small>最多 3 轮 · BGE-M3 + Cross Encoder</small></span>
-            </label>
-          </fieldset>
-          <p v-if="form.searchMode === 'deep'" class="deep-mode-warning" role="status">深度模式可选择加载 BGE-M3 与 Cross Encoder；开启任一项都会显著增加搜索耗时。</p>
-          <div v-if="form.searchMode === 'deep'" class="ranking-options" role="group" aria-label="本地排序选项">
+        <div class="ranking-row">
+          <div class="ranking-options" role="group" aria-label="本地排序选项">
             <label><input v-model="form.enableSemanticRanking" type="checkbox" :disabled="loading">启用 BGE-M3 语义粗排</label>
             <label><input v-model="form.enableCrossEncoderRanking" type="checkbox" :disabled="loading">启用 Cross Encoder 重排</label>
-            <p>两项均会加载本地模型；开启任一项都可能使搜索时长变得极长。</p>
+            <p>标准检索最多执行 2 轮。两项均默认关闭；开启任一项会加载本地模型，搜索时长可能变得极长。</p>
           </div>
           <button class="advanced-toggle" type="button" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced">
             {{ showAdvanced ? '收起约束条件' : '添加约束条件' }}
@@ -1030,7 +1021,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   animation: spin 800ms linear infinite; /* 持续旋转表示等待。 */
 }
 
-.mode-row { /* 横向排列模式选择和高级条件开关。 */
+.ranking-row { /* 横向排列本地排序选项和高级条件开关。 */
   display: flex; /* 使用弹性布局。 */
   align-items: end; /* 对齐控件底部。 */
   justify-content: space-between; /* 分置模式和高级入口。 */
@@ -1038,70 +1029,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   margin-top: 1rem; /* 与主查询框分隔。 */
 }
 
-fieldset { /* 将模式选项组成可访问字段组。 */
-  display: flex; /* 横向排列模式。 */
-  gap: 0.5rem; /* 分隔两个选项。 */
-  margin: 0; /* 移除默认外边距。 */
-  padding: 0; /* 移除默认内边距。 */
-  border: 0; /* 使用选项卡自身边界。 */
-}
-
-legend { /* 标记检索模式字段组。 */
-  position: absolute; /* 保留语义但不占布局空间。 */
-  width: 1px; /* 缩小视觉区域。 */
-  height: 1px; /* 缩小视觉区域。 */
-  overflow: hidden; /* 隐藏屏幕视觉内容。 */
-  clip-path: inset(50%); /* 仅供屏幕阅读器读取。 */
-}
-
-.mode-option { /* 设置单个模式选择卡。 */
-  display: inline-flex; /* 横向对齐单选框和说明。 */
-  align-items: center; /* 垂直居中。 */
-  gap: 0.5rem; /* 分隔控件和文字。 */
-  padding: 0.55rem 0.7rem; /* 提供可点击区域。 */
-  border: 1px solid #dce5ec; /* 标记选项边界。 */
-  border-radius: 0.7rem; /* 使用小圆角。 */
-  cursor: pointer; /* 告知用户可选择。 */
-}
-
-.mode-option.is-selected { /* 突出当前检索模式。 */
-  border-color: #8ab3c5; /* 使用品牌蓝灰。 */
-  background: #f0f7fa; /* 使用浅蓝选中底色。 */
-}
-
-.mode-option.is-disabled { /* 弱化尚未接入多轮编排的深度模式。 */
-  cursor: not-allowed; /* 告知用户当前不可选择。 */
-  opacity: 0.52; /* 降低未开放选项权重。 */
-}
-
-.mode-option input { /* 设置原生单选框强调色。 */
-  accent-color: #2e6f95; /* 与品牌交互色一致。 */
-}
-
-.mode-option span { /* 纵向排列模式名称和说明。 */
-  display: grid; /* 建立双行结构。 */
-  gap: 0.1rem; /* 控制行间距。 */
-}
-
-.mode-option strong { /* 显示模式名称。 */
-  color: #334e68; /* 使用正文深色。 */
-  font-size: 0.72rem; /* 保持模式卡紧凑。 */
-}
-
-.mode-option small { /* 显示模式成本说明。 */
-  color: #91a0ae; /* 降低辅助信息权重。 */
-  font-size: 0.61rem; /* 控制信息密度。 */
-}
-
-.deep-mode-warning { /* 在深度模式被选中时明确提示本地模型带来的额外等待。 */
-  max-width: 19rem; /* 限制提示宽度，避免挤压模式选择控件。 */
-  margin: 0; /* 由父级弹性布局统一控制间距。 */
-  color: #7a5b2c; /* 使用克制的琥珀色提示而非错误色。 */
-  font-size: 0.66rem; /* 保持为辅助说明，不压过检索控件。 */
-  line-height: 1.45; /* 提升较长警告文本的可读性。 */
-}
-
-.ranking-options { /* 在深度模式下提供两个可独立选择的本地排序开关。 */
+.ranking-options { /* 在统一标准搜索下提供两个可独立选择的本地排序开关。 */
   display: grid; /* 纵向排列开关和风险提示以避免窄屏拥挤。 */
   gap: 0.35rem; /* 保持各项之间可读的紧凑间距。 */
   color: #52616b; /* 使用辅助正文色避免压过主检索操作。 */
@@ -1907,7 +1835,7 @@ legend { /* 标记检索模式字段组。 */
     padding-top: 2.5rem; /* 更快进入主搜索操作。 */
   }
 
-  .mode-row,
+  .ranking-row,
   .results-header { /* 将横向复杂区域改为纵向。 */
     align-items: stretch; /* 让子项填满宽度。 */
     flex-direction: column; /* 纵向排列内容。 */

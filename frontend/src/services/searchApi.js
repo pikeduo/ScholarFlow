@@ -54,9 +54,9 @@ export function createQueryIntent(form) { // 接收页面维护的响应式表�
     exclude, // 映射排除条件。
     year_range: startYear && endYear ? [startYear, endYear] : null, // 仅在完整填写时提交闭区间。
     target_paper_count: 20, // 与当前 LLM 最终结果上限保持一致。
-    search_mode: form.searchMode === 'deep' ? 'deep' : 'standard', // 限制为后端支持的两种模式。
-    enable_semantic_ranking: Boolean(form.enableSemanticRanking), // 保存深度模式下用户对 BGE-M3 粗排的显式选择。
-    enable_cross_encoder_ranking: Boolean(form.enableCrossEncoderRanking), // 保存深度模式下用户对 Cross Encoder 重排的显式选择。
+    search_mode: 'standard', // 搜索页统一固定为最多两轮的标准检索策略。
+    enable_semantic_ranking: Boolean(form.enableSemanticRanking), // 保存用户对 BGE-M3 粗排的显式选择。
+    enable_cross_encoder_ranking: Boolean(form.enableCrossEncoderRanking), // 保存用户对 Cross Encoder 重排的显式选择。
     domains: splitTerms(form.domains), // 提供动态 arXiv 与 DBLP 路由依据。
     requires_web_evidence: Boolean(form.requiresWebEvidence), // 仅在用户明确选择时启用网页补充发现。
   }
@@ -96,6 +96,7 @@ export async function streamSearchPapers(form, onEvent, fetchImpl = globalThis.f
 export function validateQueryIntent(intent) { // 接收查询解析面板提交的完整意图。
   if (!intent || typeof intent !== 'object') throw new SearchApiError('查询解析结果不完整') // 拒绝空对象或错误类型。
   const nextIntent = structuredCloneSafe(intent) // 创建独立副本以保护上一轮结果。
+  nextIntent.search_mode = 'standard' // 编辑历史深度运行时也统一回到两轮标准检索。
   nextIntent.original_query = String(nextIntent.original_query || '').trim() // 保留原始问题作为检索审计上下文。
   nextIntent.normalized_query = String(nextIntent.normalized_query || '').trim().replace(/\s+/g, ' ') // 规范化英文检索式空白。
   if (!nextIntent.original_query || !nextIntent.normalized_query) throw new SearchApiError('原始问题和英文检索式不能为空') // 防止提交无法审计或无法召回的计划。

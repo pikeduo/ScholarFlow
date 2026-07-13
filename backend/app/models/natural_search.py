@@ -11,8 +11,8 @@ class NaturalSearchRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=1200)  # 保存待 Query Agent 解析的自然语言问题。
     search_mode: SearchMode = "standard"  # 保存标准或深度模式选择。
-    enable_semantic_ranking: bool = True  # 保存深度模式下用户是否允许加载 BGE-M3 语义粗排。
-    enable_cross_encoder_ranking: bool = True  # 保存深度模式下用户是否允许加载 Cross Encoder 重排。
+    enable_semantic_ranking: bool = False  # 保存用户是否允许加载 BGE-M3 语义粗排，默认保持快速路径。
+    enable_cross_encoder_ranking: bool = False  # 保存用户是否允许加载 Cross Encoder 重排，默认保持快速路径。
     year_range: tuple[int, int] | None = None  # 保存用户显式填写的年份闭区间。
     must_include: list[str] = Field(default_factory=list)  # 保存不可被模型降级的显式必须条件。
     should_include: list[str] = Field(default_factory=list)  # 保存用户显式软偏好。
