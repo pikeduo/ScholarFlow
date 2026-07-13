@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./data/scholarflow.db")  # 指定开发期 SQLite 地址。
     log_dir: Path = Field(default=Path("logs"))  # 指定可被 Git 忽略的日志目录。
     log_level: str = Field(default="INFO")  # 支持部署时调整日志详细程度。
+    redis_enabled: bool = Field(default=False)  # 控制 Redis 短期存储是否在当前环境启用，默认保持 SQLite 单机可用。
+    redis_url: str = Field(default="redis://localhost:6379/0", min_length=1)  # 保存仅在启用时使用的 Redis 连接地址。
+    redis_key_prefix: str = Field(default="scholarflow", pattern=r"^[a-z0-9][a-z0-9:_-]{0,63}$")  # 限制键前缀以避免产生不可控 Redis 键空间。
+    redis_socket_timeout_seconds: float = Field(default=2.0, gt=0, le=30)  # 限制 Redis 不可用时单次连接或命令等待时间。
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
     openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
     openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。

@@ -10,6 +10,7 @@ from backend.app.api.router import api_router  # 导入版本化 API 路由聚�
 from backend.app.core.config import settings  # 读取集中式应用配置。
 from backend.app.core.logging import logger  # 使用统一控制台和文件日志器。
 from backend.app.repositories.database import initialize_database  # 初始化 SQLite 元数据。
+from backend.app.repositories.redis_client import get_redis_manager  # 管理可选 Redis 短期存储生命周期。
 
 
 @asynccontextmanager
@@ -29,7 +30,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     except SQLAlchemyError:  # 仅处理数据库层可预期异常。
         logger.exception("SQLite 初始化失败，应用停止启动")  # 记录完整错误堆栈便于排查。
         raise  # 保持失败可见，避免服务带着不可用状态运行。
+    await get_redis_manager().start()  # Redis 不可用时内部降级，SQLite 主服务仍可继续启动。
     yield  # 将控制权交还给 FastAPI 请求处理流程。
+    await get_redis_manager().close()  # 在应用关闭时释放 Redis 连接池。
     logger.info("ScholarFlow 后端已停止")  # 记录正常关闭信息。
 
 

@@ -14,3 +14,4 @@ def test_health_endpoint_returns_service_metadata() -> None:
     assert payload["status"] == "ok"  # 验证稳定的健康状态。
     assert payload["service"] == "ScholarFlow"  # 验证默认服务标识。
     assert payload["version"] == "0.1.0"  # 验证当前后端版本标记。
+    assert payload["redis"] in {"disabled", "available", "unavailable"}  # 验证健康检查回报可降级 Redis 状态而不泄露地址。
