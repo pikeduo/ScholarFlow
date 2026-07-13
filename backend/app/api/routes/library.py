@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError  # 捕获持久化层可预期故障�
 from sqlalchemy.orm import Session  # 标注请求级 SQLAlchemy 会话。
 
 from backend.app.core.logging import logger  # 记录数据库故障完整堆栈。
-from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, LibrarySemanticSearchResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 声明公共请求与响应契约。
+from backend.app.models.library import LibraryItem, LibraryItemList, LibrarySaveResult, LibrarySemanticSearchResult, LibrarySort, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 声明公共请求与响应契约。
 from backend.app.repositories.database import SessionLocal  # 为每个请求创建独立数据库会话。
 from backend.app.repositories.faiss_index import FaissIndexManager  # 管理默认文献库 FAISS 索引文件。
 from backend.app.repositories.library import LibraryRepository  # 装配 SQLite 文献库仓储。
@@ -50,6 +50,12 @@ def get_library_service(session: Annotated[Session, Depends(get_database_session
     return LibraryService(LibraryRepository(session), VectorMetadataRepository(session), paper_indexer, semantic_searcher)  # 集中装配文献库、向量状态及共享语义组件。
 
 
+def _validate_year_range(year_start: int | None, year_end: int | None) -> None:
+    """验证可选年份范围，避免将逻辑矛盾的筛选条件传入服务层。"""
+    if year_start is not None and year_end is not None and year_start > year_end:  # 仅在两个边界均存在时比较范围。
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="起始年份不能晚于结束年份")  # 返回可直接展示的输入校验错误。
+
+
 @router.post("", response_model=LibrarySaveResult, status_code=status.HTTP_200_OK, summary="收藏论文")
 def save_library_item(request: SaveLibraryItemRequest, service: Annotated[LibraryService, Depends(get_library_service)]) -> LibrarySaveResult:
     """去重保存一篇论文；重复收藏返回已有记录并合并关键词。"""
@@ -61,20 +67,22 @@ def save_library_item(request: SaveLibraryItemRequest, service: Annotated[Librar
 
 
 @router.get("", response_model=LibraryItemList, status_code=status.HTTP_200_OK, summary="查询文献库")
-def list_library_items(service: Annotated[LibraryService, Depends(get_library_service)], keyword: Annotated[str | None, Query(min_length=1, max_length=200)] = None, tag: Annotated[str | None, Query(min_length=1, max_length=200, deprecated=True)] = None, reading_status: ReadingStatus | None = None) -> LibraryItemList:
+def list_library_items(service: Annotated[LibraryService, Depends(get_library_service)], keyword: Annotated[str | None, Query(min_length=1, max_length=200)] = None, tag: Annotated[str | None, Query(min_length=1, max_length=200, deprecated=True)] = None, reading_status: ReadingStatus | None = None, year_start: Annotated[int | None, Query(ge=1800, le=2100)] = None, year_end: Annotated[int | None, Query(ge=1800, le=2100)] = None, venue: Annotated[str | None, Query(min_length=1, max_length=300)] = None, sort: LibrarySort = "updated_desc", page: Annotated[int, Query(ge=1)] = 1, page_size: Annotated[int, Query(ge=1, le=50)] = 10) -> LibraryItemList:
     """按可选关键词和阅读状态筛选个人文献库，并兼容旧标签查询参数。"""
     try:  # 将数据库故障隔离为稳定公共错误。
-        return service.list(keyword=keyword or tag, reading_status=reading_status)  # 新参数优先，旧标签参数仅作兼容回退。
+        _validate_year_range(year_start, year_end)  # 在进入仓储前拒绝逻辑矛盾的年份范围。
+        return service.list(keyword=keyword or tag, reading_status=reading_status, year_start=year_start, year_end=year_end, venue=venue, sort=sort, page=page, page_size=page_size)  # 新参数优先，旧标签参数仅作兼容回退。
     except SQLAlchemyError:  # 不向前端暴露查询实现细节。
         logger.exception("文献库查询失败")  # 记录完整堆栈供排查。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库服务暂时不可用，请稍后重试") from None  # 返回安全错误。
 
 
 @router.get("/semantic-search", response_model=LibrarySemanticSearchResult, status_code=status.HTTP_200_OK, summary="自然语言检索文献库")
-async def search_library_items_semantically(query: Annotated[str, Query(min_length=2, max_length=1000)], service: Annotated[LibraryService, Depends(get_library_service)], top_k: Annotated[int, Query(ge=1, le=50)] = 20, keyword: Annotated[str | None, Query(min_length=1, max_length=200)] = None, tag: Annotated[str | None, Query(min_length=1, max_length=200, deprecated=True)] = None, reading_status: ReadingStatus | None = None) -> LibrarySemanticSearchResult:
+async def search_library_items_semantically(query: Annotated[str, Query(min_length=2, max_length=1000)], service: Annotated[LibraryService, Depends(get_library_service)], top_k: Annotated[int, Query(ge=1, le=50)] = 20, keyword: Annotated[str | None, Query(min_length=1, max_length=200)] = None, tag: Annotated[str | None, Query(min_length=1, max_length=200, deprecated=True)] = None, reading_status: ReadingStatus | None = None, year_start: Annotated[int | None, Query(ge=1800, le=2100)] = None, year_end: Annotated[int | None, Query(ge=1800, le=2100)] = None, venue: Annotated[str | None, Query(min_length=1, max_length=300)] = None) -> LibrarySemanticSearchResult:
     """按可选结构化筛选检索收藏论文，并返回语义分数或安全降级结果。"""
     try:  # 将数据库故障和未装配依赖隔离为稳定公共错误。
-        return await service.search_semantic(query, top_k=top_k, keyword=keyword or tag, reading_status=reading_status)  # 先筛选再执行 BGE、FAISS 和 SQLite 映射过滤。
+        _validate_year_range(year_start, year_end)  # 与普通列表保持相同的结构化筛选边界。
+        return await service.search_semantic(query, top_k=top_k, keyword=keyword or tag, reading_status=reading_status, year_start=year_start, year_end=year_end, venue=venue)  # 先筛选再执行 BGE、FAISS 和 SQLite 映射过滤。
     except RuntimeError:  # 仅处理未装配语义服务等稳定基础设施错误。
         logger.exception("文献库语义检索服务不可用")  # 记录完整受控堆栈，不记录查询正文。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文献库语义检索暂不可用，请稍后重试") from None  # 返回安全错误。

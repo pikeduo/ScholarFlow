@@ -7,7 +7,7 @@ from uuid import uuid4  # 生成不依赖数据库序列的收藏标识。
 from sqlalchemy import DateTime, String, Text, select  # 声明表字段并构造筛选查询。
 from sqlalchemy.orm import Mapped, Session, mapped_column  # 声明 ORM 映射并执行显式事务。
 
-from backend.app.models.library import LibraryItem, ReadingStatus  # 返回稳定领域响应。
+from backend.app.models.library import LibraryItem, LibrarySort, ReadingStatus  # 返回稳定领域响应并约束列表排序策略。
 from backend.app.models.paper import PaperRecord  # 序列化与恢复完整论文快照。
 from backend.app.repositories.database import Base  # 注册到统一 SQLAlchemy 元数据。
 
@@ -54,7 +54,7 @@ class LibraryRepository:
         self._session.refresh(row)  # 读取数据库最终值供响应使用。
         return _to_library_item(row), created  # 返回领域模型和新建标记。
 
-    def list(self, keyword: str | None = None, reading_status: ReadingStatus | None = None) -> list[LibraryItem]:
+    def list(self, keyword: str | None = None, reading_status: ReadingStatus | None = None, year_start: int | None = None, year_end: int | None = None, venue: str | None = None, sort: LibrarySort = "updated_desc") -> list[LibraryItem]:
         """按可选关键词和阅读状态筛选收藏，并按最近更新倒序返回。"""
         statement = select(LibraryItemRow)  # 从完整文献库集合开始构造查询。
         if reading_status is not None:  # 阅读状态可在 SQLite 中直接精确筛选。
@@ -63,7 +63,15 @@ class LibraryRepository:
         if keyword is not None:  # JSON 论文快照和用户关键词使用内存精确筛选，避免 SQLite 模糊匹配误命中。
             keyword_key = keyword.strip().casefold()  # 规范化查询关键词。
             rows = [row for row in rows if keyword_key in _keyword_keys(row)]  # 同时匹配用户维护和来源提供的关键词。
-        return [_to_library_item(row) for row in rows]  # 将 ORM 行转换为公共领域模型。
+        items = [_to_library_item(row) for row in rows]  # 将 ORM 行转换为可安全读取的公共领域模型。
+        if year_start is not None:  # 仅保留存在年份且不早于起始年的论文。
+            items = [item for item in items if item.paper.year is not None and item.paper.year >= year_start]  # 缺失年份不能满足显式年份下限。
+        if year_end is not None:  # 仅保留存在年份且不晚于结束年的论文。
+            items = [item for item in items if item.paper.year is not None and item.paper.year <= year_end]  # 缺失年份不能满足显式年份上限。
+        if venue is not None:  # 在来源期刊或会议名称中执行大小写无关的包含匹配。
+            venue_key = venue.strip().casefold()  # 规范化用户输入以保持匹配稳定。
+            items = [item for item in items if venue_key in (item.paper.venue or "").casefold()]  # 空 venue 不匹配显式筛选。
+        return _sort_library_items(items, sort)  # 统一在筛选完成后应用用户选择的展示排序。
 
     def get(self, item_id: str) -> LibraryItem | None:
         """按内部收藏标识读取单条记录。"""
@@ -168,6 +176,17 @@ def _keyword_keys(row: LibraryItemRow) -> set[str]:
     """合并用户关键词和论文来源关键词，供精确关键词筛选使用。"""
     paper = PaperRecord.model_validate_json(row.paper_json)  # 读取保存的论文快照以获得来源关键词。
     return {value.strip().casefold() for value in [*_load_keywords(row.tags_json), *paper.keywords] if value and value.strip()}  # 统一清理并返回大小写无关键集合。
+
+
+def _sort_library_items(items: list[LibraryItem], sort: LibrarySort) -> list[LibraryItem]:
+    """按照公开排序契约排序收藏，始终为缺失年份保留确定性末位。"""
+    if sort == "year_desc":  # 年份倒序时优先较新的论文，缺失年份固定排在末尾。
+        return sorted(items, key=lambda item: (item.paper.year is not None, item.paper.year or -1, item.updated_at, item.item_id), reverse=True)  # 使用更新时间和内部 ID 消除同年并列的不稳定性。
+    if sort == "year_asc":  # 年份正序时优先较早的论文，缺失年份固定排在末尾。
+        return sorted(items, key=lambda item: (item.paper.year is None, item.paper.year or 9999, item.updated_at, item.item_id))  # 使用更新时间和内部 ID 保持排序可复现。
+    if sort == "title_asc":  # 标题排序采用大小写无关的标题文本。
+        return sorted(items, key=lambda item: ((item.paper.title or "").casefold(), item.updated_at, item.item_id))  # 空标题和并列标题仍具备稳定次级顺序。
+    return sorted(items, key=lambda item: (item.updated_at, item.item_id), reverse=True)  # 默认按最近更新倒序展示。
 
 
 def _to_library_item(row: LibraryItemRow) -> LibraryItem:

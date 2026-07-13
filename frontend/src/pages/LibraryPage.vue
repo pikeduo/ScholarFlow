@@ -13,8 +13,11 @@ const loading = ref(false) // 标记列表请求状态。
 const semanticLoading = ref(false) // 标记自然语言语义检索请求状态。
 const busyItemId = ref('') // 标记正在更新或删除的单条记录。
 const message = ref({ text: '', tone: 'success' }) // 保存页面级安全操作反馈。
-const filters = reactive({ keyword: '', readingStatus: '' }) // 保存关键词和阅读状态筛选条件。
+const filters = reactive({ keyword: '', readingStatus: '', yearStart: '', yearEnd: '', venue: '', sort: 'updated_desc' }) // 保存关键词、结构化筛选和展示排序条件。
 const keywordFacets = ref([]) // 保存后端聚合的可点击关键词及命中数量。
+const currentPage = ref(1) // 保存当前普通列表的服务端页码。
+const totalPages = ref(1) // 保存后端计算后的可用总页数。
+const pageSize = 5 // 固定每页展示五张完整论文卡片，避免单页过长。
 const semanticQuery = ref('') // 保存用户输入的文献库自然语言检索文本。
 const semanticMode = ref(false) // 标记当前列表是否来自语义检索而非普通筛选。
 const semanticScores = reactive({}) // 按收藏 ID 保存后端返回的语义相似度。
@@ -35,16 +38,18 @@ function createDraft(item) { // 从后端记录构造独立可编辑草稿。
   drafts[item.item_id] = { keywords: (item.keywords || []).join(', '), note: item.note || '', readingStatus: item.reading_status } // 避免直接修改响应对象。
 }
 
-async function loadItems() { // 使用当前筛选条件刷新文献库列表。
+async function loadItems(page = 1) { // 使用当前筛选条件刷新文献库列表。
   if (loading.value || semanticLoading.value) return // 防止与自然语言检索并发覆盖当前结果。
   loading.value = true // 展示加载状态并禁用筛选操作。
   semanticMode.value = false // 普通筛选结果不展示旧语义相似度。
   clearSemanticScores() // 清理上一次语义结果的分数字典。
   message.value = { text: '', tone: 'success' } // 清除旧反馈。
   try { // 捕获 API 客户端已净化错误。
-    const result = await listLibraryItems(filters) // 提交关键词和阅读状态筛选。
+    const result = await listLibraryItems(filters, { page, pageSize }) // 提交结构化筛选、排序和服务端分页参数。
     items.value = result.items // 替换当前列表。
     total.value = result.total // 更新筛选结果数量。
+    currentPage.value = result.page // 使用后端校正后的页码处理删除后的末页回退。
+    totalPages.value = result.total_pages // 同步可用总页数供翻页控件使用。
     keywordFacets.value = result.keyword_facets || [] // 更新当前阅读状态范围内完整关键词选择区。
     for (const item of result.items) createDraft(item) // 为每条记录建立编辑草稿。
   } catch (error) { // 隔离网络和响应契约错误。
@@ -57,7 +62,11 @@ async function loadItems() { // 使用当前筛选条件刷新文献库列表。
 function resetFilters() { // 清除筛选并重新加载全部收藏。
   filters.keyword = '' // 清除关键词筛选。
   filters.readingStatus = '' // 清除阅读状态筛选。
-  loadItems() // 刷新完整列表。
+  filters.yearStart = '' // 清除年份下限。
+  filters.yearEnd = '' // 清除年份上限。
+  filters.venue = '' // 清除期刊或会议筛选。
+  filters.sort = 'updated_desc' // 恢复默认最近更新排序。
+  loadItems(1) // 刷新完整列表的第一页。
 }
 
 async function searchSemantically() { // 在当前关键词和阅读状态范围内执行自然语言检索。
@@ -68,6 +77,8 @@ async function searchSemantically() { // 在当前关键词和阅读状态范围
     const result = await searchLibraryItemsSemantically(semanticQuery.value, filters) // 提交自然语言查询和当前结构化筛选。
     items.value = result.items.map((entry) => entry.item) // 将语义响应转换为既有卡片可复用的收藏对象列表。
     total.value = result.total // 更新当前语义结果数量。
+    currentPage.value = 1 // 语义检索不分页，避免保留旧列表页码。
+    totalPages.value = 1 // 语义检索直接展示其有限 top-k 结果。
     semanticMode.value = true // 标记卡片应展示相似度分数。
     clearSemanticScores() // 先清理旧查询残留分数。
     for (const entry of result.items) semanticScores[entry.item.item_id] = entry.semantic_score // 按收藏 ID 保存对应相似度。
@@ -84,7 +95,7 @@ function clearSemanticSearch() { // 清除自然语言检索文本并恢复普�
   semanticQuery.value = '' // 清空用户当前语义查询。
   semanticMode.value = false // 先隐藏相似度展示。
   clearSemanticScores() // 清理旧查询分数。
-  loadItems() // 按当前关键词和状态恢复普通列表。
+  loadItems(1) // 按当前结构化条件恢复普通列表第一页。
 }
 
 function clearSemanticScores() { // 删除响应式分数字典中的所有旧收藏条目。
@@ -95,7 +106,12 @@ function selectKeyword(keyword) { // 通过点击关键词而非手输文本切�
   if (loading.value || semanticLoading.value) return // 请求进行中时禁止改变筛选范围。
   filters.keyword = filters.keyword === keyword ? '' : keyword // 再次点击当前关键词即取消筛选。
   if (semanticMode.value) void searchSemantically() // 保持自然语言检索模式并更新候选范围。
-  else void loadItems() // 普通列表按新关键词刷新。
+  else void loadItems(1) // 普通列表按新关键词刷新。
+}
+
+function changePage(page) { // 切换普通列表页面并保留当前全部结构化筛选条件。
+  if (semanticMode.value || loading.value || semanticLoading.value || page < 1 || page > totalPages.value || page === currentPage.value) return // 语义检索或无效页码不发起请求。
+  void loadItems(page) // 仅由服务端返回当前页卡片，避免在浏览器保留完整集合。
 }
 
 function formatSemanticScore(itemId) { // 将零到一分数转换为用户易读百分比。
@@ -214,8 +230,12 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
       <p class="eyebrow">PERSONAL RESEARCH LIBRARY</p>
       <h1 id="library-title">我的文献库</h1>
       <p>沉淀搜索结果，维护关键词、阅读状态与个人备注。</p>
-      <form class="filter-panel" aria-label="文献库筛选" @submit.prevent="loadItems">
+      <form class="filter-panel" aria-label="文献库筛选" @submit.prevent="loadItems(1)">
+        <label>起始年份<input v-model="filters.yearStart" type="number" min="1800" max="2100" placeholder="例如 2020" :disabled="loading || semanticLoading"></label>
+        <label>结束年份<input v-model="filters.yearEnd" type="number" min="1800" max="2100" placeholder="例如 2026" :disabled="loading || semanticLoading"></label>
+        <label>期刊/会议<input v-model="filters.venue" type="search" placeholder="例如 NeurIPS" :disabled="loading || semanticLoading"></label>
         <label>阅读状态<select v-model="filters.readingStatus" :disabled="loading || semanticLoading"><option value="">全部状态</option><option value="unread">未读</option><option value="reading">阅读中</option><option value="read">已读</option></select></label>
+        <label>排序<select v-model="filters.sort" :disabled="loading || semanticLoading"><option value="updated_desc">最近更新</option><option value="year_desc">年份：新到旧</option><option value="year_asc">年份：旧到新</option><option value="title_asc">标题 A–Z</option></select></label>
         <button type="submit" :disabled="loading || semanticLoading">{{ loading ? '正在加载…' : '应用筛选' }}</button>
         <button class="secondary" type="button" :disabled="loading || semanticLoading" @click="resetFilters">清除筛选</button>
       </form>
@@ -252,6 +272,11 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
           </form>
         </section>
       </div>
+      <nav v-if="!semanticMode && totalPages > 1" class="library-pagination" aria-label="文献库分页">
+        <button class="secondary" type="button" :disabled="loading || currentPage <= 1" @click="changePage(currentPage - 1)">上一页</button>
+        <span>第 {{ currentPage }} / {{ totalPages }} 页</span>
+        <button type="button" :disabled="loading || currentPage >= totalPages" @click="changePage(currentPage + 1)">下一页</button>
+      </nav>
       <PaperDetailDrawer :paper="detailPaper" :loading="detailLoading" :error="detailError" @close="closePaperDetail" />
       <PaperComparisonDialog :result="comparisonResult" :loading="comparisonLoading" :error="comparisonError" @close="closePaperComparison" />
     </main>
@@ -265,7 +290,7 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
 .eyebrow { margin: 0 0 0.55rem; color: #2e6f95; font-size: 0.66rem; font-weight: 800; letter-spacing: 0.17em; } /* 使用品牌英文眉题。 */
 h1 { margin: 0; color: #17324d; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(2.2rem, 5vw, 4rem); font-weight: 500; } /* 突出个人知识资产入口。 */
 .library-hero > p:not(.eyebrow) { margin: 0.8rem 0 0; color: #687f91; } /* 说明文献库核心用途。 */
-.filter-panel { display: grid; grid-template-columns: 13rem auto auto; gap: 0.75rem; align-items: end; margin-top: 1.6rem; padding: 1rem; border: 1px solid #d8e4eb; border-radius: 1rem 1rem 0 0; background: rgba(255, 255, 255, 0.9); } /* 横向组织阅读状态和基础操作。 */
+.filter-panel { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto auto; gap: 0.75rem; align-items: end; margin-top: 1.6rem; padding: 1rem; border: 1px solid #d8e4eb; border-radius: 1rem 1rem 0 0; background: rgba(255, 255, 255, 0.9); } /* 组织年份、venue、状态、排序和基础操作。 */
 .keyword-panel { padding: 0.8rem 1rem; border: 1px solid #d8e4eb; border-top: 0; background: rgba(250, 252, 253, 0.94); } /* 在搜索和语义检索之间固定展示可滚动关键词筛选区。 */
 .keyword-panel-header { display: flex; justify-content: space-between; gap: 1rem; color: #536b7f; font-size: 0.7rem; } /* 说明关键词区域用途而不占用过多垂直空间。 */
 .keyword-panel-header strong { color: #2e6f95; font-size: 0.74rem; } /* 突出关键词区标题。 */
@@ -296,6 +321,7 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .empty-library strong { color: #334e68; } /* 突出空状态主说明。 */
 .empty-library p { margin: 0.45rem 0 0; font-size: 0.75rem; } /* 提供返回搜索页的操作提示。 */
 .library-list { display: grid; gap: 0.9rem; } /* 纵向排列收藏卡片。 */
+.library-pagination { display: flex; justify-content: center; align-items: center; gap: 0.75rem; padding: 0.5rem 0; color: #536b7f; font-size: 0.74rem; } /* 在完整论文卡片列表后提供简洁的服务端翻页入口。 */
 .library-card { display: grid; gap: 0.75rem; } /* 复用搜索结果论文卡片，并在其下方附加收藏属性编辑区。 */
 .library-card-status, .semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #456d84; background: #eaf3f8; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示收藏状态。 */
 .semantic-score { color: #5d4a8f; background: #eee9fb; } /* 使用独立色调突出本轮自然语言检索相似度。 */
@@ -305,6 +331,7 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .note-field, .item-actions { grid-column: 1 / -1; } /* 让备注与操作横跨编辑区。 */
 .item-actions { display: flex; justify-content: flex-end; gap: 0.5rem; } /* 将保存和删除操作靠右排列。 */
 .delete-button { border: 1px solid #e2c7c4; color: #9b4b45; background: #fff5f4; } /* 使用克制危险色标记删除操作。 */
+@media (max-width: 1040px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } } /* 中等宽度优先保持每项输入可读。 */
 @media (max-width: 820px) { .filter-panel { grid-template-columns: 1fr 1fr; } .semantic-panel { grid-template-columns: 1fr 1fr; } } /* 平板将筛选器收敛为两列布局。 */
 @media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .note-field, .item-actions { grid-column: auto; } .item-actions { align-items: stretch; flex-direction: column; } } /* 手机使用单列控件和全宽操作。 */
 </style>

@@ -24,13 +24,24 @@ export async function saveLibraryPaper(paper, options = {}, fetchImpl = globalTh
 }
 
 /** 查询可按关键词和阅读状态筛选的文献库列表。 */
-export async function listLibraryItems(filters = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收可选筛选器和测试替身。
+export async function listLibraryItems(filters = {}, options = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收筛选器、分页选项和测试替身。
+  if (typeof options === 'function') { // 兼容旧调用方将 fetch 实现作为第二个参数传入。
+    apiBaseUrl = fetchImpl // 保留旧签名的 API 地址参数。
+    fetchImpl = options // 将旧第二参数恢复为 fetch 实现。
+    options = {} // 旧调用方未传分页选项时使用后端默认值。
+  }
   const params = new URLSearchParams() // 使用浏览器标准编码查询参数。
   if (String(filters.keyword || '').trim()) params.set('keyword', String(filters.keyword).trim()) // 仅提交由关键词面板选中的有效关键词。
   if (filters.readingStatus) params.set('reading_status', filters.readingStatus) // 仅提交明确阅读状态。
+  if (filters.yearStart) params.set('year_start', String(filters.yearStart)) // 提交可选年份下限。
+  if (filters.yearEnd) params.set('year_end', String(filters.yearEnd)) // 提交可选年份上限。
+  if (String(filters.venue || '').trim()) params.set('venue', String(filters.venue).trim()) // 提交期刊或会议名称的包含筛选。
+  if (filters.sort) params.set('sort', filters.sort) // 提交用户选择的稳定展示排序。
+  if (options.page) params.set('page', String(options.page)) // 请求指定的服务端页码。
+  if (options.pageSize) params.set('page_size', String(options.pageSize)) // 请求指定的服务端每页数量。
   const suffix = params.toString() ? `?${params.toString()}` : '' // 空筛选时避免多余问号。
   const result = await requestLibrary(`/api/v1/library/items${suffix}`, { method: 'GET' }, fetchImpl, apiBaseUrl) // 获取筛选结果。
-  if (!result || !Array.isArray(result.items) || typeof result.total !== 'number' || !Array.isArray(result.keyword_facets)) throw new LibraryApiError('文献库服务返回了不完整的列表') // 防止页面渲染无效响应。
+  if (!result || !Array.isArray(result.items) || typeof result.total !== 'number' || !Number.isInteger(result.page) || !Number.isInteger(result.page_size) || !Number.isInteger(result.total_pages) || !Array.isArray(result.keyword_facets)) throw new LibraryApiError('文献库服务返回了不完整的列表') // 防止页面渲染无效响应。
   if (result.keyword_facets.some((facet) => !facet?.keyword || !Number.isInteger(facet.count) || facet.count < 1)) throw new LibraryApiError('文献库关键词筛选结果不完整') // 防止页面渲染无法选择的关键词面板。
   return result // 返回稳定列表与总数。
 }
@@ -44,6 +55,9 @@ export async function searchLibraryItemsSemantically(query, filters = {}, option
   const params = new URLSearchParams({ query: normalizedQuery, top_k: String(topK) }) // 使用浏览器标准编码文本和数值查询参数。
   if (String(filters.keyword || '').trim()) params.set('keyword', String(filters.keyword).trim()) // 保留当前关键词筛选范围。
   if (filters.readingStatus) params.set('reading_status', filters.readingStatus) // 保留当前阅读状态筛选范围。
+  if (filters.yearStart) params.set('year_start', String(filters.yearStart)) // 保留年份下限筛选范围。
+  if (filters.yearEnd) params.set('year_end', String(filters.yearEnd)) // 保留年份上限筛选范围。
+  if (String(filters.venue || '').trim()) params.set('venue', String(filters.venue).trim()) // 保留期刊或会议筛选范围。
   const result = await requestLibrary(`/api/v1/library/items/semantic-search?${params.toString()}`, { method: 'GET' }, fetchImpl, apiBaseUrl) // 调用版本化自然语言语义检索端点。
   if (!result || !Array.isArray(result.items) || typeof result.total !== 'number' || typeof result.degraded !== 'boolean') throw new LibraryApiError('文献库语义检索服务返回了不完整的结果') // 防止页面渲染不完整或不兼容响应。
   if (result.items.some((entry) => !entry?.item?.item_id || typeof entry.semantic_score !== 'number')) throw new LibraryApiError('文献库语义检索结果缺少论文或相似度信息') // 验证每个结果可安全转换为页面卡片。

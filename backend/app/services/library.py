@@ -3,7 +3,7 @@
 from __future__ import annotations  # 延迟解析类型，避免 list 方法名遮蔽内置泛型。
 
 from backend.app.core.logging import logger  # 记录收藏数量和操作类型等非敏感统计。
-from backend.app.models.library import LibraryItem, LibraryItemList, LibraryKeywordFacet, LibrarySaveResult, LibrarySemanticSearchResult, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 接收稳定请求并返回公共领域模型。
+from backend.app.models.library import LibraryItem, LibraryItemList, LibraryKeywordFacet, LibrarySaveResult, LibrarySemanticSearchResult, LibrarySort, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 接收稳定请求并返回公共领域模型。
 from backend.app.repositories.library import LibraryRepository  # 依赖可替换 SQLite 仓储。
 from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 使用请求级 SQLite 会话维护向量映射状态。
 from backend.app.services.library_vector_index import LibraryPaperIndexer  # 依赖可替换的收藏后语义索引编排器。
@@ -33,15 +33,20 @@ class LibraryService:
         logger.info("文献库保存完成：新建=%s，关键词数=%d", created, len(item.keywords))  # 不记录标题、备注或完整论文内容。
         return LibrarySaveResult(item=item, created=created)  # 返回稳定保存结果。
 
-    def list(self, keyword: str | None = None, reading_status: ReadingStatus | None = None) -> LibraryItemList:
+    def list(self, keyword: str | None = None, reading_status: ReadingStatus | None = None, year_start: int | None = None, year_end: int | None = None, venue: str | None = None, sort: LibrarySort = "updated_desc", page: int = 1, page_size: int = 10) -> LibraryItemList:
         """按可选关键词和阅读状态返回收藏列表及可选关键词集合。"""
-        facet_items = self._repository.list(reading_status=reading_status)  # 先读取同一阅读状态范围，保证选中关键词后筛选区仍完整可见。
-        items = self._repository.list(keyword=keyword, reading_status=reading_status)  # 再按当前关键词执行精确筛选。
+        facet_items = self._repository.list(reading_status=reading_status, year_start=year_start, year_end=year_end, venue=venue, sort=sort)  # 先读取同一结构化范围，保证选中关键词后筛选区仍完整可见。
+        items = self._repository.list(keyword=keyword, reading_status=reading_status, year_start=year_start, year_end=year_end, venue=venue, sort=sort)  # 再按当前关键词执行精确筛选。
         facets = self._build_keyword_facets(facet_items)  # 聚合用户关键词与来源关键词，供前端以按钮方式选择。
-        logger.info("文献库查询完成：结果数=%d，按关键词筛选=%s，按状态筛选=%s", len(items), bool(keyword), reading_status is not None)  # 只记录筛选是否启用。
-        return LibraryItemList(items=items, total=len(items), keyword_facets=facets)  # 返回当前筛选集合、数量和完整关键词面板。
+        total = len(items)  # 在分页前保留完整筛选集合的总数供前端显示。
+        total_pages = max(1, (total + page_size - 1) // page_size)  # 空集合也保留第一页，避免前端出现无效页码。
+        effective_page = min(page, total_pages)  # 删除或收窄筛选后自动回退到最后一个可用页面。
+        start = (effective_page - 1) * page_size  # 计算当前服务端页面的零基偏移量。
+        page_items = items[start:start + page_size]  # 仅返回当前页所需的论文卡片数据。
+        logger.info("文献库查询完成：结果数=%d，页码=%d/%d，按关键词筛选=%s，按状态筛选=%s", total, effective_page, total_pages, bool(keyword), reading_status is not None)  # 只记录筛选是否启用和非敏感分页统计。
+        return LibraryItemList(items=page_items, total=total, page=effective_page, page_size=page_size, total_pages=total_pages, keyword_facets=facets)  # 返回分页结果、完整数量和关键词面板。
 
-    async def search_semantic(self, query: str, top_k: int, keyword: str | None = None, reading_status: ReadingStatus | None = None) -> LibrarySemanticSearchResult:
+    async def search_semantic(self, query: str, top_k: int, keyword: str | None = None, reading_status: ReadingStatus | None = None, year_start: int | None = None, year_end: int | None = None, venue: str | None = None) -> LibrarySemanticSearchResult:
         """在结构化筛选后的收藏集合中执行自然语言语义检索或安全降级。
 
         参数：
@@ -56,7 +61,7 @@ class LibraryService:
         """
         if self._vector_metadata_repository is None or self._semantic_searcher is None:  # 直接服务测试或未完成组合根时没有检索依赖。
             raise RuntimeError("文献库语义检索尚未装配")  # 由 API 层映射为安全服务不可用错误。
-        items = self._repository.list(keyword=keyword, reading_status=reading_status)  # 先执行文献库结构化筛选，避免无关论文进入语义结果。
+        items = self._repository.list(keyword=keyword, reading_status=reading_status, year_start=year_start, year_end=year_end, venue=venue)  # 先执行文献库结构化筛选，避免无关论文进入语义结果。
         result = await self._semantic_searcher.search(query, items, self._vector_metadata_repository, top_k)  # 在筛选集合内执行 BGE、FAISS 和 SQLite 映射过滤。
         logger.info("文献库自然语言检索完成：候选数=%d，返回数=%d，降级=%s", len(items), result.total, result.degraded)  # 仅记录数量和降级状态，不记录查询或论文正文。
         return result  # 返回稳定 API 响应模型。

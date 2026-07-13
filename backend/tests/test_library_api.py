@@ -90,7 +90,7 @@ def test_library_starts_empty_and_deduplicates_doi_saves(library_client: TestCli
     duplicate_response = library_client.post("/api/v1/library/items", json={"paper": _paper_payload(paper_id="other-source-id", doi="https://doi.org/10.1000/LIBRARY-TEST", title="Updated Retrieval Metadata"), "tags": ["llm", "证据"]})  # 旧标签字段也应兼容同 DOI 重复收藏。
     list_response = library_client.get("/api/v1/library/items")  # 查询去重后的完整集合。
 
-    assert empty_response.status_code == 200 and empty_response.json() == {"items": [], "total": 0, "keyword_facets": []}  # 验证空结果边界稳定。
+    assert empty_response.status_code == 200 and empty_response.json() == {"items": [], "total": 0, "page": 1, "page_size": 10, "total_pages": 1, "keyword_facets": []}  # 验证空结果边界和分页元数据稳定。
     assert first_response.status_code == 200 and first_response.json()["created"] is True  # 验证首次保存实际创建记录。
     assert duplicate_response.status_code == 200 and duplicate_response.json()["created"] is False  # 验证规范化 DOI 命中已有记录。
     assert duplicate_response.json()["item"]["keywords"] == ["LLM", "检索", "证据"]  # 验证关键词大小写无关合并并保留首次形式。
@@ -139,6 +139,30 @@ def test_library_keyword_facets_and_source_keywords_are_selectable(library_clien
     assert {facet["keyword"] for facet in facets} == {"Retrieval", "LLM", "重点"}  # 验证两个关键词来源均被展示。
     assert source_keyword.status_code == 200 and source_keyword.json()["total"] == 1  # 验证来源关键词可筛选收藏。
     assert user_keyword.status_code == 200 and user_keyword.json()["total"] == 1  # 验证用户关键词可筛选收藏。
+
+
+def test_library_filters_by_year_and_venue_sorts_and_pages(library_client: TestClient) -> None:
+    """文献库列表应在服务端执行年份、venue、排序和分页，并保持关键词面板处于同一结构化范围。"""
+    first = _paper_payload(paper_id="paper-1", doi="10.1000/library-1", title="Zeta Methods")  # 构造较早会议论文。
+    first.update({"year": 2021, "venue": "NeurIPS"})  # 设置年份和会议元数据。
+    second = _paper_payload(paper_id="paper-2", doi="10.1000/library-2", title="Alpha Methods", keywords=["Vision"])  # 构造较新会议论文。
+    second.update({"year": 2024, "venue": "NeurIPS"})  # 设置年份和会议元数据。
+    third = _paper_payload(paper_id="paper-3", doi="10.1000/library-3", title="Medical Retrieval")  # 构造不匹配 venue 的论文。
+    third.update({"year": 2025, "venue": "Nature Medicine"})  # 设置不同来源期刊。
+    for paper in (first, second, third):  # 保存三条独立身份的收藏记录。
+        response = library_client.post("/api/v1/library/items", json={"paper": paper})  # 通过真实 API 写入隔离数据库。
+        assert response.status_code == 200  # 确保测试前置数据已成功保存。
+
+    paged = library_client.get("/api/v1/library/items", params={"venue": "neurips", "year_start": 2020, "year_end": 2024, "sort": "year_asc", "page": 2, "page_size": 1})  # 请求第二页并按年份正序。
+    title_sorted = library_client.get("/api/v1/library/items", params={"venue": "NeurIPS", "sort": "title_asc", "page_size": 10})  # 验证标题排序。
+    invalid_range = library_client.get("/api/v1/library/items", params={"year_start": 2025, "year_end": 2020})  # 提交逻辑矛盾范围。
+
+    assert paged.status_code == 200  # 验证组合筛选请求成功。
+    assert paged.json()["total"] == 2 and paged.json()["page"] == 2 and paged.json()["total_pages"] == 2  # 验证总数与服务端分页元数据。
+    assert [item["paper"]["title"] for item in paged.json()["items"]] == ["Alpha Methods"]  # 验证第二页包含较晚年份论文。
+    assert {facet["keyword"] for facet in paged.json()["keyword_facets"]} == {"Vision"}  # 验证关键词面板受年份和 venue 范围约束而非当前页限制。
+    assert [item["paper"]["title"] for item in title_sorted.json()["items"]] == ["Alpha Methods", "Zeta Methods"]  # 验证标题排序大小写无关且稳定。
+    assert invalid_range.status_code == 422 and invalid_range.json()["detail"] == "起始年份不能晚于结束年份"  # 验证年份范围错误在 API 边界被拒绝。
 
 
 def test_library_rejects_invalid_status_and_hides_database_error(library_client: TestClient) -> None:

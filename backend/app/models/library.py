@@ -1,7 +1,7 @@
 """定义个人文献库保存、更新、筛选与响应契约。"""
 
 from datetime import datetime  # 保存收藏与最近更新时间。
-from typing import Literal  # 限制阅读状态为稳定枚举。
+from typing import Literal  # 限制阅读状态和排序策略为稳定枚举。
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator  # 校验收藏操作和公共响应。
 
@@ -9,6 +9,7 @@ from backend.app.models.paper import PaperRecord  # 保存完整、可重建的�
 
 
 ReadingStatus = Literal["unread", "reading", "read"]  # 标记未读、阅读中和已读状态。
+LibrarySort = Literal["updated_desc", "year_desc", "year_asc", "title_asc"]  # 限制文献库列表可使用的稳定排序策略。
 
 
 class SaveLibraryItemRequest(BaseModel):
@@ -65,6 +66,9 @@ class LibraryItemList(BaseModel):
 
     items: list[LibraryItem] = Field(default_factory=list)  # 按最近更新时间倒序返回收藏。
     total: int = Field(default=0, ge=0)  # 返回当前筛选条件下的记录总数。
+    page: int = Field(default=1, ge=1)  # 返回已校正后的当前服务端页码。
+    page_size: int = Field(default=10, ge=1, le=50)  # 返回当前页包含的最多记录数。
+    total_pages: int = Field(default=1, ge=1)  # 返回基于筛选总数计算的稳定总页数。
     keyword_facets: list["LibraryKeywordFacet"] = Field(default_factory=list)  # 返回当前阅读状态范围内可选关键词及命中数量。
 
 

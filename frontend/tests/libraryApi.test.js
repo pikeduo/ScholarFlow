@@ -28,17 +28,18 @@ test('saveLibraryPaper 提交完整论文并解析去重结果', async () => { /
   assert.equal(result.created, true) // 验证保存结果原样返回。
 })
 
-test('listLibraryItems 正确编码关键词和阅读状态筛选', async () => { // 验证文献库筛选请求。
+test('listLibraryItems 正确编码结构化筛选、排序和分页', async () => { // 验证文献库筛选请求。
   let capturedUrl = '' // 保存筛选 URL。
   const fetchStub = async (url) => { // 提供固定列表响应。
     capturedUrl = url // 记录带查询参数的地址。
-    return { ok: true, status: 200, json: async () => ({ items: [item], total: 1, keyword_facets: [] }) } // 返回一条收藏。
+    return { ok: true, status: 200, json: async () => ({ items: [item], total: 1, page: 2, page_size: 5, total_pages: 3, keyword_facets: [] }) } // 返回一条收藏和服务端分页元数据。
   }
 
-  const result = await listLibraryItems({ keyword: '时间 序列', readingStatus: 'unread' }, fetchStub, 'http://test.local') // 提交包含空格的关键词。
+  const result = await listLibraryItems({ keyword: '时间 序列', readingStatus: 'unread', yearStart: 2020, yearEnd: 2025, venue: 'NeurIPS', sort: 'year_desc' }, { page: 2, pageSize: 5 }, fetchStub, 'http://test.local') // 提交关键词、结构化筛选和分页。
 
-  assert.equal(capturedUrl, 'http://test.local/api/v1/library/items?keyword=%E6%97%B6%E9%97%B4+%E5%BA%8F%E5%88%97&reading_status=unread') // 验证 URLSearchParams 编码和字段名称。
+  assert.equal(capturedUrl, 'http://test.local/api/v1/library/items?keyword=%E6%97%B6%E9%97%B4+%E5%BA%8F%E5%88%97&reading_status=unread&year_start=2020&year_end=2025&venue=NeurIPS&sort=year_desc&page=2&page_size=5') // 验证 URLSearchParams 编码和字段名称。
   assert.equal(result.total, 1) // 验证列表结果返回。
+  assert.equal(result.page, 2) // 验证分页元数据可供页面读取。
 })
 
 test('searchLibraryItemsSemantically 提交自然语言、关键词筛选并解析相似度结果', async () => { // 验证文献库语义检索契约。
@@ -48,9 +49,9 @@ test('searchLibraryItemsSemantically 提交自然语言、关键词筛选并解�
     return { ok: true, status: 200, json: async () => ({ items: [{ item, semantic_score: 0.86 }], total: 1, degraded: false, degradation_reason: null }) } // 返回后端稳定语义响应。
   }
 
-  const result = await searchLibraryItemsSemantically('语义检索', { keyword: '重点', readingStatus: 'unread' }, { topK: 10 }, fetchStub, 'http://test.local') // 调用自然语言检索客户端。
+  const result = await searchLibraryItemsSemantically('语义检索', { keyword: '重点', readingStatus: 'unread', yearStart: 2020, yearEnd: 2025, venue: 'ACL' }, { topK: 10 }, fetchStub, 'http://test.local') // 调用自然语言检索客户端。
 
-  assert.equal(capturedUrl, 'http://test.local/api/v1/library/items/semantic-search?query=%E8%AF%AD%E4%B9%89%E6%A3%80%E7%B4%A2&top_k=10&keyword=%E9%87%8D%E7%82%B9&reading_status=unread') // 验证端点、查询、数量和筛选编码。
+  assert.equal(capturedUrl, 'http://test.local/api/v1/library/items/semantic-search?query=%E8%AF%AD%E4%B9%89%E6%A3%80%E7%B4%A2&top_k=10&keyword=%E9%87%8D%E7%82%B9&reading_status=unread&year_start=2020&year_end=2025&venue=ACL') // 验证端点、查询、数量和筛选编码。
   assert.equal(result.items[0].semantic_score, 0.86) // 验证相似度结果完整返回。
 })
 
