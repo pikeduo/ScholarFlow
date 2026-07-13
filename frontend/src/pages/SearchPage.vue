@@ -463,7 +463,7 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
   savingPaperIds.value.add(paper.paper_id) // 立即标记请求中状态。
   libraryMessage.value = { text: '', tone: 'success' } // 清除上一条收藏反馈。
   try { // 将 API 客户端公共错误转换为页面提示。
-    const saveResult = await saveLibraryPaper(paper) // 默认以未读、无用户关键词状态收藏论文。
+    const saveResult = await saveLibraryPaper(paper, { keywords: queryKeywords.value }) // 将本次 QueryIntent 解析关键词一并保存，供文献库卡片和筛选面板复用。
     savedPaperIds.value.add(paper.paper_id) // 成功后固定当前卡片已收藏状态。
     libraryMessage.value = { text: saveResult.created ? '论文已收藏到“我的文献库”' : '该论文已在文献库中，元数据已更新', tone: 'success' } // 区分新建与去重命中。
   } catch (error) { // 捕获断网、后端错误和响应契约异常。

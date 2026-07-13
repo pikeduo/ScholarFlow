@@ -107,8 +107,6 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
         <span v-for="source in sources" :key="source" class="source-badge">{{ source }}</span>
         <span :class="['status-badge', statusMeta.className]">{{ statusMeta.label }}</span>
         <span v-if="paper.paper_type" class="type-badge">{{ paper.paper_type }}</span>
-        <span v-for="keyword in displayQueryKeywords" :key="`query-${keyword}`" class="query-keyword-badge">检索：{{ keyword }}</span>
-        <span v-for="keyword in displayPaperKeywords" :key="`paper-${keyword}`" class="keyword-badge">{{ keyword }}</span>
       </div>
       <h3>
         <a v-if="doiUrl" :href="doiUrl" target="_blank" rel="noopener noreferrer">{{ paper.title }}</a>
@@ -125,6 +123,13 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
         <span>{{ paper.venue || 'Venue 暂缺' }}</span>
         <span>被引 {{ paper.citation_count || 0 }}</span>
       </p>
+      <section v-if="displayQueryKeywords.length || displayPaperKeywords.length" class="keyword-section" aria-label="论文关键词">
+        <strong>关键词</strong>
+        <div>
+          <span v-for="keyword in displayQueryKeywords" :key="`query-${keyword}`" class="query-keyword-badge">检索：{{ keyword }}</span>
+          <span v-for="keyword in displayPaperKeywords" :key="`paper-${keyword}`" class="keyword-badge">{{ keyword }}</span>
+        </div>
+      </section>
       <section v-if="paper.recommendation_reason" class="recommendation" aria-label="推荐理由">
         <span class="recommendation-label">为什么推荐</span>
         <p>{{ paper.recommendation_reason }}</p>
@@ -255,6 +260,23 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
 .query-keyword-badge { /* 展示 Query Agent 解析出的本次检索关键词。 */
   color: #356d55; /* 使用绿色与论文自身关键词区分。 */
   background: #e9f7ee; /* 以浅绿背景提示该词来自本次检索而非来源元数据。 */
+}
+
+.keyword-section { /* 将关键词放在出版信息下方，避免与来源和核验状态混杂。 */
+  display: grid; /* 以紧凑双层结构组织标题和关键词胶囊。 */
+  gap: 0.35rem; /* 保持出版信息与关键词之间的清晰层次。 */
+  margin-top: 0.75rem; /* 与书目信息分隔但仍属于同一论文元数据区域。 */
+}
+
+.keyword-section > strong { /* 标记关键词区域语义，避免用户误认来源标签。 */
+  color: #6b7f92; /* 使用辅助色弱化区域标题。 */
+  font-size: 0.66rem; /* 保持比论文标题更低的视觉权重。 */
+}
+
+.keyword-section > div { /* 容纳可换行的检索关键词和论文自身关键词。 */
+  display: flex; /* 横向排列关键词胶囊。 */
+  flex-wrap: wrap; /* 关键词较多时保持卡片宽度稳定。 */
+  gap: 0.35rem; /* 分隔相邻关键词。 */
 }
 
 .status-badge.is-satisfied { /* 标记证据支持的约束满足。 */
