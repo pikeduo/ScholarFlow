@@ -5,7 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, getCitationGraph, getPaperDetail, getTechnicalRoutes, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱与路线。
+import { SearchApiError, comparePapers, getCitationGraph, getPaperDetail, getSearchRunUsage, getTechnicalRoutes, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、用量与路线。
 import { filterSearchPapers, paginateSearchPapers } from '../utils/searchResults.js' // 对同次最终结果执行本地筛选与分页。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
@@ -47,6 +47,9 @@ const citationGraphError = ref('') // 保存引用图读取的安全公共错误
 const technicalRoutes = ref(null) // 保存当前结果的关键词事实路线。
 const technicalRoutesLoading = ref(false) // 标记路线读取是否进行中。
 const technicalRoutesError = ref('') // 保存路线读取的安全公共错误。
+const searchUsage = ref(null) // 保存当前搜索运行从 SQLite 读取的实际用量快照。
+const searchUsageLoading = ref(false) // 标记用量快照是否正在读取。
+const searchUsageError = ref('') // 保存不泄露内部细节的用量读取错误。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
@@ -98,6 +101,9 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   citationGraphError.value = '' // 清除旧运行图谱错误。
   technicalRoutes.value = null // 清除旧运行路线集合。
   technicalRoutesError.value = '' // 清除旧运行路线错误。
+  searchUsage.value = null // 防止旧运行统计混入新搜索结果。
+  searchUsageLoading.value = false // 新运行开始前取消旧请求遗留的加载提示。
+  searchUsageError.value = '' // 清除旧运行用量读取错误。
 })
 
 function useExample(example) { // 将示例查询填入输入框但不自动发起外部调用。
@@ -137,6 +143,7 @@ function applyRecoveredRun(recovered) { // 将只读恢复响应统一映射为�
   if (recoveredResult) { // 仅当结果接口真实返回时才替换论文集合。
     result.value = recoveredResult // 使用同次持久化结果，绝不重新检索。
     conditionChips.value = buildConditionChipsFromIntent(recoveredResult.query_intent) // 使用保存意图恢复结果条件标签。
+    void loadSearchUsage(state.run_id) // 异步读取同次快照，不阻塞已恢复结果的首屏渲染。
     recoveryMessage.value = '已从保存的搜索运行恢复结果' // 说明当前页面没有产生新的检索调用。
     return true // 通知调用方停止轮询。
   }
@@ -212,6 +219,21 @@ function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在
   resultPage.value = Math.min(Math.max(nextPage, 1), paperPagination.value.totalPages) // 防止筛选变化或按钮连点导致越界。
 }
 
+async function loadSearchUsage(runId) { // 读取当前结果对应的持久化用量，不发起新的检索或来源调用。
+  const normalizedRunId = String(runId || '').trim() // 规范化结果或恢复状态提供的运行标识。
+  if (!normalizedRunId) return // 尚未收到首个 SSE 运行标识时无需读取资源。
+  searchUsageLoading.value = true // 让页面明确区分正在读取与零用量。
+  searchUsageError.value = '' // 清除同一运行的旧读取错误。
+  try { // 仅消费后端返回的同次 SQLite 快照。
+    const usage = await getSearchRunUsage(normalizedRunId) // 通过可替换 API 客户端读取实际统计。
+    if (runState.value?.run_id === normalizedRunId) searchUsage.value = usage // 忽略新搜索开始后迟到的旧运行响应。
+  } catch (error) { // 将已净化的客户端错误映射为页面提示。
+    if (runState.value?.run_id === normalizedRunId) searchUsageError.value = error instanceof SearchApiError ? error.message : '读取搜索用量时出现未知错误，请稍后重试' // 只展示安全公共消息。
+  } finally { // 无论成功或失败均释放当前运行的加载状态。
+    if (runState.value?.run_id === normalizedRunId) searchUsageLoading.value = false // 防止旧请求覆盖新运行的加载提示。
+  }
+}
+
 async function submitSearch() { // 执行完整多源检索并更新页面状态。
   if (loading.value) return // 防止重复点击产生并发外部请求。
   stopRecoveryPolling() // 防止旧运行轮询在新搜索期间覆盖页面结果。
@@ -222,6 +244,7 @@ async function submitSearch() { // 执行完整多源检索并更新页面状态
     const formSnapshot = { ...form } // 固定本次请求及结果说明使用的表单快照。
     const nextResult = await streamSearchPapers(formSnapshot, handleProgressEvent) // 在同次自然语言多轮检索中实时消费进度并最终读取结果。
     result.value = nextResult // 仅在成功解析响应后替换已有结果。
+    void loadSearchUsage(nextResult.run_state?.run_id) // 读取已持久化的实际统计，不等待而延迟展示结果。
     submittedQuery.value = formSnapshot.queryText.trim() // 保存结果对应查询供标题回显。
     conditionChips.value = buildConditionChips(formSnapshot) // 保存与当前结果严格对应的条件标签。
     recoveryMessage.value = '' // 新搜索成功后清除旧运行恢复提示。
@@ -241,6 +264,7 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
   try { // 捕获统一 API 客户端错误。
     const nextResult = await streamSearchWithIntent(editedIntent, handleProgressEvent) // 跳过 Query Agent 并实时消费同次多轮检索进度。
     result.value = nextResult // 成功后替换论文和检索统计。
+    void loadSearchUsage(nextResult.run_state?.run_id) // 读取编辑重搜对应的同次实际用量快照。
     submittedQuery.value = editedIntent.original_query // 保持结果对应的原始研究问题。
     conditionChips.value = buildConditionChips({ // 使用编辑后的关键约束更新结果说明。
       searchMode: editedIntent.search_mode, // 映射搜索模式。
@@ -491,6 +515,18 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <ul v-if="coverageReport?.gaps?.length" class="coverage-gap-list" aria-label="尚未覆盖的检索缺口">
           <li v-for="gap in coverageReport.gaps" :key="`${gap.gap_type}-${gap.constraint}`">{{ `${gap.constraint}：当前 ${gap.current_match_count} 篇，建议补充检索“${gap.recommended_query_focus}”` }}</li>
         </ul>
+        <div class="search-usage" aria-label="本次搜索实际用量">
+          <strong>本次实际用量</strong>
+          <span v-if="searchUsageLoading">正在读取已保存统计…</span>
+          <span v-else-if="searchUsageError" role="alert">{{ searchUsageError }}</span>
+          <dl v-else-if="searchUsage">
+            <div><dt>API</dt><dd>{{ searchUsage.api_call_count }} 次</dd></div>
+            <div><dt>Token</dt><dd>{{ searchUsage.token_usage }}</dd></div>
+            <div><dt>费用</dt><dd>{{ `$${searchUsage.cost_usd.toFixed(4)}` }}</dd></div>
+            <div><dt>耗时</dt><dd>{{ `${searchUsage.latency_ms} ms` }}</dd></div>
+            <div><dt>缓存</dt><dd>{{ `${searchUsage.cache_hits} 次命中` }}</dd></div>
+          </dl>
+        </div>
       </section>
       <QueryIntentPanel v-if="result.query_intent" :intent="result.query_intent" :planning-meta="planningMeta" :disabled="loading" @resubmit="resubmitIntent" />
       <header class="results-header">
@@ -1091,6 +1127,52 @@ legend { /* 标记检索模式字段组。 */
   background: #fff8e9; /* 使用浅琥珀背景。 */
   font-size: 0.68rem; /* 控制缺口提示密度。 */
   line-height: 1.5; /* 提升较长建议文本可读性。 */
+}
+
+.search-usage { /* 展示同次 SQLite 快照中的实际调用与预算统计。 */
+  display: grid; /* 纵向组织标题、状态和统计网格。 */
+  gap: 0.45rem; /* 分隔用量区内部层级。 */
+  padding-top: 0.2rem; /* 与覆盖缺口保持紧凑但清晰的距离。 */
+}
+
+.search-usage > strong { /* 标记统计来源为实际持久化快照。 */
+  color: #31566e; /* 使用与过程区一致的中层级蓝色。 */
+  font-size: 0.72rem; /* 保持为辅助信息而非结果主标题。 */
+}
+
+.search-usage > span { /* 展示读取中或安全错误提示。 */
+  color: #718496; /* 使用克制的辅助文字色。 */
+  font-size: 0.68rem; /* 控制状态信息视觉权重。 */
+}
+
+.search-usage > span[role="alert"] { /* 将用量读取失败与普通等待状态区分。 */
+  color: #9b4b45; /* 使用安全且可辨识的错误色。 */
+}
+
+.search-usage dl { /* 将关键用量压缩为适合搜索页的响应式网格。 */
+  display: grid; /* 使用网格稳定排列统计项。 */
+  grid-template-columns: repeat(auto-fit, minmax(6.3rem, 1fr)); /* 窄屏时自动换行并保留标签和值。 */
+  gap: 0.4rem; /* 分隔相邻统计项。 */
+  margin: 0; /* 清除定义列表默认外边距。 */
+}
+
+.search-usage dl div { /* 为单项用量提供易扫读的轻量背景。 */
+  padding: 0.42rem 0.52rem; /* 提供紧凑留白。 */
+  border-radius: 0.5rem; /* 与现有统计胶囊协调。 */
+  background: #eaf3f6; /* 使用浅蓝背景提示观测数据。 */
+}
+
+.search-usage dt { /* 标记 API、Token 等用量维度。 */
+  color: #698093; /* 降低字段标签的视觉优先级。 */
+  font-size: 0.6rem; /* 保持统计块紧凑。 */
+  font-weight: 800; /* 确保小字号字段仍可辨识。 */
+}
+
+.search-usage dd { /* 展示从后端快照返回的具体统计值。 */
+  margin: 0.15rem 0 0; /* 与字段标签建立紧凑间距。 */
+  color: #31566e; /* 使用较深文字突出实际数值。 */
+  font-size: 0.7rem; /* 保持与页面辅助统计一致。 */
+  font-weight: 800; /* 让数值便于扫读。 */
 }
 
 .results-header h2,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, comparePapers, createQueryIntent, getCitationGraph, getPaperDetail, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, getCitationGraph, getPaperDetail, getSearchRunUsage, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱、用量与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -225,6 +225,22 @@ test('getCitationGraph 仅以重复查询参数提交已保存论文标识', asy
   await getCitationGraph(['paper-2', 'paper-1'], fetchStub, 'http://test.local') // 读取两个已保存论文节点。
 
   assert.equal(capturedUrl, 'http://test.local/api/v1/graph/citations?max_nodes=30&paper_ids=paper-2&paper_ids=paper-1') // 验证稳定节点上限和重复标识参数顺序。
+})
+
+test('getSearchRunUsage 读取同次运行快照并拒绝缺失运行标识', async () => { // 验证用量入口不触发新的搜索或重新计算费用。
+  let capturedUrl = '' // 保存用量读取路径。
+  const expectedUsage = { run_id: 'run-1', api_call_count: 4, token_usage: 360, cost_usd: 0.012, latency_ms: 1480, cache_hits: 2, current_round: 2, max_rounds: 3, selected_sources: ['openalex'], stop_reason: '已满足目标数量' } // 构造来自 SQLite 的最小完整观测快照。
+  const fetchStub = async (url, options) => { // 提供不访问网络的只读用量替身。
+    capturedUrl = url // 记录请求地址供断言。
+    assert.equal(options.method, 'GET') // 验证不会提交或变更运行状态。
+    return { ok: true, status: 200, json: async () => expectedUsage } // 返回固定成功响应。
+  }
+
+  const usage = await getSearchRunUsage('run-1', fetchStub, 'http://test.local') // 读取指定运行的持久化统计。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/usage/run-1') // 验证路径只编码并传递稳定运行标识。
+  assert.equal(usage, expectedUsage) // 验证完整快照原样交给页面展示。
+  await assert.rejects(() => getSearchRunUsage(''), /缺少需要读取用量/) // 验证空标识在网络请求前被拒绝。
 })
 
 test('filterSearchPapers 按来源、年份与核验状态筛选且保持原始排序', () => { // 验证本地筛选不改变后端相关性排序或发起新请求。
