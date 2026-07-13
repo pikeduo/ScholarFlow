@@ -42,12 +42,12 @@ const comparisonPaperIds = ref([]) // 保存当前搜索结果中用户选择的
 const comparisonResult = ref(null) // 保存后端返回的事实型固定列对比结果。
 const comparisonLoading = ref(false) // 标记比较接口是否正在读取已保存论文。
 const comparisonError = ref('') // 保存比较接口的安全公共错误。
-const citationGraph = ref(null) // 保存当前搜索结果的受限引用图数据。
-const citationGraphLoading = ref(false) // 标记引用图读取是否进行中。
-const citationGraphError = ref('') // 保存引用图读取的安全公共错误。
-const technicalRoutes = ref(null) // 保存当前结果的关键词事实路线。
-const technicalRoutesLoading = ref(false) // 标记路线读取是否进行中。
-const technicalRoutesError = ref('') // 保存路线读取的安全公共错误。
+const citationGraph = ref(null) // 保留受限引用图状态，当前搜索页不展示该实验性功能。
+const citationGraphLoading = ref(false) // 保留引用图请求状态，避免后续恢复入口时修改数据边界。
+const citationGraphError = ref('') // 保留引用图公共错误状态，不在当前页面展示。
+const technicalRoutes = ref(null) // 保留技术路线状态，当前搜索页不展示该实验性功能。
+const technicalRoutesLoading = ref(false) // 保留技术路线请求状态，避免后续恢复入口时修改数据边界。
+const technicalRoutesError = ref('') // 保留技术路线公共错误状态，不在当前页面展示。
 const searchUsage = ref(null) // 保存当前搜索运行从 SQLite 读取的实际用量快照。
 const searchUsageLoading = ref(false) // 标记用量快照是否正在读取。
 const searchUsageError = ref('') // 保存不泄露内部细节的用量读取错误。
@@ -62,6 +62,7 @@ const resultPageError = ref('') // 保存服务端筛选、排序或分页读取
 const searchHistory = ref([]) // 保存不含查询正文和论文内容的本地运行索引。
 const searchHistoryLoading = ref(false) // 标记运行历史是否正在读取。
 const searchHistoryError = ref('') // 保存历史读取或清理的安全错误。
+const searchHistoryExpanded = ref(false) // 控制历史面板展开状态，恢复成功后自动收起。
 const deletingRunId = ref('') // 标记当前经用户确认正在清理的终态运行。
 const RESULT_PAGE_SIZE = 5 // 限制单页论文卡片数量，避免结果较多时页面过长。
 const RECOVERY_POLL_INTERVAL_MS = 3000 // 使用短周期只读轮询作为刷新后无法重连 POST SSE 的回退。
@@ -86,12 +87,12 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
 const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
 const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
-const citationGraphLayout = computed(() => { // 为受限节点集合生成确定性圆形布局，避免引入额外可视化依赖。
+const citationGraphLayout = computed(() => { // 为保留的受限图能力计算确定性圆形布局。
   const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
   const radius = Math.max(95, Math.min(150, nodes.length * 14)) // 按节点数量限定圆形半径以减少重叠。
   return nodes.map((node, index) => ({ ...node, x: 210 + radius * Math.cos((Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2), y: 190 + radius * Math.sin((Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2) })) // 返回 SVG 视图坐标。
 })
-const citationGraphNodeMap = computed(() => new Map(citationGraphLayout.value.map((node) => [node.paper_id, node]))) // 供边线快速查找两端节点坐标。
+const citationGraphNodeMap = computed(() => new Map(citationGraphLayout.value.map((node) => [node.paper_id, node]))) // 供保留图谱能力快速查找两端节点坐标。
 
 watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd, resultSort.value], () => { // 任意筛选或排序变化时回到第一页避免越界空页。
   resultPage.value = 1 // 保持筛选后的首屏结果可见。
@@ -275,6 +276,7 @@ async function restoreSearchHistoryRun(runId) { // 从用户选择的历史索�
     const recovered = await restoreSearchRun(runId) // 读取轻量状态，终态再读取同次完整结果。
     const hasResult = applyRecoveredRun(recovered) // 复用统一恢复映射并保持结果来源一致。
     syncRunIdToUrl(recovered.state.run_id) // 让刷新后的页面继续关联用户选择的历史运行。
+    if (hasResult) searchHistoryExpanded.value = false // 仅在结果确实恢复后收起历史面板，失败时保留现场。
     if (shouldPollRecoveredRun(recovered.state, hasResult)) startRecoveryPolling(recovered.state.run_id) // 尚未形成最终结果时继续有限只读轮询。
   } catch (error) { // 将历史条目过期或读取失败转换为安全页面错误。
     errorMessage.value = error instanceof SearchApiError ? error.message : '恢复历史搜索运行时出现未知错误，请稍后重试' // 不展示底层存储细节。
@@ -593,7 +595,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
       <p v-if="recoveryMessage" class="recovery-message" role="status">{{ recoveryMessage }}</p>
       </form>
-      <details class="search-history" :open="searchHistoryLoading || Boolean(searchHistoryError)">
+      <details class="search-history" :open="searchHistoryExpanded || searchHistoryLoading || Boolean(searchHistoryError)" @toggle="searchHistoryExpanded = $event.currentTarget.open">
         <summary>已保存的搜索运行 <span>{{ searchHistory.length }}</span></summary>
         <p>仅显示本地运行状态与时间，不展示查询正文或论文内容。</p>
         <p v-if="searchHistoryLoading" class="history-message">正在读取运行历史…</p>
@@ -679,13 +681,6 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <div><strong>论文比较</strong><span>{{ `已选择 ${comparisonPaperIds.length} / 5 篇` }}</span></div>
         <div><button type="button" :disabled="comparisonPaperIds.length < 2 || comparisonLoading" @click="openPaperComparison">{{ comparisonLoading ? '正在整理比较…' : `比较 ${comparisonPaperIds.length} 篇` }}</button><button v-if="comparisonPaperIds.length" type="button" class="comparison-clear" @click="clearPaperComparison">清空</button></div>
       </section>
-      <section class="citation-toolbar" aria-label="引用图入口">
-        <div><strong>引用图</strong><span>仅显示当前结果中可验证的引用与版本族关系，最多 30 个节点。</span></div>
-        <button type="button" :disabled="citationGraphLoading || !result.papers.length" @click="openCitationGraph">{{ citationGraphLoading ? '正在读取图谱…' : '查看引用图' }}</button>
-      </section>
-      <section class="citation-toolbar" aria-label="技术路线入口"><div><strong>技术路线</strong><span>按已保存关键词聚合，不包含模型推断。</span></div><button type="button" :disabled="technicalRoutesLoading || !result.papers.length" @click="openTechnicalRoutes">{{ technicalRoutesLoading ? '正在整理路线…' : '查看技术路线' }}</button></section>
-      <p v-if="technicalRoutesError && !technicalRoutes" class="comparison-message" role="alert">{{ technicalRoutesError }}</p>
-      <p v-if="citationGraphError && !citationGraph" class="comparison-message" role="alert">{{ citationGraphError }}</p>
       <p v-if="comparisonError && !comparisonResult" class="comparison-message" role="alert">{{ comparisonError }}</p>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="paperPagination.items.length" class="paper-list">
@@ -739,25 +734,6 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           </div>
         </aside>
       </div>
-      <div v-if="citationGraph || citationGraphLoading" class="paper-detail-backdrop" @click.self="closeCitationGraph">
-        <aside class="citation-graph-panel" role="dialog" aria-modal="true" aria-labelledby="citation-graph-title">
-          <button class="detail-close" type="button" aria-label="关闭引用图" @click="closeCitationGraph">×</button>
-          <p class="eyebrow">SAVED CITATION GRAPH</p>
-          <h2 id="citation-graph-title">当前结果引用图</h2>
-          <p v-if="citationGraphLoading" class="detail-status">正在读取已保存论文的引用与版本族事实…</p>
-          <template v-else-if="citationGraph">
-            <p class="detail-meta">{{ citationGraph.truncated ? `已按上限展示 ${citationGraph.nodes.length} 个节点；图外引用不会被扩展。` : `共 ${citationGraph.nodes.length} 个节点、${citationGraph.edges.length} 条可验证关系。` }}</p>
-            <svg class="citation-graph-canvas" viewBox="0 0 420 380" role="img" aria-label="当前搜索结果的引用关系图">
-              <defs><marker id="citation-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6a8a9e" /></marker></defs>
-              <line v-for="edge in citationGraph.edges" :key="`${edge.source_paper_id}-${edge.target_paper_id}-${edge.edge_type}`" :x1="citationGraphNodeMap.get(edge.source_paper_id)?.x" :y1="citationGraphNodeMap.get(edge.source_paper_id)?.y" :x2="citationGraphNodeMap.get(edge.target_paper_id)?.x" :y2="citationGraphNodeMap.get(edge.target_paper_id)?.y" :class="['citation-edge', `is-${edge.edge_type}`]" :marker-end="edge.edge_type === 'cites' ? 'url(#citation-arrow)' : undefined" />
-              <g v-for="node in citationGraphLayout" :key="node.paper_id" class="citation-node" @click="openCitationGraphPaper(node)"><circle :cx="node.x" :cy="node.y" r="23" /><text :x="node.x" :y="node.y - 2">{{ String(node.year || '—').slice(-2) }}</text><text :x="node.x" :y="node.y + 10">{{ node.source.slice(0, 5) }}</text></g>
-            </svg>
-            <ul class="citation-graph-legend"><li><span class="legend-line"></span>引用</li><li><span class="legend-line is-same-work"></span>同一版本族</li><li>点击节点查看详情</li></ul>
-            <p v-if="!citationGraph.edges.length" class="detail-status">当前已保存结果之间没有可验证的内部关系边。</p>
-          </template>
-        </aside>
-      </div>
-      <div v-if="technicalRoutes || technicalRoutesLoading" class="paper-detail-backdrop" @click.self="closeTechnicalRoutes"><aside class="paper-comparison-panel" role="dialog" aria-modal="true" aria-labelledby="technical-routes-title"><button class="detail-close" type="button" aria-label="关闭技术路线" @click="closeTechnicalRoutes">×</button><p class="eyebrow">SAVED KEYWORD ROUTES</p><h2 id="technical-routes-title">技术路线</h2><p v-if="technicalRoutesLoading" class="detail-status">正在按已保存关键词聚合论文…</p><ul v-else-if="technicalRoutes" class="citation-graph-legend"><li v-for="route in technicalRoutes.routes" :key="route.route_id"><strong>{{ route.name }}</strong>：{{ route.summary }}<br><small>{{ `论文 ${route.paper_ids.join('、')}；证据：${route.evidence.join('、')}` }}</small></li><li v-if="!technicalRoutes.routes.length">当前结果没有可用于聚合路线的已保存关键词。</li></ul></aside></div>
       <section v-if="discoveries.length" class="discovery-section" aria-labelledby="discovery-title">
         <div>
           <p class="eyebrow">SUPPLEMENTAL WEB EVIDENCE</p>
