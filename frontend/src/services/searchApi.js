@@ -55,6 +55,8 @@ export function createQueryIntent(form) { // 接收页面维护的响应式表�
     year_range: startYear && endYear ? [startYear, endYear] : null, // 仅在完整填写时提交闭区间。
     target_paper_count: 20, // 与当前 LLM 最终结果上限保持一致。
     search_mode: form.searchMode === 'deep' ? 'deep' : 'standard', // 限制为后端支持的两种模式。
+    enable_semantic_ranking: Boolean(form.enableSemanticRanking), // 保存深度模式下用户对 BGE-M3 粗排的显式选择。
+    enable_cross_encoder_ranking: Boolean(form.enableCrossEncoderRanking), // 保存深度模式下用户对 Cross Encoder 重排的显式选择。
     domains: splitTerms(form.domains), // 提供动态 arXiv 与 DBLP 路由依据。
     requires_web_evidence: Boolean(form.requiresWebEvidence), // 仅在用户明确选择时启用网页补充发现。
   }
@@ -66,6 +68,8 @@ export function createNaturalSearchRequest(form) { // 复用已有表单校验�
   return { // 只提交用户真正输入的内容，由后端 Query Agent 提取语义字段。
     query: intent.original_query, // 保存原始自然语言问题。
     search_mode: intent.search_mode, // 保存搜索模式。
+    enable_semantic_ranking: intent.enable_semantic_ranking, // 将 BGE-M3 选择交给 Query Agent 后续透传。
+    enable_cross_encoder_ranking: intent.enable_cross_encoder_ranking, // 将 Cross Encoder 选择交给 Query Agent 后续透传。
     year_range: intent.year_range, // 保存显式年份覆盖。
     must_include: intent.must_include, // 保存显式必须条件。
     should_include: intent.should_include, // 保存显式偏好条件。

@@ -17,6 +17,8 @@ const examples = [ // 提供可直接填入搜索框的复杂查询示例。
 const form = reactive({ // 保存搜索页当前可编辑查询条件。
   queryText: '', // 保存自然语言研究问题。
   searchMode: 'standard', // 默认使用成本更低的标准模式。
+  enableSemanticRanking: true, // 深度模式默认保留既有 BGE-M3 粗排行为。
+  enableCrossEncoderRanking: true, // 深度模式默认保留既有 Cross Encoder 重排行为。
   startYear: '', // 保存可选起始年份。
   endYear: '', // 保存可选结束年份。
   mustInclude: '', // 保存逗号分隔的必须词。
@@ -560,7 +562,12 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
               <span><strong>深度</strong><small>最多 3 轮 · BGE-M3 + Cross Encoder</small></span>
             </label>
           </fieldset>
-          <p v-if="form.searchMode === 'deep'" class="deep-mode-warning" role="status">深度模式会加载 BGE-M3 与 Cross Encoder，搜索耗时明显更长。</p>
+          <p v-if="form.searchMode === 'deep'" class="deep-mode-warning" role="status">深度模式可选择加载 BGE-M3 与 Cross Encoder；开启任一项都会显著增加搜索耗时。</p>
+          <div v-if="form.searchMode === 'deep'" class="ranking-options" role="group" aria-label="本地排序选项">
+            <label><input v-model="form.enableSemanticRanking" type="checkbox" :disabled="loading">启用 BGE-M3 语义粗排</label>
+            <label><input v-model="form.enableCrossEncoderRanking" type="checkbox" :disabled="loading">启用 Cross Encoder 重排</label>
+            <p>两项均会加载本地模型；开启任一项都可能使搜索时长变得极长。</p>
+          </div>
           <button class="advanced-toggle" type="button" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced">
             {{ showAdvanced ? '收起约束条件' : '添加约束条件' }}
             <span aria-hidden="true">{{ showAdvanced ? '−' : '+' }}</span>
@@ -1092,6 +1099,30 @@ legend { /* 标记检索模式字段组。 */
   color: #7a5b2c; /* 使用克制的琥珀色提示而非错误色。 */
   font-size: 0.66rem; /* 保持为辅助说明，不压过检索控件。 */
   line-height: 1.45; /* 提升较长警告文本的可读性。 */
+}
+
+.ranking-options { /* 在深度模式下提供两个可独立选择的本地排序开关。 */
+  display: grid; /* 纵向排列开关和风险提示以避免窄屏拥挤。 */
+  gap: 0.35rem; /* 保持各项之间可读的紧凑间距。 */
+  color: #52616b; /* 使用辅助正文色避免压过主检索操作。 */
+  font-size: 0.68rem; /* 保持选项与模式说明的视觉层级一致。 */
+}
+
+.ranking-options label { /* 让复选框与功能名称保持可点击关联。 */
+  display: inline-flex; /* 将输入控件与文本横向对齐。 */
+  align-items: center; /* 保持不同浏览器复选框垂直居中。 */
+  gap: 0.35rem; /* 分隔复选框和功能名称。 */
+  cursor: pointer; /* 告知用户该行可直接切换。 */
+}
+
+.ranking-options input { /* 使用品牌色标识本地排序选择状态。 */
+  accent-color: #2e6f95; /* 与其他表单控件的强调色保持一致。 */
+}
+
+.ranking-options p { /* 展示开启本地模型时的明确时长风险。 */
+  margin: 0; /* 由网格间距统一控制垂直留白。 */
+  color: #7a5b2c; /* 使用警示色提示成本而不表现为提交错误。 */
+  line-height: 1.45; /* 提升较长风险说明的可读性。 */
 }
 
 .advanced-toggle { /* 设置高级约束开关。 */

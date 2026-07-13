@@ -163,6 +163,8 @@ class DeepSeekQueryPlanningClient:
             target_paper_count=request.target_paper_count,
             source_recall_count=self._config.academic_source_recall_limit,
             search_mode=request.search_mode,
+            enable_semantic_ranking=request.enable_semantic_ranking,
+            enable_cross_encoder_ranking=request.enable_cross_encoder_ranking,
             domains=_merge_terms(planned.domains, request.domains),
             requires_web_evidence=request.requires_web_evidence,
             complexity_score=planned.complexity_score,

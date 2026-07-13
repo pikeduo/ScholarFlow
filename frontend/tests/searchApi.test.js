@@ -7,6 +7,8 @@ import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchRes
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
   queryText: '检索 Transformer forecasting 论文', // 提供中英混合查询。
   searchMode: 'standard', // 使用默认标准模式。
+  enableSemanticRanking: true, // 保持深度模式默认启用 BGE-M3 的页面初始选择。
+  enableCrossEncoderRanking: true, // 保持深度模式默认启用 Cross Encoder 的页面初始选择。
   startYear: '', // 默认不限制起始年份。
   endYear: '', // 默认不限制结束年份。
   mustInclude: '', // 默认无必须词。
@@ -30,6 +32,16 @@ test('createQueryIntent 生成后端多源检索契约', () => { // 验证表单
   assert.deepEqual(intent.domains, ['machine learning']) // 验证动态来源领域映射。
   assert.equal(intent.target_paper_count, 20) // 验证最终目标数量与 LLM 上限一致。
   assert.equal(intent.requires_web_evidence, true) // 验证网页证据开关映射。
+  assert.equal(intent.enable_semantic_ranking, true) // 验证 BGE-M3 选择映射到稳定查询契约。
+  assert.equal(intent.enable_cross_encoder_ranking, true) // 验证 Cross Encoder 选择映射到稳定查询契约。
+})
+
+test('createQueryIntent 支持独立关闭两种深度本地排序', () => { // 验证页面开关不会被客户端默认值覆盖。
+  const intent = createQueryIntent({ ...baseForm, searchMode: 'deep', enableSemanticRanking: false, enableCrossEncoderRanking: false }) // 构造两个本地模型均关闭的深度检索表单。
+
+  assert.equal(intent.search_mode, 'deep') // 验证保留深度模式的多轮预算策略。
+  assert.equal(intent.enable_semantic_ranking, false) // 验证用户可关闭 BGE-M3。
+  assert.equal(intent.enable_cross_encoder_ranking, false) // 验证用户可关闭 Cross Encoder。
 })
 
 test('createQueryIntent 拒绝不完整或倒置年份范围', () => { // 验证请求前年份错误边界。

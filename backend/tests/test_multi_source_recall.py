@@ -139,8 +139,8 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     assert result.coverage_report.should_continue is True  # 验证首轮高相关论文不足目标时报告建议继续而不自行发起调用。
 
 
-def test_coordinator_only_enables_local_ranking_models_in_deep_mode() -> None:
-    """标准模式必须跳过本地排序模型，深度模式才允许执行它们。"""
+def test_coordinator_respects_deep_mode_and_individual_local_ranking_options() -> None:
+    """标准模式强制跳过模型，深度模式分别尊重两个用户选择。"""
     semantic_ranker = _PassthroughSemanticRanker()  # 记录 BGE-M3 阶段收到的模式开关。
     cross_encoder_reranker = _PassthroughCrossEncoderReranker()  # 记录 Cross Encoder 阶段收到的模式开关。
     coordinator = MultiSourceRecallCoordinator(  # 装配只含一个离线来源和三个可观测排序替身的协调器。
@@ -152,14 +152,17 @@ def test_coordinator_only_enables_local_ranking_models_in_deep_mode() -> None:
     )
 
     standard_result = asyncio.run(coordinator.recall(_build_query_intent(search_mode="standard")))  # 执行标准模式并验证本地模型跳过。
-    deep_result = asyncio.run(coordinator.recall(_build_query_intent(search_mode="deep")))  # 执行深度模式并验证本地模型获准运行。
+    deep_result = asyncio.run(coordinator.recall(_build_query_intent(search_mode="deep")))  # 执行深度模式并验证默认本地模型获准运行。
+    opted_out_result = asyncio.run(coordinator.recall(_build_query_intent(search_mode="deep", enable_semantic_ranking=False, enable_cross_encoder_ranking=False)))  # 执行深度模式并验证两个用户开关可分别关闭模型。
 
-    assert semantic_ranker.enabled_values == [False, True]  # 验证 BGE-M3 只在深度模式进入执行路径。
-    assert cross_encoder_reranker.enabled_values == [False, True]  # 验证 Cross Encoder 只在深度模式进入执行路径。
+    assert semantic_ranker.enabled_values == [False, True, False]  # 验证 BGE-M3 仅在深度模式且用户允许时进入执行路径。
+    assert cross_encoder_reranker.enabled_values == [False, True, False]  # 验证 Cross Encoder 仅在深度模式且用户允许时进入执行路径。
     assert standard_result.semantic_ranking_error == "标准模式已跳过 BGE-M3 语义粗排，已按 RRF 排序"  # 验证标准模式返回可展示的跳过说明。
     assert standard_result.cross_encoder_ranking_error == "标准模式已跳过 Cross Encoder 重排，已沿用 RRF 排序"  # 验证标准模式不伪装为模型故障。
     assert standard_result.llm_model_name == "test-llm" and standard_result.llm_prompt_tokens == 12  # 验证标准模式仍会执行 LLM 核验阶段。
     assert deep_result.semantic_ranking_error is None and deep_result.cross_encoder_ranking_error is None  # 验证深度模式不会报告主动跳过。
+    assert opted_out_result.semantic_ranking_error == "用户已关闭 BGE-M3 语义粗排，已按 RRF 排序"  # 验证用户关闭语义粗排时返回可展示摘要。
+    assert opted_out_result.cross_encoder_ranking_error == "用户已关闭 Cross Encoder 重排，已沿用 BGE-M3 或 RRF 排序"  # 验证用户关闭精排时返回可展示摘要。
 
 
 def test_coordinator_degrades_single_academic_source_without_discarding_other_results() -> None:
