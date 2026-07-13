@@ -4,8 +4,10 @@ import sys  # 临时注入不下载模型的 FlagEmbedding 测试模块。
 from types import ModuleType  # 构造最小可导入模块替身。
 from unittest.mock import patch  # 验证模型加载阶段日志而不写入测试控制台。
 
+import pytest  # 验证已知依赖不兼容时返回稳定错误。
+
 from backend.app.adapters.bge_m3 import BgeM3Encoder  # 导入待测 BGE-M3 懒加载适配器。
-from backend.app.adapters.cross_encoder import BgeCrossEncoder  # 导入待测 Cross Encoder 懒加载适配器。
+from backend.app.adapters.cross_encoder import BgeCrossEncoder, CrossEncoderError  # 导入待测 Cross Encoder 懒加载适配器和兼容性错误。
 
 
 class _FakeBgeModel:
@@ -40,7 +42,7 @@ def test_bge_m3_logs_first_load_and_reuses_instance() -> None:
 def test_cross_encoder_logs_first_load_and_reuses_instance() -> None:
     """Cross Encoder 应记录首次加载起止信息并在后续调用复用模型。"""
     encoder = BgeCrossEncoder()  # 构造尚未加载模型的适配器。
-    with patch.dict(sys.modules, {"FlagEmbedding": _fake_flag_embedding_module()}), patch("backend.app.adapters.cross_encoder.logger.info") as log_info:  # 隔离依赖和日志输出。
+    with patch.dict(sys.modules, {"FlagEmbedding": _fake_flag_embedding_module()}), patch("backend.app.adapters.cross_encoder.distribution_version", return_value="4.57.3"), patch("backend.app.adapters.cross_encoder.logger.info") as log_info:  # 隔离依赖、兼容版本元数据和日志输出。
         first_model = encoder._get_model()  # 首次调用触发离线模型构造。
         second_model = encoder._get_model()  # 第二次调用应直接复用实例。
 
@@ -48,3 +50,13 @@ def test_cross_encoder_logs_first_load_and_reuses_instance() -> None:
     assert log_info.call_count == 2  # 验证仅记录一次开始和一次完成。
     assert "开始加载" in log_info.call_args_list[0].args[0]  # 验证首次日志标记下载或磁盘加载阶段。
     assert "加载完成" in log_info.call_args_list[1].args[0]  # 验证完成日志标记加载耗时。
+
+
+def test_cross_encoder_rejects_transformers_five_before_loading_model() -> None:
+    """FlagEmbedding 1.4.x 遇到 Transformers 5 时应在权重加载前返回可操作错误。"""
+    encoder = BgeCrossEncoder()  # 构造尚未加载模型的 Cross Encoder 适配器。
+    with patch("backend.app.adapters.cross_encoder.distribution_version", return_value="5.13.1"), patch("backend.app.adapters.cross_encoder.logger.exception") as log_exception:  # 模拟日志中出现的已安装不兼容版本并隔离错误日志。
+        with pytest.raises(CrossEncoderError, match="requirements.txt"):
+            encoder._get_model()  # 验证不会继续导入或加载 FlagEmbedding 权重。
+
+    assert log_exception.call_count == 1  # 验证不兼容组合被记录为明确的依赖问题。

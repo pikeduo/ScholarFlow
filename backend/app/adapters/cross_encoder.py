@@ -1,6 +1,7 @@
 """封装 BGE Cross Encoder 的懒加载与查询-论文成对打分边界。"""
 
 from collections.abc import Sequence  # 声明重排器接受的稳定文档文本序列类型。
+from importlib.metadata import PackageNotFoundError, version as distribution_version  # 在加载权重前检测 FlagEmbedding 所依赖的 Transformers 主版本。
 from time import perf_counter  # 记录本地重排模型首次加载耗时。
 from typing import Protocol  # 声明可由单元测试替换的重排器协议。
 
@@ -49,10 +50,25 @@ class BgeCrossEncoder:
         started_at = perf_counter()  # 从依赖导入前开始统计下载或缓存加载耗时。
         logger.info("Cross Encoder 模型开始加载：模型=%s", self._model_name)  # 为首次下载和磁盘加载提供明确阶段标记。
         try:  # 延迟导入避免离线测试因为可选模型依赖而失败。
+            _ensure_flag_embedding_transformers_compatibility()  # 在加载权重前阻止已知不兼容的 Transformers 主版本。
             from FlagEmbedding import FlagReranker  # 使用官方 FlagEmbedding Cross Encoder 接口。
             self._model = FlagReranker(self._model_name, use_fp16=self._use_fp16)  # 在首次真实重排时加载缓存或下载模型。
+        except CrossEncoderError:  # 已知依赖组合不兼容时保留明确的安全诊断。
+            logger.exception("Cross Encoder 依赖不兼容：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 记录版本边界而不输出用户查询或论文文本。
+            raise  # 让服务层继续执行既有安全降级。
         except Exception as error:  # 不向上层暴露模型地址、缓存路径或设备异常。
             logger.exception("Cross Encoder 模型加载失败：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 在受控日志保留下载或设备错误堆栈。
             raise CrossEncoderError("Cross Encoder 重排模型不可用") from error  # 提供可降级的稳定业务错误。
         logger.info("Cross Encoder 模型加载完成：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 记录首次加载完成时间。
         return self._model  # 返回完成初始化的 Cross Encoder 模型。
+
+
+def _ensure_flag_embedding_transformers_compatibility() -> None:
+    """校验当前 FlagEmbedding 1.4.x 所需的 Transformers 主版本，避免加载后才触发已移除接口。"""
+    try:  # 只读取已安装分发包元数据，不导入模型、不下载权重。
+        installed_version = distribution_version("transformers")  # 获取当前实际生效的 Transformers 版本。
+    except PackageNotFoundError as error:  # 缺少 Transformers 时 FlagEmbedding 无法执行 tokenizer 推理。
+        raise CrossEncoderError("Cross Encoder 缺少 Transformers 依赖，请安装 requirements.txt") from error  # 返回不暴露环境路径的可操作错误。
+    major_version_text = installed_version.split(".", maxsplit=1)[0]  # 仅使用主版本判断已知公共 API 兼容边界。
+    if not major_version_text.isdigit() or int(major_version_text) >= 5:  # Transformers 5 已移除 FlagEmbedding 1.4.x 仍调用的 tokenizer 接口。
+        raise CrossEncoderError("Cross Encoder 与当前 Transformers 版本不兼容，请安装 requirements.txt 中锁定的版本")  # 让日志和服务降级说明指向可执行修复。
