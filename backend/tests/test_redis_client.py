@@ -3,7 +3,7 @@
 import asyncio  # 在同步 pytest 用例中驱动异步 Redis 生命周期方法。
 
 from backend.app.core.config import Settings  # 构造隔离的 Redis 启用与禁用配置。
-from backend.app.repositories.redis_client import RedisClientManager  # 导入待测短期存储生命周期管理器。
+from backend.app.repositories.redis_client import RedisClientManager, normalize_redis_loopback_url  # 导入待测短期存储生命周期管理器和本地地址规范化函数。
 
 
 class FakeRedisClient:
@@ -28,6 +28,21 @@ class FakeRedisClient:
 def _unexpected_client_factory() -> FakeRedisClient:
     """禁用 Redis 时阻止任何客户端构造。"""
     raise AssertionError("禁用状态不应构造 Redis 客户端")  # 防止测试误把禁用路径变为连接路径。
+
+
+def test_normalize_redis_loopback_url_prefers_ipv4_without_losing_connection_parts() -> None:
+    """本地 localhost 地址应改用 IPv4，且认证、端口、数据库和查询参数必须保留。"""
+    original_url = "redis://cache-user:example-password@localhost:6380/2?socket_keepalive=true"  # 使用虚构认证信息覆盖完整连接地址结构。
+
+    normalized_url = normalize_redis_loopback_url(original_url)  # 执行不依赖网络的地址规范化。
+
+    assert normalized_url == "redis://cache-user:example-password@127.0.0.1:6380/2?socket_keepalive=true"  # 验证只替换主机名而不丢失其他连接组成部分。
+
+
+def test_normalize_redis_loopback_url_keeps_non_localhost_deployments_unchanged() -> None:
+    """远程 Redis 与显式 IPv6 Redis 不得被本地兼容逻辑改写。"""
+    assert normalize_redis_loopback_url("redis://redis.internal:6379/0") == "redis://redis.internal:6379/0"  # 验证远程部署地址保持不变。
+    assert normalize_redis_loopback_url("redis://[::1]:6379/0") == "redis://[::1]:6379/0"  # 验证用户显式指定 IPv6 时保持不变。
 
 
 def test_redis_manager_keeps_disabled_mode_without_constructing_client() -> None:

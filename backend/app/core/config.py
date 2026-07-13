@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     log_dir: Path = Field(default=Path("logs"))  # 指定可被 Git 忽略的日志目录。
     log_level: str = Field(default="INFO")  # 支持部署时调整日志详细程度。
     redis_enabled: bool = Field(default=False)  # 控制 Redis 短期存储是否在当前环境启用，默认保持 SQLite 单机可用。
-    redis_url: str = Field(default="redis://localhost:6379/0", min_length=1)  # 保存仅在启用时使用的 Redis 连接地址。
+    redis_url: str = Field(default="redis://127.0.0.1:6379/0", min_length=1)  # 默认使用 Windows IPv4-only Redis 可达的本地回环地址。
     redis_key_prefix: str = Field(default="scholarflow", pattern=r"^[a-z0-9][a-z0-9:_-]{0,63}$")  # 限制键前缀以避免产生不可控 Redis 键空间。
     redis_socket_timeout_seconds: float = Field(default=2.0, gt=0, le=30)  # 限制 Redis 不可用时单次连接或命令等待时间。
     redis_source_search_cache_ttl_seconds: int = Field(default=14400, ge=60, le=86400)  # 限制学术来源搜索响应最多缓存四小时，避免长期保留过时结果。

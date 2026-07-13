@@ -2,6 +2,7 @@
 
 from collections.abc import Callable  # 标注可替换 Redis 客户端工厂。
 from typing import Protocol  # 定义无需依赖真实 Redis 的最小异步客户端协议。
+from urllib.parse import urlsplit, urlunsplit  # 在不记录认证信息的前提下规范化本地 Redis 地址。
 
 from backend.app.core.config import Settings, settings  # 读取集中配置而不让业务层解析环境变量。
 from backend.app.core.logging import logger  # 记录连接降级与关闭异常的安全日志。
@@ -32,6 +33,33 @@ class RedisAsyncClient(Protocol):
 
 
 RedisClientFactory = Callable[[], RedisAsyncClient]  # 允许测试替换客户端构造而不连接真实 Redis。
+
+
+def normalize_redis_loopback_url(redis_url: str) -> str:
+    """将精确的 ``localhost`` Redis 主机名改为 IPv4 回环地址。
+
+    Windows 上 ``localhost`` 可能优先解析为 IPv6 ``::1``；当 Redis 仅监听
+    ``127.0.0.1`` 时，redis-py 会因此连接超时。本函数仅处理精确主机名，保留
+    认证信息、端口、数据库路径和查询参数，远程地址与显式 IPv6 地址保持不变。
+
+    参数：
+        redis_url：由配置提供的 Redis 连接地址，可能含认证信息但不会被记录。
+
+    返回：
+        str：适合本地 IPv4 Redis 的地址，或未变更的原始地址。
+    """
+    parsed = urlsplit(redis_url)  # 解析 URL 以避免对密码或查询参数进行不安全的字符串替换。
+    if parsed.hostname != "localhost":  # 仅处理精确 localhost，不能擅自改写远程或 IPv6 部署。
+        return redis_url  # 非本地回环配置保持用户原有部署意图。
+    user_info, separator, host_port = parsed.netloc.rpartition("@")  # 分离并原样保留可能被编码的认证信息。
+    if host_port == "localhost":  # 覆盖未显式提供端口的本地 Redis 地址。
+        normalized_host_port = "127.0.0.1"  # 强制走日志已验证可达的 IPv4 回环地址。
+    elif host_port.startswith("localhost:"):  # 覆盖带端口的本地 Redis 地址。
+        normalized_host_port = f"127.0.0.1{host_port[len('localhost'):]}"  # 保留用户指定端口。
+    else:  # 防御异常 URL 形态，避免错误改写主机部分。
+        return redis_url  # 交由 redis-py 按原配置给出可诊断错误。
+    normalized_netloc = f"{user_info}@{normalized_host_port}" if separator else normalized_host_port  # 重新组合且不暴露认证字段。
+    return urlunsplit((parsed.scheme, normalized_netloc, parsed.path, parsed.query, parsed.fragment))  # 保留其他全部 URL 组成部分。
 
 
 class RedisClientManager:
@@ -107,7 +135,7 @@ class RedisClientManager:
         except ImportError as error:  # 依赖遗漏应进入可解释降级路径。
             raise RuntimeError("Redis 运行时依赖不可用") from error  # 不暴露 Python 环境绝对路径。
         return from_url(  # 创建连接池客户端但不在此处发送网络请求。
-            self._config.redis_url,
+            normalize_redis_loopback_url(self._config.redis_url),  # 避免 IPv4-only Redis 因 localhost 优先解析到 ::1 而超时。
             decode_responses=False,
             socket_connect_timeout=self._config.redis_socket_timeout_seconds,
             socket_timeout=self._config.redis_socket_timeout_seconds,
