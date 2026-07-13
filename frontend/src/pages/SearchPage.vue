@@ -802,11 +802,6 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
             </section>
             <section v-if="detailPaper.keywords?.length" class="detail-section"><h3>关键词</h3><p>{{ detailPaper.keywords.join(' · ') }}</p></section>
             <section v-if="detailPaper.constraint_evidence?.length" class="detail-section"><h3>约束证据</h3><ul><li v-for="evidence in detailPaper.constraint_evidence" :key="evidence">{{ evidence }}</li></ul></section>
-            <section v-if="detailPaper.references?.length" class="detail-section">
-              <h3>来源提供的参考文献标识</h3>
-              <p class="reference-description">这些是当前论文引用的上游论文在原始学术来源中的标识，不代表已收藏到“我的文献库”。</p>
-              <p>{{ detailPaper.references.join(' · ') }}</p>
-            </section>
             <a v-if="detailDoiUrl" class="detail-link" :href="detailDoiUrl" target="_blank" rel="noopener noreferrer">打开 DOI 页面</a>
             <a v-if="detailPublicPdfUrl" class="detail-pdf-link" :href="detailPublicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
           </template>
@@ -1884,10 +1879,6 @@ textarea::placeholder { /* 设置查询示例占位。 */
   font-size: 0.65rem; /* 保持最低视觉层级。 */
 }
 
-.reference-description { /* 解释来源参考标识与文献库收藏的边界。 */
-  color: #71899a !important; /* 与实际标识列表区分为说明文字。 */
-  font-size: 0.7rem !important; /* 保持边界说明紧凑。 */
-}
 
 .detail-link { /* 标记可在新标签页打开的 DOI 解析入口。 */
   display: inline-block; /* 允许链接使用按钮式留白。 */

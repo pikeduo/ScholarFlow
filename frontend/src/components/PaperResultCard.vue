@@ -130,7 +130,6 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
           <a v-if="doiUrl" class="doi-link" :href="doiUrl" target="_blank" rel="noopener noreferrer">DOI {{ paper.doi }}</a>
           <span v-else-if="paper.doi">DOI {{ paper.doi }}</span>
           <span v-else-if="paper.arxiv_id">arXiv {{ paper.arxiv_id }}</span>
-          <span v-if="paper.work_family_id">版本族 {{ paper.work_family_id }}</span>
         </div>
         <div class="paper-actions">
           <a v-if="publicPdfUrl" class="public-pdf-link" :href="publicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
@@ -397,7 +396,7 @@ h3 a { /* 设置可访问论文标题链接。 */
   font-size: 0.64rem; /* 保持来源说明为最低视觉层级。 */
 }
 
-.paper-footer { /* 展示 DOI 和版本族等身份信息。 */
+.paper-footer { /* 展示 DOI 或 arXiv 等必要身份信息。 */
   display: flex; /* 横向排列身份标识。 */
   align-items: center; /* 对齐身份标识与收藏操作。 */
   justify-content: space-between; /* 将收藏操作置于卡片右侧。 */
@@ -407,7 +406,7 @@ h3 a { /* 设置可访问论文标题链接。 */
   font-size: 0.62rem; /* 控制长标识占用空间。 */
 }
 
-.paper-footer > div:first-child { /* 组合 DOI 与版本族标识。 */
+.paper-footer > div:first-child { /* 组合论文必要身份标识。 */
   display: flex; /* 横向排列技术标识。 */
   flex-wrap: wrap; /* 窄屏允许标识换行。 */
   gap: 0.75rem; /* 分隔不同标识。 */
