@@ -16,10 +16,10 @@ function showPage(pageName) { // 切换一级页面并将视口返回内容顶�
   <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
   <div class="app-frame">
     <header class="topbar">
-      <a class="brand" href="#main-content" aria-label="ScholarWeave 文献搜索首页" @click.prevent="showPage('search')">
+      <a class="brand" href="#main-content" aria-label="ScholarFlow 文献搜索首页" @click.prevent="showPage('search')">
         <span class="brand-mark" aria-hidden="true">研</span>
         <span class="brand-copy">
-          <strong>ScholarWeave</strong>
+          <strong>ScholarFlow</strong>
           <small>研索</small>
         </span>
       </a>
