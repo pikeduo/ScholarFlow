@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column  # 声明 ORM 映射�
 
 from backend.app.models.search_run import SearchRunState  # 读写统一且已校验的搜索运行领域状态。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保存 SSE 完成后可按运行标识读取的最终结果。
+from backend.app.models.paper import PaperRecord  # 从已保存最终结果中恢复单篇论文详情。
 from backend.app.repositories.database import Base  # 注册到统一 SQLite 元数据。
 
 
@@ -95,6 +96,22 @@ class SearchRunRepository:
         """按运行标识读取已完成的完整结果快照，不存在时返回空值。"""
         row = self._session.scalar(select(SearchRunResultRow).where(SearchRunResultRow.run_id == run_id))  # 读取独立结果表避免解析轻量状态。
         return MultiRoundSearchResult.model_validate_json(row.result_json) if row is not None else None  # 恢复完整公开结果供搜索页展示。
+
+    def get_paper(self, paper_id: str) -> PaperRecord | None:
+        """从 SQLite 最终结果快照中读取一篇论文的最新可展示详情。
+
+        参数：
+            paper_id：已由后端生成并在搜索结果中展示的稳定论文标识。
+        返回：
+            PaperRecord | None：最近保存结果中的论文，或尚未保存时的空值。
+        """
+        rows = self._session.scalars(select(SearchRunResultRow).order_by(SearchRunResultRow.updated_at.desc())).all()  # 先读取较新的快照，使重复论文始终返回最近一次融合结果。
+        for row in rows:  # 搜索快照规模受最终结果数控制，避免为详情入口访问外部来源。
+            result = MultiRoundSearchResult.model_validate_json(row.result_json)  # 复用最终结果的领域校验恢复论文集合。
+            for paper in result.papers:  # 逐篇比对内部稳定标识。
+                if paper.paper_id == paper_id:  # 找到时立即返回，保持较新快照优先。
+                    return paper  # 返回完整规范化论文记录供详情接口展示。
+        return None  # 所有已保存快照都未命中时交由 API 映射为 404。
 
 
 def _lightweight_snapshot(state: SearchRunState) -> SearchRunState:

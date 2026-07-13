@@ -40,6 +40,9 @@ def test_repository_persists_lightweight_snapshot_and_overwrites_latest_state() 
         repository.save_result(completed_result)  # 写入 SSE 完成后供前端 REST 读取的结果快照。
         recovered_result = repository.get_result(initial_state.run_id)  # 按同一运行标识恢复完整结果。
         assert recovered_result is not None and recovered_result.papers[0].paper_id == "paper-1"  # 验证完整论文只从独立结果表读取。
+        recovered_paper = repository.get_paper("paper-1")  # 从 SQLite 最终结果快照读取单篇详情。
+        assert recovered_paper is not None and recovered_paper.title == "Transformer Forecasting"  # 验证详情读取复用已保存规范化论文而不依赖外部来源。
+        assert repository.get_paper("missing-paper") is None  # 验证未知论文稳定返回空值供 API 映射为 404。
     finally:  # 无论断言是否失败都关闭会话和引擎。
         session.close()  # 释放内存数据库会话。
         engine.dispose()  # 释放测试引擎资源。

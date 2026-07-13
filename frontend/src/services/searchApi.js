@@ -260,6 +260,27 @@ export async function getSearchRunResult(runId, fetchImpl = globalThis.fetch, ap
   }
 }
 
+/** 按论文标识读取 SQLite 已保存详情，不触发新的学术来源检索。 */
+export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读详情请求。
+  const normalizedPaperId = String(paperId || '').trim() // 规范化卡片提供的内部论文标识。
+  if (!normalizedPaperId) throw new SearchApiError('缺少需要读取详情的论文标识') // 防止向后端发起无效资源请求。
+  let response // 保存详情读取 HTTP 响应。
+  try { // 将网络或代理错误转换为可展示的公共提示。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/papers/${encodeURIComponent(normalizedPaperId)}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取后端已保存的 SQLite 论文快照。
+  } catch { // 不向页面暴露浏览器底层网络异常。
+    throw new SearchApiError('无法读取论文详情，请确认后端已启动') // 给出可操作且不泄露实现的信息。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用统一公共错误解析和状态码。
+  try { // 校验详情抽屉渲染依赖的最小论文契约。
+    const paper = await response.json() // 解析后端返回的 PaperRecord JSON。
+    if (!paper || typeof paper.paper_id !== 'string' || typeof paper.title !== 'string' || typeof paper.source !== 'string') throw new SearchApiError('论文详情数据不完整') // 防止页面渲染损坏的历史快照。
+    return paper // 返回完整且已校验的详情记录。
+  } catch (error) { // 将 JSON 或契约问题转为统一安全提示。
+    if (error instanceof SearchApiError) throw error // 保留明确的字段缺失错误。
+    throw new SearchApiError('论文详情无法解析') // 避免展示原始响应正文。
+  }
+}
+
 /** 将 SSE 单帧解析为已净化的事件 data JSON。 */
 function parseSseFrame(frame) { // 接收不含结尾空行的 SSE 文本帧。
   const dataLine = frame.split('\n').find((line) => line.startsWith('data:')) // 仅消费服务端标准 data 行。

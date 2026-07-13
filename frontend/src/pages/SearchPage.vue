@@ -5,7 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索，并按 run_id 恢复已保存运行。
+import { SearchApiError, getPaperDetail, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、按 run_id 恢复运行并只读读取论文详情。
 import { filterSearchPapers, paginateSearchPapers } from '../utils/searchResults.js' // 对同次最终结果执行本地筛选与分页。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
@@ -34,6 +34,9 @@ const showAdvanced = ref(false) // 控制高级约束面板展开状态。
 const savedPaperIds = ref(new Set()) // 保存当前页面已成功收藏的论文 ID。
 const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防止重复点击。
 const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
+const detailPaper = ref(null) // 保存从 SQLite 读取的当前论文详情。
+const detailLoading = ref(false) // 标记详情读取请求是否进行中。
+const detailError = ref('') // 保存详情读取的安全公共错误。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
@@ -258,6 +261,25 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
     savingPaperIds.value.delete(paper.paper_id) // 清除请求中状态以允许失败重试。
   }
 }
+
+async function openPaperDetail(paper) { // 按用户点击只读读取详情，避免卡片渲染时批量请求。
+  detailPaper.value = null // 清除上一条详情，防止旧内容在加载期间误导用户。
+  detailError.value = '' // 清除上一条详情错误。
+  detailLoading.value = true // 展示详情抽屉的读取中状态。
+  try { // 统一处理 API 客户端的公共错误。
+    detailPaper.value = await getPaperDetail(paper.paper_id) // 仅读取 SQLite 保存的规范化论文记录。
+  } catch (error) { // 不展示底层网络或持久化细节。
+    detailError.value = error instanceof SearchApiError ? error.message : '读取论文详情时出现未知错误，请稍后重试' // 提供可安全展示的失败说明。
+  } finally { // 无论成功失败都结束加载状态。
+    detailLoading.value = false // 恢复抽屉中的操作状态。
+  }
+}
+
+function closePaperDetail() { // 关闭详情抽屉并释放当前展示数据。
+  detailPaper.value = null // 不在页面内长期保留论文详情副本。
+  detailError.value = '' // 清除可能存在的错误提示。
+  detailLoading.value = false // 防御关闭时遗留的加载状态。
+}
 </script>
 
 <template>
@@ -385,7 +407,7 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
       </section>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="paperPagination.items.length" class="paper-list">
-        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.pageSize + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" @save="savePaper" />
+        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.pageSize + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" @save="savePaper" @detail="openPaperDetail" />
       </div>
       <div v-else class="empty-state">
         <strong>{{ result.papers.length ? '没有论文符合当前筛选条件' : '暂未找到满足全部条件的论文' }}</strong>
@@ -396,6 +418,30 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
         <span>{{ `${paperPagination.page} / ${paperPagination.totalPages}` }}</span>
         <button type="button" :disabled="paperPagination.page === paperPagination.totalPages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
       </nav>
+      <div v-if="detailPaper || detailLoading || detailError" class="paper-detail-backdrop" @click.self="closePaperDetail">
+        <aside class="paper-detail-panel" role="dialog" aria-modal="true" aria-labelledby="paper-detail-title">
+          <button class="detail-close" type="button" aria-label="关闭论文详情" @click="closePaperDetail">×</button>
+          <p class="eyebrow">SAVED PAPER DETAIL</p>
+          <p v-if="detailLoading" class="detail-status">正在读取已保存的论文详情…</p>
+          <p v-else-if="detailError" class="detail-error" role="alert">{{ detailError }}</p>
+          <template v-else-if="detailPaper">
+            <h2 id="paper-detail-title">{{ detailPaper.title }}</h2>
+            <p class="detail-meta">{{ `${(detailPaper.authors || []).map((author) => author.name).filter(Boolean).join('、') || '作者信息暂缺'} · ${detailPaper.year || '年份暂缺'} · ${detailPaper.venue || 'Venue 暂缺'}` }}</p>
+            <dl class="detail-identifiers">
+              <div><dt>来源</dt><dd>{{ detailPaper.source }}</dd></div>
+              <div v-if="detailPaper.doi"><dt>DOI</dt><dd>{{ detailPaper.doi }}</dd></div>
+              <div v-if="detailPaper.arxiv_id"><dt>arXiv</dt><dd>{{ detailPaper.arxiv_id }}</dd></div>
+              <div v-if="detailPaper.openalex_id"><dt>OpenAlex</dt><dd>{{ detailPaper.openalex_id }}</dd></div>
+              <div v-if="detailPaper.semantic_scholar_id"><dt>Semantic Scholar</dt><dd>{{ detailPaper.semantic_scholar_id }}</dd></div>
+            </dl>
+            <section v-if="detailPaper.abstract" class="detail-section"><h3>摘要</h3><p>{{ detailPaper.abstract }}</p></section>
+            <section v-if="detailPaper.keywords?.length" class="detail-section"><h3>关键词</h3><p>{{ detailPaper.keywords.join(' · ') }}</p></section>
+            <section v-if="detailPaper.constraint_evidence?.length" class="detail-section"><h3>约束证据</h3><ul><li v-for="evidence in detailPaper.constraint_evidence" :key="evidence">{{ evidence }}</li></ul></section>
+            <section v-if="detailPaper.references?.length" class="detail-section"><h3>已保存的参考文献标识</h3><p>{{ detailPaper.references.join(' · ') }}</p></section>
+            <a v-if="detailPaper.open_access_url" class="detail-link" :href="detailPaper.open_access_url" target="_blank" rel="noopener noreferrer">打开合法公开入口</a>
+          </template>
+        </aside>
+      </div>
       <section v-if="discoveries.length" class="discovery-section" aria-labelledby="discovery-title">
         <div>
           <p class="eyebrow">SUPPLEMENTAL WEB EVIDENCE</p>
@@ -1049,6 +1095,123 @@ legend { /* 标记检索模式字段组。 */
 .library-message.is-error { /* 标记收藏请求失败。 */
   color: #9b3c36; /* 使用克制红色文字。 */
   background: #fff0ee; /* 使用浅红背景。 */
+}
+
+.paper-detail-backdrop { /* 使用遮罩让详情在当前搜索上下文中保持聚焦。 */
+  position: fixed; /* 覆盖滚动页面并保持关闭区域可点击。 */
+  z-index: 20; /* 置于普通搜索结果之上。 */
+  inset: 0; /* 填满当前视口。 */
+  display: grid; /* 使用网格将详情面板定位到右侧。 */
+  justify-items: end; /* 保持抽屉式阅读体验。 */
+  background: rgba(18, 43, 60, 0.34); /* 使用低饱和遮罩弱化背景结果。 */
+}
+
+.paper-detail-panel { /* 展示完整规范化论文事实而不重新检索。 */
+  position: relative; /* 为关闭按钮建立定位上下文。 */
+  width: min(42rem, 100%); /* 限制长文本行宽并适配手机。 */
+  height: 100%; /* 占满视口高度以支持长摘要滚动。 */
+  overflow-y: auto; /* 仅详情内容滚动，背景保持稳定。 */
+  padding: 2.1rem; /* 为标题、元数据和段落提供阅读留白。 */
+  background: #ffffff; /* 保持论文详情的高对比阅读背景。 */
+  box-shadow: -18px 0 38px rgba(15, 40, 57, 0.16); /* 与结果页面形成层次。 */
+}
+
+.detail-close { /* 提供稳定可见的详情关闭入口。 */
+  position: absolute; /* 固定在抽屉右上角。 */
+  top: 0.9rem; /* 与面板边缘保持舒适距离。 */
+  right: 1rem; /* 便于鼠标和触摸操作。 */
+  width: 2rem; /* 保证最小点击区域。 */
+  height: 2rem; /* 保持方形点击范围。 */
+  border: 1px solid #cbd9e3; /* 使用中性边框。 */
+  border-radius: 50%; /* 将关闭控件显示为轻量圆形按钮。 */
+  color: #486579; /* 使用辅助深蓝文字。 */
+  background: #f7fafc; /* 与白色面板区分。 */
+  cursor: pointer; /* 明确可关闭交互。 */
+  font-size: 1.25rem; /* 提升关闭符号可见性。 */
+  line-height: 1; /* 保持符号视觉居中。 */
+}
+
+.paper-detail-panel h2 { /* 设置详情标题的阅读层级。 */
+  margin: 0; /* 清除默认标题外边距。 */
+  padding-right: 2.5rem; /* 避免长标题与关闭按钮重叠。 */
+  color: #18354f; /* 使用页面主标题色。 */
+  font-family: Georgia, "Noto Serif SC", serif; /* 延续搜索页学术排版。 */
+  font-size: clamp(1.35rem, 3vw, 2rem); /* 保持窄屏可读性。 */
+  line-height: 1.35; /* 提升多行标题阅读体验。 */
+}
+
+.detail-meta, .detail-status, .detail-error { /* 统一详情辅助信息和状态文本。 */
+  margin: 0.75rem 0 0; /* 与标题或标签建立稳定间距。 */
+  color: #64788a; /* 使用低层级辅助文字。 */
+  font-size: 0.78rem; /* 保持详情元数据紧凑。 */
+  line-height: 1.6; /* 提升长作者信息可读性。 */
+}
+
+.detail-error { /* 使用安全而明显的失败样式。 */
+  padding: 0.75rem; /* 增加错误提示可扫读性。 */
+  border-radius: 0.65rem; /* 与页面提示保持一致。 */
+  color: #9b3c36; /* 使用克制红色文字。 */
+  background: #fff0ee; /* 使用浅红背景。 */
+}
+
+.detail-identifiers { /* 以紧凑网格展示来源和论文标识符。 */
+  display: grid; /* 自动换行以适配不同标识数量。 */
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); /* 保证窄屏仍可阅读。 */
+  gap: 0.7rem; /* 分隔身份信息块。 */
+  margin: 1.2rem 0; /* 与标题和正文区分。 */
+}
+
+.detail-identifiers div { /* 为单个标识提供可扫读背景。 */
+  padding: 0.65rem; /* 增加紧凑留白。 */
+  border-radius: 0.65rem; /* 与其他面板元素协调。 */
+  background: #f4f8fb; /* 使用低对比蓝灰背景。 */
+}
+
+.detail-identifiers dt { /* 标记标识符类型。 */
+  color: #6f8799; /* 弱化字段标签。 */
+  font-size: 0.63rem; /* 保持标签紧凑。 */
+  font-weight: 800; /* 提升小字号辨识度。 */
+}
+
+.detail-identifiers dd { /* 展示可能较长的具体标识符。 */
+  margin: 0.25rem 0 0; /* 与字段标签分隔。 */
+  overflow-wrap: anywhere; /* 防止长 DOI 或平台标识撑破布局。 */
+  color: #38556a; /* 使用可读的正文颜色。 */
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace; /* 便于准确辨识标识符。 */
+  font-size: 0.7rem; /* 控制技术文本密度。 */
+}
+
+.detail-section { /* 分隔摘要、关键词和证据等事实区块。 */
+  margin-top: 1.2rem; /* 保持不同详情主题之间的阅读留白。 */
+}
+
+.detail-section h3 { /* 设置详情子区块标题。 */
+  margin: 0; /* 清除默认外边距。 */
+  color: #31566e; /* 使用中层级蓝色。 */
+  font-size: 0.82rem; /* 区别于论文主标题。 */
+}
+
+.detail-section p, .detail-section ul { /* 统一正文、关键词和证据排版。 */
+  margin: 0.45rem 0 0; /* 与子标题建立稳定间距。 */
+  color: #52697d; /* 使用舒适正文色。 */
+  font-size: 0.78rem; /* 保持详情正文可读。 */
+  line-height: 1.75; /* 提升长摘要和证据阅读体验。 */
+}
+
+.detail-section ul { /* 为多条证据保留可理解的列表层级。 */
+  padding-left: 1.1rem; /* 显示列表标记而不过度缩进。 */
+}
+
+.detail-link { /* 标记来源提供的合法公开入口。 */
+  display: inline-block; /* 允许链接使用按钮式留白。 */
+  margin-top: 1.35rem; /* 与详情正文拉开距离。 */
+  padding: 0.55rem 0.75rem; /* 提供舒适点击区域。 */
+  border-radius: 0.55rem; /* 与页面交互控件一致。 */
+  color: #ffffff; /* 保持深色背景上的链接可读性。 */
+  background: #2e6f95; /* 使用品牌强调色。 */
+  font-size: 0.72rem; /* 控制操作层级。 */
+  font-weight: 800; /* 提升链接可发现性。 */
+  text-decoration: none; /* 采用按钮视觉而不是默认下划线。 */
 }
 
 .empty-state { /* 展示无满足条件结果。 */

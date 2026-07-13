@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session  # 标注会话工厂返回的请求级会话
 from backend.app.core.logging import logger  # 记录不含完整用户查询的持久化异常。
 from backend.app.models.search_run import SearchRunState  # 读写统一的可恢复运行状态。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保存 SSE 完成后可读取的完整最终结果。
+from backend.app.models.paper import PaperRecord  # 为论文详情读取提供统一领域模型。
 from backend.app.repositories.database import SessionLocal  # 默认创建独立 SQLite 会话。
 from backend.app.repositories.search_runs import SearchRunRepository  # 使用仓储隔离 ORM 和领域状态。
 
@@ -31,6 +32,10 @@ class SearchRunStateStore(Protocol):
     def get_result(self, run_id: str) -> MultiRoundSearchResult | None:
         """按运行标识读取已完成多轮搜索的完整最终结果。"""
         ...  # 不存在或尚未完成时返回空值。
+
+    def get_paper(self, paper_id: str) -> PaperRecord | None:
+        """按论文标识读取已保存搜索结果中的最新论文详情。"""
+        ...  # 不存在时返回空值，详情入口不得调用外部学术来源。
 
 
 class SearchRunStoreError(RuntimeError):
@@ -107,3 +112,22 @@ class SqliteSearchRunStateStore:
             raise SearchRunStoreError("搜索最终结果暂时无法读取") from exc  # 返回安全错误边界。
         finally:  # 所有读取路径都释放会话。
             session.close()  # 防止前端结果读取长期占用连接。
+
+    def get_paper(self, paper_id: str) -> PaperRecord | None:
+        """读取已持久化搜索结果中的论文详情，数据库异常时抛出安全服务错误。
+
+        参数：
+            paper_id：需要展示详情的内部论文标识。
+        返回：
+            PaperRecord | None：最近保存的论文详情，或不存在时的空值。
+        异常：
+            SearchRunStoreError：SQLite 或历史快照解析异常时抛出。
+        """
+        session = self._session_factory()  # 为本次详情读取创建独立短生命周期会话。
+        try:  # 仅委托仓储扫描 SQLite 最终结果快照。
+            return SearchRunRepository(session).get_paper(paper_id)  # 禁止在详情读取路径发起外部学术 API 调用。
+        except (SQLAlchemyError, ValueError) as exc:  # 覆盖数据库与历史 JSON 快照格式异常。
+            logger.exception("搜索论文详情读取失败：论文=%s", paper_id)  # 仅记录内部标识与完整堆栈，不记录摘要正文。
+            raise SearchRunStoreError("论文详情暂时无法读取") from exc  # 向 API 暴露稳定可处理的错误边界。
+        finally:  # 成功或失败都必须释放数据库会话。
+            session.close()  # 防止详情查看积累空闲连接。

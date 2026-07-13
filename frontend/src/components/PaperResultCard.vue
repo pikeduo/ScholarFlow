@@ -4,7 +4,10 @@ import { computed } from 'vue' // 派生作者、来源、状态和安全链接�
 const props = defineProps({ // 声明论文和列表序号输入。
   paper: { type: Object, required: true }, // 接收后端 PaperRecord。
   rank: { type: Number, required: true }, // 接收从一开始的结果排名。
+  saved: { type: Boolean, default: false }, // 标记当前搜索会话中是否已收藏。
+  saving: { type: Boolean, default: false }, // 标记收藏请求是否进行中。
 })
+const emit = defineEmits(['save', 'detail']) // 将收藏与详情读取操作交给搜索页统一调用 API。
 
 const authors = computed(() => { // 将作者列表压缩为适合卡片的文本。
   const names = (props.paper.authors || []).map((author) => author.name).filter(Boolean) // 提取有效作者名称。
@@ -79,9 +82,15 @@ const scoreLabel = computed(() => { // 将归一化 LLM 分数转为百分比。
         <p>{{ paper.abstract }}</p>
       </details>
       <div class="paper-footer">
-        <span v-if="paper.doi">DOI {{ paper.doi }}</span>
-        <span v-else-if="paper.arxiv_id">arXiv {{ paper.arxiv_id }}</span>
-        <span v-if="paper.work_family_id">版本族 {{ paper.work_family_id }}</span>
+        <div>
+          <span v-if="paper.doi">DOI {{ paper.doi }}</span>
+          <span v-else-if="paper.arxiv_id">arXiv {{ paper.arxiv_id }}</span>
+          <span v-if="paper.work_family_id">版本族 {{ paper.work_family_id }}</span>
+        </div>
+        <div class="paper-actions">
+          <button type="button" class="detail-button" @click="emit('detail', paper)">查看详情</button>
+          <button type="button" :class="{ 'is-saved': saved }" :disabled="saving || saved" @click="emit('save', paper)">{{ saving ? '正在收藏…' : saved ? '已收藏' : '收藏到文献库' }}</button>
+        </div>
       </div>
     </div>
   </article>
@@ -279,12 +288,56 @@ h3 a { /* 设置可访问论文标题链接。 */
 
 .paper-footer { /* 展示 DOI 和版本族等身份信息。 */
   display: flex; /* 横向排列身份标识。 */
-  flex-wrap: wrap; /* 窄屏允许换行。 */
-  gap: 0.75rem; /* 分隔不同标识。 */
+  align-items: center; /* 对齐身份标识与收藏操作。 */
+  justify-content: space-between; /* 将收藏操作置于卡片右侧。 */
+  gap: 1rem; /* 分隔标识与操作。 */
   margin-top: 0.9rem; /* 与正文内容分隔。 */
   color: #95a4b2; /* 降低技术标识权重。 */
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace; /* 使用等宽字体方便辨认 ID。 */
   font-size: 0.62rem; /* 控制长标识占用空间。 */
+}
+
+.paper-footer > div:first-child { /* 组合 DOI 与版本族标识。 */
+  display: flex; /* 横向排列技术标识。 */
+  flex-wrap: wrap; /* 窄屏允许标识换行。 */
+  gap: 0.75rem; /* 分隔不同标识。 */
+  min-width: 0; /* 允许长 DOI 在卡片中收缩。 */
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace; /* 使用等宽字体方便辨认 ID。 */
+}
+
+.paper-actions { /* 组合详情读取与收藏操作，避免卡片底部按钮分散。 */
+  display: flex; /* 横向排列两个紧凑操作。 */
+  flex: 0 0 auto; /* 防止操作区被长 DOI 压缩。 */
+  flex-wrap: wrap; /* 窄屏允许按钮换行。 */
+  justify-content: flex-end; /* 让操作与右侧边缘对齐。 */
+  gap: 0.45rem; /* 分隔详情和收藏按钮。 */
+}
+
+.paper-footer button { /* 设置结果卡详情与收藏操作。 */
+  flex: 0 0 auto; /* 防止按钮被长 DOI 压缩。 */
+  padding: 0.45rem 0.7rem; /* 提供紧凑点击区域。 */
+  border: 1px solid #b8ccdc; /* 使用品牌蓝灰边界。 */
+  border-radius: 0.55rem; /* 与卡片小控件协调。 */
+  color: #2e6f95; /* 使用品牌交互色。 */
+  background: #f3f8fb; /* 使用浅蓝背景。 */
+  cursor: pointer; /* 告知用户可收藏。 */
+  font-size: 0.68rem; /* 保持操作紧凑。 */
+  font-weight: 800; /* 提升可发现性。 */
+}
+
+.paper-footer button.is-saved { /* 标记已收藏论文。 */
+  border-color: #b9dacb; /* 使用可信绿色边界。 */
+  color: #28745a; /* 使用绿色文字。 */
+  background: #e8f7f0; /* 使用浅绿背景。 */
+}
+
+.paper-footer button.detail-button { /* 将只读详情入口保持为次级操作。 */
+  color: #536f7f; /* 使用低饱和文字区别收藏主操作。 */
+  background: #ffffff; /* 保持轻量白底。 */
+}
+
+.paper-footer button:disabled { /* 表达请求中或已完成状态。 */
+  cursor: default; /* 禁止重复收藏操作。 */
+  opacity: 0.78; /* 弱化禁用按钮。 */
 }
 
 @media (max-width: 560px) { /* 调整手机论文卡布局。 */
@@ -294,6 +347,11 @@ h3 a { /* 设置可访问论文标题链接。 */
 
   .paper-content { /* 缩小手机卡片内边距。 */
     padding: 1rem; /* 保持内容舒适且不拥挤。 */
+  }
+
+  .paper-footer { /* 手机端纵向排列标识和收藏按钮。 */
+    align-items: flex-start; /* 左对齐两组内容。 */
+    flex-direction: column; /* 避免长 DOI 挤压按钮。 */
   }
 }
 </style>

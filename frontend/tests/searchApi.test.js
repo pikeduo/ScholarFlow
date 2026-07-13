@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, createQueryIntent, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE 与运行恢复入口。
+import { SearchApiError, createQueryIntent, getPaperDetail, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -179,6 +179,21 @@ test('restoreSearchRun 对运行中状态只恢复进度，不读取或伪造最
   assert.equal(requestCount, 1) // 验证不读取尚未就绪的结果接口。
   assert.equal(restored.state, state) // 验证页面仍可展示当前轮次与状态。
   assert.equal(restored.result, null) // 验证没有最终结果时不伪造空论文集合。
+})
+
+test('getPaperDetail 仅读取已保存论文详情并校验最小契约', async () => { // 验证详情入口不会触发新的检索请求。
+  let capturedUrl = '' // 保存只读详情请求路径。
+  const expectedPaper = { paper_id: 'paper-detail-1', title: 'Saved Paper', source: 'openalex', abstract: 'saved abstract' } // 构造 SQLite 已保存论文的最小响应。
+  const fetchStub = async (url, options) => { // 提供不访问网络的详情读取替身。
+    capturedUrl = url // 记录请求资源路径。
+    assert.equal(options.method, 'GET') // 验证详情只使用只读 GET。
+    return { ok: true, status: 200, json: async () => expectedPaper } // 返回固定规范化论文详情。
+  }
+
+  const paper = await getPaperDetail(' paper-detail-1 ', fetchStub, 'http://test.local') // 读取带空白的内部论文标识。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/papers/paper-detail-1') // 验证标识被规范化并编码到详情资源路径。
+  assert.equal(paper, expectedPaper) // 验证页面获得详情抽屉可渲染的统一记录。
 })
 
 test('filterSearchPapers 按来源、年份与核验状态筛选且保持原始排序', () => { // 验证本地筛选不改变后端相关性排序或发起新请求。
