@@ -151,7 +151,7 @@ class CoverageGapAnalyzer:
             return "没有可执行的新查询"  # 明确说明停止不是因为生成低相关结果。
         if source_counts and unavailable_sources and len(unavailable_sources) >= len(source_counts):  # 全部已选来源均不可用时继续没有实际价值。
             return "可用学术来源不足"  # 避免将单来源故障错误描述为用户查询无结果。
-        if current_round > 1 and new_valid_count < self._minimum_new_valid_count:  # 非首轮无新增高质量论文说明边际收益已经不足。
+        if current_round > 1 and current_round < max_rounds - 1 and new_valid_count < self._minimum_new_valid_count:  # 仅在最后补足轮之前仍有多余轮次时按边际收益停止，保留第二轮后的第三源补足机会。
             return "连续轮次新增高质量论文不足"  # 保护 API、Token 和模型成本预算。
         return None  # 存在缺口且尚未触发停止条件时建议控制器进入下一轮。
 
@@ -185,4 +185,3 @@ def _paper_metadata_text(paper: PaperRecord) -> str:
 def _gap(gap_type: str, constraint: str, severity: float, current_match_count: int) -> CoverageGap:
     """构造保持原约束文本的单个覆盖缺口。"""
     return CoverageGap(gap_type=gap_type, constraint=constraint, severity=severity, current_match_count=current_match_count, recommended_query_focus=constraint)  # 不自动放宽或改写用户条件。
-

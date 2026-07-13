@@ -4,7 +4,6 @@ from typing import Literal  # 限制查询语言、模式和子查询用途的�
 
 from pydantic import BaseModel, Field, model_validator  # 提供结构化查询计划的字段和跨字段校验。
 
-
 QueryLanguage = Literal["zh", "en", "mixed"]  # 标记原始或子查询使用的自然语言类型。
 SearchMode = Literal["standard", "deep"]  # 限制搜索轮次和预算策略的模式类型。
 SubqueryPurpose = Literal["method", "dataset", "citation"]  # 标记子查询用于补足的检索目的。
@@ -47,6 +46,7 @@ class QueryIntent(BaseModel):
         subqueries：可迭代执行的子查询计划。
         target_paper_count：期望返回的最终论文数量。
         source_recall_count：每个学术来源请求的候选数量，未设置时兼容使用最终数量。
+        retrieval_round：工作流内部当前来源检索轮次，用于保留第三轮领域来源补足策略。
         search_mode：标准或深度搜索模式。
         enable_semantic_ranking：是否允许执行 BGE-M3 语义粗排。
         enable_cross_encoder_ranking：是否允许执行 Cross Encoder 重排。
@@ -73,6 +73,7 @@ class QueryIntent(BaseModel):
     subqueries: list[QuerySubquery] = Field(default_factory=list)  # 保存可执行的子查询计划。
     target_paper_count: int = Field(default=20, ge=1, le=100)  # 限制最终结果规模以控制成本。
     source_recall_count: int | None = Field(default=None, ge=1, le=100)  # 将来源召回规模与最终展示数量分离。
+    retrieval_round: int = Field(default=1, ge=1, le=3, exclude=True)  # 仅供工作流按轮次选择来源，不作为前端查询编辑字段返回。
     search_mode: SearchMode = "standard"  # 默认使用成本更低的标准检索模式。
     enable_semantic_ranking: bool = False  # 允许用户选择执行 BGE-M3，默认不加载本地模型。
     enable_cross_encoder_ranking: bool = False  # 允许用户选择执行 Cross Encoder，默认不加载本地模型。
@@ -91,8 +92,6 @@ class QueryIntent(BaseModel):
         """
         if self.year_range and self.year_range[0] > self.year_range[1]:  # 防止产生无法执行的倒置年份区间。
             raise ValueError("year_range 的起始年份不能晚于结束年份")  # 返回可供 API 层展示的稳定错误。
-        if self.source_recall_count is not None and self.source_recall_count < self.target_paper_count:  # 来源候选不应少于最终目标。
-            raise ValueError("source_recall_count 不能小于 target_paper_count")  # 防止配置主动压缩召回。
         must_terms = {term.strip().casefold() for term in self.must_include if term.strip()}  # 规范化硬约束用于冲突比较。
         should_terms = {term.strip().casefold() for term in self.should_include if term.strip()}  # 规范化软偏好用于冲突比较。
         excluded_terms = {term.strip().casefold() for term in self.exclude if term.strip()}  # 规范化排除词用于冲突比较。

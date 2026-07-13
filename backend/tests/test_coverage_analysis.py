@@ -47,15 +47,17 @@ def test_analyzer_stops_when_target_and_key_constraints_are_covered() -> None:
     assert report.stop_reason == "已获得目标数量的高相关论文且关键约束已覆盖"  # 验证返回可展示的正常停止原因。
 
 
-def test_analyzer_prioritizes_budget_and_non_first_round_marginal_gain_stops() -> None:
-    """预算触顶优先于其他判断，无预算问题时非首轮无新增应按边际收益停止。"""
+def test_analyzer_prioritizes_budget_and_reserves_the_final_gap_recovery_round() -> None:
+    """预算触顶优先于其他判断，第二轮结果不足时必须保留第三轮补足机会。"""
     analyzer = CoverageGapAnalyzer()  # 复用默认最小新增高质量论文阈值。
     budget_report = analyzer.analyze(_query(), [], new_valid_count=0, source_counts={"openalex": 0}, budget_exhausted=True)  # 构造预算触顶且存在多个缺口的场景。
-    no_gain_report = analyzer.analyze(_query(), [], new_valid_count=0, source_counts={"openalex": 0}, current_round=2, max_rounds=3)  # 构造第二轮没有新增高质量论文的场景。
+    recovery_report = analyzer.analyze(_query(), [], new_valid_count=0, source_counts={"openalex": 0}, current_round=2, max_rounds=3)  # 构造第二轮没有新增高质量论文但仍可切换第三来源的场景。
+    no_gain_report = analyzer.analyze(_query(), [], new_valid_count=0, source_counts={"openalex": 0}, current_round=2, max_rounds=4)  # 构造在最终补足轮之前仍有额外轮次的低收益场景。
 
     assert budget_report.stop_reason == "搜索预算已达到上限"  # 验证预算保护优先于尝试补足缺口。
-    assert no_gain_report.stop_reason == "连续轮次新增高质量论文不足"  # 验证第二轮无边际收益时停止。
-    assert budget_report.should_continue is False and no_gain_report.should_continue is False  # 验证两种保护性停止均不会建议继续。
+    assert recovery_report.should_continue is True and recovery_report.stop_reason is None  # 验证结果不足时不会因第二轮零增益而跳过第三轮补足。
+    assert no_gain_report.stop_reason == "连续轮次新增高质量论文不足"  # 验证仍会在存在额外轮次时阻止连续低收益循环。
+    assert budget_report.should_continue is False and no_gain_report.should_continue is False  # 验证预算和无效扩展均不会建议继续。
 
 
 def test_analyzer_reports_source_failure_and_rejects_invalid_round_inputs() -> None:

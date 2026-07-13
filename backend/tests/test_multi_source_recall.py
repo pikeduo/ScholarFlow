@@ -138,12 +138,12 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     result = asyncio.run(  # 执行不访问网络的多源协调流程。
         coordinator.recall(_build_query_intent(domains=["machine learning"], requires_web_evidence=True))  # 路由 AI 领域并显式启用网页补充。
     )
-    assert [paper.source for paper in result.papers] == ["openalex", "arxiv", "dblp", "semantic_scholar"]  # 验证论文按路由计划顺序汇总。
+    assert [paper.source for paper in result.papers] == ["openalex", "semantic_scholar"]  # 验证首轮仅汇总核心双源，领域第三来源保留给补足轮。
     assert len(result.discoveries) == 1  # 验证网页发现不混入论文集合且被独立返回。
     assert result.discoveries[0].mergeable_as_paper is False  # 验证补充网页项仍保持不可合并边界。
-    assert result.source_counts == {"openalex": 1, "arxiv": 1, "dblp": 1, "semantic_scholar": 1, "tavily": 1}  # 验证来源级成功数量完整可观测。
+    assert result.source_counts == {"openalex": 1, "semantic_scholar": 1, "tavily": 1}  # 验证首轮实际调用来源的成功数量完整可观测。
     assert result.source_errors == {}  # 验证全部替身成功时不存在降级错误。
-    assert result.raw_paper_count == 4  # 验证来源数量统计与融合前原始论文数量分离保存。
+    assert result.raw_paper_count == 2  # 验证来源数量统计与融合前原始论文数量分离保存。
     assert result.merged_paper_count == 0  # 验证不同论文不会被错误合并。
     assert result.llm_model_name == "test-llm"  # 验证协调器透传实际 LLM 名称。
     assert result.llm_prompt_tokens == 12 and result.llm_completion_tokens == 4  # 验证协调器透传 LLM Token 统计。

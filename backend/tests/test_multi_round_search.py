@@ -54,7 +54,7 @@ class _FailingCoordinator:
         raise RuntimeError("模拟来源协调器内部故障")  # 触发 LangGraph 召回节点的安全失败路径。
 
 
-def _query(*, target_paper_count: int = 2, search_mode: str = "standard", subqueries: list[QuerySubquery] | None = None) -> QueryIntent:
+def _query(*, target_paper_count: int = 2, source_recall_count: int = 5, search_mode: str = "standard", subqueries: list[QuerySubquery] | None = None) -> QueryIntent:
     """构造可按用例控制目标数量、模式和待执行子查询的查询意图。"""
     return QueryIntent(  # 提供无需 Query Agent 或外部 API 的稳定领域输入。
         original_query="检索时间序列预测论文",  # 保存完整用户查询以满足核心契约。
@@ -62,7 +62,7 @@ def _query(*, target_paper_count: int = 2, search_mode: str = "standard", subque
         query_language="mixed",  # 标记中英文混合输入。
         research_topics=["time series forecasting"],  # 提供来源适配器首轮使用的结构化主题。
         target_paper_count=target_paper_count,  # 允许用例构造易验证的小目标数量。
-        source_recall_count=5,  # 保持来源召回数量不小于最终目标。
+        source_recall_count=source_recall_count,  # 允许用例分别控制常规来源召回规模和第三轮缺口规模。
         search_mode=search_mode,  # 控制标准或深度模式最大轮次。
         subqueries=subqueries or [],  # 注入后续轮次应执行的补充查询。
     )
@@ -111,16 +111,34 @@ def test_controller_stops_when_no_executable_query_exists() -> None:
     assert result.run_state.stop_reason == "没有可执行的新查询"  # 验证停止原因不错误归因为来源或预算。
 
 
-def test_controller_stops_on_second_deep_round_without_new_identity() -> None:
-    """深度模式第二轮只返回同 DOI 论文时，应按边际收益不足停止而不是凑数。"""
+def test_controller_uses_a_third_gap_recovery_round_after_two_insufficient_rounds() -> None:
+    """两轮后仍不足目标时应执行第三轮补足，即使第二轮只返回重复论文。"""
     subquery = QuerySubquery(query="ETT time series forecasting", language="en", purpose="dataset")  # 提供允许进入第二轮的计划子查询。
-    coordinator = _StubCoordinator([_round_result([_paper("paper-1", doi="10.1000/example")]), _round_result([_paper("paper-1-updated", doi="10.1000/example")])])  # 第二轮返回相同 DOI 但不同内部 ID 的重复论文。
+    coordinator = _StubCoordinator([_round_result([_paper("paper-1", doi="10.1000/example")]), _round_result([_paper("paper-1-updated", doi="10.1000/example")]), _round_result([])])  # 第二轮返回相同 DOI，第三轮模拟补足源未找到新增论文。
 
-    result = asyncio.run(MultiRoundSearchController(coordinator).run(_query(search_mode="deep", subqueries=[subquery])))  # 执行允许三轮的深度模式搜索。
+    result = asyncio.run(MultiRoundSearchController(coordinator).run(_query(search_mode="deep", subqueries=[subquery])))  # 执行允许第三轮补足的搜索。
 
-    assert len(coordinator.queries) == 2  # 验证重复论文后不会继续执行第三轮。
+    assert len(coordinator.queries) == 3  # 验证两轮不足时仍会进入第三轮补足。
+    assert coordinator.queries[2].retrieval_round == 3 and coordinator.queries[2].source_recall_count == 1  # 验证第三轮按剩余一篇的缺口缩小单源返回上限。
     assert [paper.paper_id for paper in result.papers] == ["paper-1-updated"]  # 验证同 DOI 记录更新而不虚增累计数量。
-    assert result.run_state.stop_reason == "连续轮次新增高质量论文不足"  # 验证第二轮无新增触发边际收益停止。
+    assert result.run_state.stop_reason == "已达到最大搜索轮次"  # 验证第三轮结束后保留不足结果并受硬轮次上限保护。
+
+
+def test_controller_sets_the_third_round_source_limit_to_the_remaining_target_gap() -> None:
+    """前两轮累计不足二十篇时，第三轮应只请求剩余高相关篇数。"""
+    first_subquery = QuerySubquery(query="ETT time series forecasting", language="en", purpose="dataset")  # 提供第二轮可执行的补充查询。
+    second_subquery = QuerySubquery(query="Transformer ETT forecasting", language="en", purpose="method")  # 提供第三轮可执行的补充查询。
+    first_round_papers = [_paper(f"paper-{index}") for index in range(1, 9)]  # 首轮提供八篇高相关论文。
+    second_round_papers = [_paper(f"paper-{index}") for index in range(9, 15)]  # 第二轮再提供六篇高相关论文。
+    third_round_papers = [_paper(f"paper-{index}") for index in range(15, 21)]  # 第三轮刚好提供剩余六篇高相关论文。
+    coordinator = _StubCoordinator([_round_result(first_round_papers), _round_result(second_round_papers), _round_result(third_round_papers)])  # 按轮次提供无需网络的固定结果。
+
+    result = asyncio.run(MultiRoundSearchController(coordinator).run(_query(target_paper_count=20, source_recall_count=50, subqueries=[first_subquery, second_subquery])))  # 执行以二十篇为目标的三轮检索。
+
+    assert len(coordinator.queries) == 3  # 验证目标不足时执行第三轮而非在第二轮提前停止。
+    assert coordinator.queries[0].source_recall_count == 50 and coordinator.queries[1].source_recall_count == 50  # 验证前两轮沿用查询规划的宽召回上限。
+    assert coordinator.queries[2].retrieval_round == 3 and coordinator.queries[2].source_recall_count == 6  # 验证第三轮按二十减十四的剩余缺口请求六篇。
+    assert len(result.papers) == 20 and result.run_state.stop_reason == "已获得目标数量的高相关论文且关键约束已覆盖"  # 验证补足结果达到目标后正常停止。
 
 
 def test_controller_stops_when_all_selected_sources_are_unavailable() -> None:

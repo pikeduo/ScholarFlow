@@ -29,7 +29,7 @@ class SingleRoundRecallCoordinator(Protocol):
 class MultiRoundSearchController:
     """装配 LangGraph 工作流所需服务，维持原有公共搜索调用契约。"""
 
-    def __init__(self, coordinator: SingleRoundRecallCoordinator, coverage_gap_analyzer: CoverageGapAnalyzer | None = None, query_evolution_service: QueryEvolutionService | None = None, state_store: SearchRunStateStore | None = None, standard_max_rounds: int = 2, deep_max_rounds: int = 3) -> None:
+    def __init__(self, coordinator: SingleRoundRecallCoordinator, coverage_gap_analyzer: CoverageGapAnalyzer | None = None, query_evolution_service: QueryEvolutionService | None = None, state_store: SearchRunStateStore | None = None, standard_max_rounds: int = 3, deep_max_rounds: int = 3) -> None:
         """保存可替换协作者和标准、深度模式的硬轮次上限。
 
         参数：
@@ -153,6 +153,16 @@ def _append_pending_subqueries(pending: list[QuerySubquery], generated: Sequence
     return result  # 返回下一轮可选择的唯一子查询队列。
 
 
-def _query_for_subquery(query: QueryIntent, subquery: QuerySubquery) -> QueryIntent:
+def _query_for_round(query: QueryIntent, *, retrieval_round: int, source_recall_count: int | None = None) -> QueryIntent:
+    """为指定轮次保留完整检索约束，并可按剩余缺口收缩单源召回上限。"""
+    return query.model_copy(update={"retrieval_round": retrieval_round, "source_recall_count": source_recall_count if source_recall_count is not None else query.source_recall_count})  # 仅覆盖工作流内部轮次与本轮每源候选规模。
+
+
+def _query_for_subquery(query: QueryIntent, subquery: QuerySubquery, *, retrieval_round: int, source_recall_count: int | None = None) -> QueryIntent:
     """将单条子查询转换为来源适配器可消费的轮次专用意图。"""
-    return query.model_copy(update={"normalized_query": subquery.query, "research_topics": [subquery.query], "methods": [], "tasks": [], "datasets": [], "subqueries": []})  # 保留硬约束并避免重复拼接首轮结构词。
+    return _query_for_round(query.model_copy(update={"normalized_query": subquery.query, "research_topics": [subquery.query], "methods": [], "tasks": [], "datasets": [], "subqueries": []}), retrieval_round=retrieval_round, source_recall_count=source_recall_count)  # 保留硬约束并避免重复拼接首轮结构词。
+
+
+def _remaining_source_recall_count(query: QueryIntent, coverage_report: CoverageReport) -> int:
+    """计算第三轮单个来源最多应返回的候选数，避免已接近目标时继续过量召回。"""
+    return max(1, query.target_paper_count - coverage_report.high_relevance_count)  # 目标不足时按缺口请求，最少保留一次有效来源调用。
