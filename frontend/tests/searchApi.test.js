@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, createQueryIntent, getPaperDetail, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, getCitationGraph, getPaperDetail, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -194,6 +194,37 @@ test('getPaperDetail 仅读取已保存论文详情并校验最小契约', async
 
   assert.equal(capturedUrl, 'http://test.local/api/v1/papers/paper-detail-1') // 验证标识被规范化并编码到详情资源路径。
   assert.equal(paper, expectedPaper) // 验证页面获得详情抽屉可渲染的统一记录。
+})
+
+test('comparePapers 限制二至五篇并提交已保存论文标识', async () => { // 验证比较入口不传递或信任前端论文事实。
+  let capturedBody = null // 保存比较请求正文。
+  const expectedResult = { items: [{ paper_id: 'paper-2', title: 'Paper Two' }, { paper_id: 'paper-1', title: 'Paper One' }] } // 构造按用户选择顺序返回的最小事实型对比。
+  const fetchStub = async (url, options) => { // 提供不访问网络的比较读取替身。
+    assert.equal(url, 'http://test.local/api/v1/compare') // 验证调用固定版本化比较路径。
+    assert.equal(options.method, 'POST') // 验证使用 POST 提交小集合标识。
+    capturedBody = JSON.parse(options.body) // 解析请求正文供断言。
+    return { ok: true, status: 200, json: async () => expectedResult } // 返回最小完整响应。
+  }
+
+  const result = await comparePapers(['paper-2', 'paper-1'], fetchStub, 'http://test.local') // 按用户选择顺序提交两个内部标识。
+
+  assert.deepEqual(capturedBody, { paper_ids: ['paper-2', 'paper-1'] }) // 验证请求只发送内部标识。
+  assert.equal(result, expectedResult) // 验证事实型结果原样返回页面层。
+  await assert.rejects(() => comparePapers(['paper-1']), /请选择 2 至 5 篇/) // 验证数量不足在网络请求前被拒绝。
+  await assert.rejects(() => comparePapers(['paper-1', 'paper-1']), /不能重复/) // 验证重复论文不能占据多个比较列。
+})
+
+test('getCitationGraph 仅以重复查询参数提交已保存论文标识', async () => { // 验证图谱入口不调用外部来源或传递前端关系事实。
+  let capturedUrl = '' // 保存图谱读取路径。
+  const fetchStub = async (url, options) => { // 提供不访问网络的图谱读取替身。
+    capturedUrl = url // 记录编码后的查询参数。
+    assert.equal(options.method, 'GET') // 验证图谱为只读请求。
+    return { ok: true, status: 200, json: async () => ({ nodes: [], edges: [], truncated: false, max_nodes: 30 }) } // 返回最小完整受限图响应。
+  }
+
+  await getCitationGraph(['paper-2', 'paper-1'], fetchStub, 'http://test.local') // 读取两个已保存论文节点。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/graph/citations?max_nodes=30&paper_ids=paper-2&paper_ids=paper-1') // 验证稳定节点上限和重复标识参数顺序。
 })
 
 test('filterSearchPapers 按来源、年份与核验状态筛选且保持原始排序', () => { // 验证本地筛选不改变后端相关性排序或发起新请求。

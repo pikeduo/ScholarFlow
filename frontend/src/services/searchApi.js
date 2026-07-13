@@ -281,6 +281,56 @@ export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiB
   }
 }
 
+/** 比较二至五篇 SQLite 已保存论文，不触发外部来源或 PDF 读取。 */
+export async function comparePapers(paperIds, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用稳定对比请求。
+  if (!Array.isArray(paperIds)) throw new SearchApiError('请选择 2 至 5 篇论文进行比较') // 阻止非数组输入进入网络层。
+  const normalizedIds = paperIds.map((paperId) => String(paperId || '').trim()) // 规范化卡片提供的内部论文标识。
+  if (normalizedIds.length < 2 || normalizedIds.length > 5 || normalizedIds.some((paperId) => !paperId)) throw new SearchApiError('请选择 2 至 5 篇论文进行比较') // 保持前端与后端相同的小集合边界。
+  if (new Set(normalizedIds).size !== normalizedIds.length) throw new SearchApiError('比较论文不能重复') // 防止同一论文占据多个固定列。
+  let response // 保存论文比较 HTTP 响应。
+  try { // 将网络或代理异常转换为安全公共提示。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/compare`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ paper_ids: normalizedIds }) }) // 仅向后端提交内部标识，不传递或信任前端论文事实。
+  } catch { // 不展示浏览器底层网络异常。
+    throw new SearchApiError('无法读取论文比较结果，请确认后端已启动') // 给出用户可执行的公共提示。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用统一公共错误解析和状态码。
+  try { // 校验固定列对比所需的最小响应契约。
+    const comparison = await response.json() // 解析后端事实型对比结果。
+    if (!comparison || !Array.isArray(comparison.items) || comparison.items.length !== normalizedIds.length || comparison.items.some((item) => typeof item?.paper_id !== 'string' || typeof item.title !== 'string')) throw new SearchApiError('论文比较结果不完整') // 防止页面渲染不可靠列。
+    return comparison // 返回按用户选择顺序排列的详情列。
+  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
+    if (error instanceof SearchApiError) throw error // 保留明确的业务提示。
+    throw new SearchApiError('论文比较结果无法解析') // 不展示原始响应正文。
+  }
+}
+
+/** 读取当前已保存论文集合的受限引用图，不调用外部引文来源。 */
+export async function getCitationGraph(paperIds, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL, maxNodes = 30) { // 允许页面和测试复用只读图谱请求。
+  if (!Array.isArray(paperIds)) throw new SearchApiError('请选择至少 1 篇论文生成引用图') // 阻止非数组输入进入网络层。
+  const normalizedIds = paperIds.map((paperId) => String(paperId || '').trim()) // 规范化当前搜索结果提供的内部标识。
+  if (!normalizedIds.length || normalizedIds.length > 50 || normalizedIds.some((paperId) => !paperId)) throw new SearchApiError('请选择 1 至 50 篇论文生成引用图') // 保持受限图的节点请求边界。
+  if (new Set(normalizedIds).size !== normalizedIds.length) throw new SearchApiError('引用图论文不能重复') // 防止同一节点重复进入布局。
+  const normalizedMaxNodes = Number(maxNodes) // 将调用方提供的节点上限转换为数值。
+  if (!Number.isInteger(normalizedMaxNodes) || normalizedMaxNodes < 1 || normalizedMaxNodes > 50) throw new SearchApiError('引用图节点上限必须在 1 至 50 之间') // 与后端查询参数边界保持一致。
+  const searchParams = new URLSearchParams({ max_nodes: String(normalizedMaxNodes) }) // 构建可安全编码的只读查询参数。
+  for (const paperId of normalizedIds) searchParams.append('paper_ids', paperId) // 使用重复参数传递稳定论文标识列表。
+  let response // 保存图谱读取 HTTP 响应。
+  try { // 将网络或代理异常转换为公共提示。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/graph/citations?${searchParams.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取 SQLite 已保存的内部关系图。
+  } catch { // 不暴露浏览器底层网络异常。
+    throw new SearchApiError('无法读取引用图，请确认后端已启动') // 给出用户可执行的公共提示。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用统一公共错误解析和状态码。
+  try { // 校验图谱面板依赖的最小节点与边契约。
+    const graph = await response.json() // 解析后端受限图响应。
+    if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || typeof graph.truncated !== 'boolean') throw new SearchApiError('引用图数据不完整') // 防止页面渲染损坏关系数据。
+    return graph // 返回不含外部扩展的内部事实图。
+  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
+    if (error instanceof SearchApiError) throw error // 保留明确业务提示。
+    throw new SearchApiError('引用图数据无法解析') // 不展示原始响应正文。
+  }
+}
+
 /** 将 SSE 单帧解析为已净化的事件 data JSON。 */
 function parseSseFrame(frame) { // 接收不含结尾空行的 SSE 文本帧。
   const dataLine = frame.split('\n').find((line) => line.startsWith('data:')) // 仅消费服务端标准 data 行。

@@ -43,6 +43,8 @@ def test_repository_persists_lightweight_snapshot_and_overwrites_latest_state() 
         recovered_paper = repository.get_paper("paper-1")  # 从 SQLite 最终结果快照读取单篇详情。
         assert recovered_paper is not None and recovered_paper.title == "Transformer Forecasting"  # 验证详情读取复用已保存规范化论文而不依赖外部来源。
         assert repository.get_paper("missing-paper") is None  # 验证未知论文稳定返回空值供 API 映射为 404。
+        compared_papers = repository.get_papers(["paper-1", "missing-paper"])  # 批量读取已保存论文并保留请求相对顺序。
+        assert [paper.paper_id for paper in compared_papers] == ["paper-1"]  # 验证缺失论文不会伪造为空白比较列。
     finally:  # 无论断言是否失败都关闭会话和引擎。
         session.close()  # 释放内存数据库会话。
         engine.dispose()  # 释放测试引擎资源。

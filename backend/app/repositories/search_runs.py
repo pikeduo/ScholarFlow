@@ -1,6 +1,7 @@
 """使用 SQLite 持久化可恢复的轻量搜索运行状态快照。"""
 
 from datetime import datetime, timezone  # 生成无歧义的运行状态更新时间。
+from collections.abc import Sequence  # 标注批量论文标识输入的只读序列。
 
 from sqlalchemy import DateTime, String, Text, select  # 声明运行表字段并按运行标识查询。
 from sqlalchemy.orm import Mapped, Session, mapped_column  # 声明 ORM 映射和请求级事务边界。
@@ -112,6 +113,26 @@ class SearchRunRepository:
                 if paper.paper_id == paper_id:  # 找到时立即返回，保持较新快照优先。
                     return paper  # 返回完整规范化论文记录供详情接口展示。
         return None  # 所有已保存快照都未命中时交由 API 映射为 404。
+
+    def get_papers(self, paper_ids: Sequence[str]) -> list[PaperRecord]:
+        """从 SQLite 最终结果快照批量读取论文，并保持请求标识顺序。
+
+        参数：
+            paper_ids：已完成去重与数量校验的内部论文标识序列。
+        返回：
+            list[PaperRecord]：命中的最新论文详情；缺失标识不会出现在结果中。
+        """
+        requested_ids = set(paper_ids)  # 构造集合以避免对每篇论文重复线性比较。
+        found_papers: dict[str, PaperRecord] = {}  # 保存较新快照优先的命中记录。
+        rows = self._session.scalars(select(SearchRunResultRow).order_by(SearchRunResultRow.updated_at.desc())).all()  # 先读取更新更晚的最终结果快照。
+        for row in rows:  # 快照只保存最终小集合，可安全执行确定性扫描。
+            result = MultiRoundSearchResult.model_validate_json(row.result_json)  # 恢复经过领域校验的完整论文集合。
+            for paper in result.papers:  # 逐篇检查是否属于本次对比请求。
+                if paper.paper_id in requested_ids and paper.paper_id not in found_papers:  # 只保留最近快照中的同一论文。
+                    found_papers[paper.paper_id] = paper  # 保存完整规范化记录供对比服务复用。
+            if len(found_papers) == len(requested_ids):  # 所有请求论文已命中时无需继续解析较旧快照。
+                break  # 缩短详情较多时的无效 SQLite 扫描。
+        return [found_papers[paper_id] for paper_id in paper_ids if paper_id in found_papers]  # 按用户选择顺序返回，便于前端固定列展示。
 
 
 def _lightweight_snapshot(state: SearchRunState) -> SearchRunState:

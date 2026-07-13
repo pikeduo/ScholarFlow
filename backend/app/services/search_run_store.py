@@ -1,6 +1,7 @@
 """提供可由多轮控制器调用的 SQLite 搜索运行状态存储适配层。"""
 
 from collections.abc import Callable  # 标注可替换的数据库会话工厂。
+from collections.abc import Sequence  # 标注批量论文标识的只读输入序列。
 from typing import Protocol  # 定义控制器依赖的最小状态保存协议。
 
 from sqlalchemy.exc import SQLAlchemyError  # 将持久化异常映射为服务边界错误。
@@ -36,6 +37,10 @@ class SearchRunStateStore(Protocol):
     def get_paper(self, paper_id: str) -> PaperRecord | None:
         """按论文标识读取已保存搜索结果中的最新论文详情。"""
         ...  # 不存在时返回空值，详情入口不得调用外部学术来源。
+
+    def get_papers(self, paper_ids: Sequence[str]) -> list[PaperRecord]:
+        """按论文标识批量读取已保存搜索结果，供小集合对比使用。"""
+        ...  # 不存在标识不在返回结果中，调用方负责统一映射错误。
 
 
 class SearchRunStoreError(RuntimeError):
@@ -131,3 +136,22 @@ class SqliteSearchRunStateStore:
             raise SearchRunStoreError("论文详情暂时无法读取") from exc  # 向 API 暴露稳定可处理的错误边界。
         finally:  # 成功或失败都必须释放数据库会话。
             session.close()  # 防止详情查看积累空闲连接。
+
+    def get_papers(self, paper_ids: Sequence[str]) -> list[PaperRecord]:
+        """批量读取已保存论文详情，数据库异常时抛出安全服务错误。
+
+        参数：
+            paper_ids：已经过 API 数量和重复校验的内部论文标识。
+        返回：
+            list[PaperRecord]：按请求顺序排列的已保存论文记录。
+        异常：
+            SearchRunStoreError：SQLite 或历史快照解析异常时抛出。
+        """
+        session = self._session_factory()  # 为本次小集合比较创建独立短生命周期会话。
+        try:  # 仓储负责扫描 SQLite 结果快照，不访问任何外部 API。
+            return SearchRunRepository(session).get_papers(paper_ids)  # 保持比较与详情读取同一持久化事实边界。
+        except (SQLAlchemyError, ValueError) as exc:  # 覆盖数据库与历史 JSON 快照格式异常。
+            logger.exception("搜索论文批量读取失败：数量=%s", len(paper_ids))  # 仅记录数量和堆栈，不记录论文内容。
+            raise SearchRunStoreError("论文比较数据暂时无法读取") from exc  # 返回稳定公共服务错误。
+        finally:  # 成功或失败都释放会话。
+            session.close()  # 防止比较请求泄漏数据库连接。

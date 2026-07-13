@@ -6,8 +6,10 @@ const props = defineProps({ // 声明论文和列表序号输入。
   rank: { type: Number, required: true }, // 接收从一开始的结果排名。
   saved: { type: Boolean, default: false }, // 标记当前搜索会话中是否已收藏。
   saving: { type: Boolean, default: false }, // 标记收藏请求是否进行中。
+  comparisonSelected: { type: Boolean, default: false }, // 标记当前论文是否已加入比较集合。
+  comparisonDisabled: { type: Boolean, default: false }, // 标记达到比较上限时是否禁止新增选择。
 })
-const emit = defineEmits(['save', 'detail']) // 将收藏与详情读取操作交给搜索页统一调用 API。
+const emit = defineEmits(['save', 'detail', 'compare']) // 将收藏、详情与比较选择操作交给搜索页统一调用 API。
 
 const authors = computed(() => { // 将作者列表压缩为适合卡片的文本。
   const names = (props.paper.authors || []).map((author) => author.name).filter(Boolean) // 提取有效作者名称。
@@ -88,6 +90,7 @@ const scoreLabel = computed(() => { // 将归一化 LLM 分数转为百分比。
           <span v-if="paper.work_family_id">版本族 {{ paper.work_family_id }}</span>
         </div>
         <div class="paper-actions">
+          <button type="button" :class="{ 'is-selected': comparisonSelected }" :disabled="comparisonDisabled && !comparisonSelected" @click="emit('compare', paper)">{{ comparisonSelected ? '已加入比较' : '加入比较' }}</button>
           <button type="button" class="detail-button" @click="emit('detail', paper)">查看详情</button>
           <button type="button" :class="{ 'is-saved': saved }" :disabled="saving || saved" @click="emit('save', paper)">{{ saving ? '正在收藏…' : saved ? '已收藏' : '收藏到文献库' }}</button>
         </div>
@@ -328,6 +331,12 @@ h3 a { /* 设置可访问论文标题链接。 */
   border-color: #b9dacb; /* 使用可信绿色边界。 */
   color: #28745a; /* 使用绿色文字。 */
   background: #e8f7f0; /* 使用浅绿背景。 */
+}
+
+.paper-footer button.is-selected { /* 标记已加入当前小集合比较。 */
+  border-color: #b7d0bc; /* 使用绿色边框区别比较选择状态。 */
+  color: #28745a; /* 使用可信绿色文字。 */
+  background: #e8f7f0; /* 使用浅绿背景提示可再次取消。 */
 }
 
 .paper-footer button.detail-button { /* 将只读详情入口保持为次级操作。 */
