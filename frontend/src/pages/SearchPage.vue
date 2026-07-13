@@ -1,11 +1,11 @@
 <script setup>
-import { computed, reactive, ref } from 'vue' // 管理搜索表单、请求状态和结果派生数据。
+import { computed, onMounted, reactive, ref } from 'vue' // 管理搜索表单、恢复入口和结果派生数据。
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 接收自然入口或编辑意图重搜的实时进度。
+import { SearchApiError, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索，并按 run_id 恢复已保存运行。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -34,6 +34,7 @@ const savedPaperIds = ref(new Set()) // 保存当前页面已成功收藏的论�
 const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防止重复点击。
 const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
+const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 
 const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
@@ -51,6 +52,49 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
 function useExample(example) { // 将示例查询填入输入框但不自动发起外部调用。
   form.queryText = example // 允许用户继续编辑示例。
   errorMessage.value = '' // 清除此前表单错误。
+}
+
+function buildConditionChipsFromIntent(intent) { // 将已保存 QueryIntent 转换为恢复结果所需的条件标签。
+  return buildConditionChips({ // 复用与新提交结果一致的标签规则。
+    searchMode: intent.search_mode, // 回显保存的搜索模式。
+    startYear: intent.year_range?.[0] || '', // 回显保存的起始年份。
+    endYear: intent.year_range?.[1] || '', // 回显保存的结束年份。
+    mustInclude: (intent.must_include || []).join(', '), // 回显保存的硬约束。
+    shouldInclude: (intent.should_include || []).join(', '), // 回显保存的软约束。
+    exclude: (intent.exclude || []).join(', '), // 回显保存的排除条件。
+  })
+}
+
+function syncRunIdToUrl(runId) { // 将可恢复运行标识写入当前地址而不产生额外历史记录。
+  if (!runId || !globalThis.location?.href || !globalThis.history?.replaceState) return // 非浏览器或缺少历史 API 时保持页面功能可用。
+  const url = new URL(globalThis.location.href) // 从当前地址构造可安全修改的 URL 对象。
+  url.searchParams.set('run_id', runId) // 仅保存不可猜测的运行标识，不写入完整研究问题。
+  globalThis.history.replaceState(null, '', url) // 使用替换避免每条 SSE 事件污染浏览历史。
+}
+
+async function restoreRunFromUrl() { // 在页面首次挂载时恢复已有 run_id 对应的状态或最终结果。
+  const runId = new URLSearchParams(globalThis.location?.search || '').get('run_id')?.trim() // 只读取 URL 查询参数中的稳定运行标识。
+  if (!runId) return // 普通首次访问保持空白搜索页。
+  loading.value = true // 显示恢复中状态并防止用户同时发起新搜索。
+  errorMessage.value = '' // 清除可能由热更新保留的旧错误。
+  recoveryMessage.value = '' // 清除旧恢复提示。
+  try { // 通过只读 REST 恢复状态，不重新调用 Query Agent 或学术来源。
+    const recovered = await restoreSearchRun(runId) // 先读取轻量状态，终态再读取完整结果。
+    progressEvent.value = { run_id: recovered.state.run_id, current_round: recovered.state.current_round || 0, progress: recovered.state.status === 'completed' ? 1 : 0, message: `已恢复搜索运行：${recovered.state.status}` } // 为运行中状态提供安全、轻量的过程提示。
+    if (recovered.result) { // 只有完成结果存在时才替换页面论文列表。
+      result.value = recovered.result // 使用同次持久化结果，绝不重复检索。
+      submittedQuery.value = recovered.result.query_intent.original_query // 回显本次真正执行的原始研究问题。
+      conditionChips.value = buildConditionChipsFromIntent(recovered.result.query_intent) // 用保存的意图构造结果条件标签。
+      recoveryMessage.value = '已从保存的搜索运行恢复结果' // 向用户说明刷新没有产生新的检索调用。
+    } else { // 运行尚未形成最终结果时仅恢复状态。
+      submittedQuery.value = recovered.state.query_intent.original_query // 回显运行关联的原始研究问题。
+      recoveryMessage.value = '已恢复搜索运行状态；最终结果就绪后可刷新本页查看' // 明确当前没有伪造结果。
+    }
+  } catch (error) { // 将不存在运行或读取失败转换为安全页面提示。
+    errorMessage.value = error instanceof SearchApiError ? error.message : '恢复已保存的搜索运行时出现未知错误，请稍后重试' // 不展示内部路径或响应正文。
+  } finally { // 无论恢复成功或失败都恢复表单操作。
+    loading.value = false // 结束恢复加载状态。
+  }
 }
 
 function buildConditionChips(formSnapshot) { // 将已提交表单快照转换为结果区可回顾标签。
@@ -73,6 +117,7 @@ async function submitSearch() { // 执行完整多源检索并更新页面状态
     result.value = nextResult // 仅在成功解析响应后替换已有结果。
     submittedQuery.value = formSnapshot.queryText.trim() // 保存结果对应查询供标题回显。
     conditionChips.value = buildConditionChips(formSnapshot) // 保存与当前结果严格对应的条件标签。
+    recoveryMessage.value = '' // 新搜索成功后清除旧运行恢复提示。
   } catch (error) { // 将已知和未知错误转换为安全界面消息。
     errorMessage.value = error instanceof SearchApiError ? error.message : '检索过程中出现未知错误，请稍后重试' // 不展示堆栈或响应正文。
   } finally { // 无论成功失败都恢复表单操作。
@@ -97,6 +142,7 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
       shouldInclude: (editedIntent.should_include || []).join(', '), // 映射软偏好。
       exclude: (editedIntent.exclude || []).join(', '), // 映射排除条件。
     })
+    recoveryMessage.value = '' // 编辑重搜成功后清除旧运行恢复提示。
   } catch (error) { // 将已知和未知错误转换为安全界面消息。
     errorMessage.value = error instanceof SearchApiError ? error.message : '重新检索过程中出现未知错误，请稍后重试' // 不展示内部堆栈。
   } finally { // 无论成功失败都恢复交互。
@@ -106,7 +152,12 @@ async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryI
 
 function handleProgressEvent(event) { // 接收客户端已校验的 SSE 事件并更新加载区轻量状态。
   progressEvent.value = event // 仅保存运行标识、轮次、数量和安全消息。
+  if (typeof event.run_id === 'string') syncRunIdToUrl(event.run_id) // 首个事件到达后更新地址以支持刷新恢复。
 }
+
+onMounted(() => { // Vue 页面首次显示后读取地址中的可恢复运行标识。
+  void restoreRunFromUrl() // 恢复过程不阻塞首屏挂载或输入框渲染。
+})
 
 async function savePaper(paper) { // 将单篇搜索结果去重保存到个人文献库。
   if (savingPaperIds.value.has(paper.paper_id) || savedPaperIds.value.has(paper.paper_id)) return // 防止同一卡片重复提交。
@@ -188,7 +239,8 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
             <span><strong>补充网页证据</strong><small>Tavily 结果将独立展示，不会伪装成论文。</small></span>
           </label>
         </div>
-        <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+      <p v-if="recoveryMessage" class="recovery-message" role="status">{{ recoveryMessage }}</p>
       </form>
       <div class="example-row" aria-label="示例查询">
         <span>试试这些问题</span>
@@ -578,6 +630,15 @@ legend { /* 标记检索模式字段组。 */
   color: #9b3c36; /* 使用克制红色。 */
   background: #fff0ee; /* 使用浅红背景。 */
   font-size: 0.72rem; /* 保持错误可读。 */
+}
+
+.recovery-message { /* 展示不会触发重新检索的运行恢复提示。 */
+  margin: 0.9rem 0 0; /* 与表单控件和错误提示保持一致间距。 */
+  padding: 0.7rem 0.8rem; /* 提供清晰可扫读的提示区域。 */
+  border-radius: 0.65rem; /* 与表单错误提示保持视觉一致。 */
+  color: #386277; /* 使用中性蓝色而非成功或错误色。 */
+  background: #eef6fa; /* 区分于搜索结果和错误状态。 */
+  font-size: 0.72rem; /* 保持辅助信息层级。 */
 }
 
 .example-row { /* 横向展示查询示例入口。 */

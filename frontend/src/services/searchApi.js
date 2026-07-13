@@ -205,11 +205,47 @@ async function streamSearch(path, requestBody, onEvent, fetchImpl, apiBaseUrl) {
   return getSearchRunResult(runId, fetchImpl, apiBaseUrl) // 只读取本次 SSE 已完成运行的结果，不会再次执行检索。
 }
 
+/** 按运行标识读取 SQLite 最新轻量状态，用于刷新页面后的恢复入口。 */
+export async function getSearchRunState(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读恢复请求。
+  const normalizedRunId = String(runId || '').trim() // 规范化 URL 传入的运行标识。
+  if (!normalizedRunId) throw new SearchApiError('缺少需要恢复的搜索运行标识') // 防止请求无效资源路径。
+  let response // 保存状态读取 HTTP 响应。
+  try { // 将浏览器网络失败转换为稳定恢复提示。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 只读取已持久化快照，不重新执行搜索。
+  } catch { // 捕获断网、代理或服务未启动错误。
+    throw new SearchApiError('无法读取已保存的搜索运行，请确认后端已启动') // 不暴露底层网络错误。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 将不存在或服务故障映射为安全公共错误。
+  try { // 校验页面恢复进度所需的最小状态契约。
+    const state = await response.json() // 解析 SearchRunState JSON。
+    if (!state || typeof state.run_id !== 'string' || typeof state.status !== 'string' || typeof state.query_intent !== 'object') throw new SearchApiError('已保存的搜索运行状态不完整') // 避免页面按无效快照恢复。
+    return state // 返回轻量快照，论文集合仍由结果接口独立读取。
+  } catch (error) { // 统一处理 JSON 或状态契约异常。
+    if (error instanceof SearchApiError) throw error // 保留明确的恢复错误消息。
+    throw new SearchApiError('已保存的搜索运行状态无法解析') // 不展示原始响应内容。
+  }
+}
+
+/** 恢复一次搜索运行：始终读取状态，终态再读取同次最终结果。 */
+export async function restoreSearchRun(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 为刷新页面提供不重新检索的组合读取入口。
+  const state = await getSearchRunState(runId, fetchImpl, apiBaseUrl) // 先恢复所有运行都具备的轻量状态。
+  if (!['completed', 'failed'].includes(state.status)) return { state, result: null } // 运行中或排队状态尚无稳定最终结果，禁止将空集合伪装为完成。
+  try { // 仅对终态读取同一 run_id 已持久化的完整结果。
+    const result = await getSearchRunResult(state.run_id, fetchImpl, apiBaseUrl) // 不触发任何新的来源调用。
+    return { state, result } // 返回终态状态及完整论文集合。
+  } catch (error) { // 结果写入与状态快照之间可能存在极短暂延迟。
+    if (error instanceof SearchApiError && error.status === 404) return { state, result: null } // 保留已恢复状态并允许页面提示用户稍后刷新。
+    throw error // 其余网络或服务故障继续由页面统一展示。
+  }
+}
+
 /** 读取由 SSE 同次运行持久化的最终结果。 */
-async function getSearchRunResult(runId, fetchImpl, apiBaseUrl) { // 接收已由服务端生成的稳定运行标识。
+export async function getSearchRunResult(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收已由服务端生成的稳定运行标识。
+  const normalizedRunId = String(runId || '').trim() // 规范化 URL 或 SSE 提供的运行标识。
+  if (!normalizedRunId) throw new SearchApiError('缺少需要读取的搜索运行标识') // 防止请求无效结果资源路径。
   let response // 保存最终结果 HTTP 响应。
   try { // 将断网或代理错误转换为统一用户消息。
-    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(runId)}/result`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取同次运行的结果快照。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/result`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取同次运行的结果快照。
   } catch { // 捕获结果读取阶段网络错误。
     throw new SearchApiError('检索已完成但无法读取最终结果，请稍后重试') // 提示用户可使用 run_id 后续恢复读取。
   }

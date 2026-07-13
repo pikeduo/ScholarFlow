@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, createQueryIntent, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST 和 SSE API 入口。
+import { SearchApiError, createQueryIntent, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE 与运行恢复入口。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
   queryText: '检索 Transformer forecasting 论文', // 提供中英混合查询。
@@ -144,6 +144,40 @@ test('streamSearchWithIntent 使用直接意图事件入口并保留编辑重搜
 
   assert.equal(firstRequest, 'http://test.local/api/v1/search/multi-round/events') // 验证直接使用编辑意图 SSE 入口。
   assert.equal(result, expectedResult) // 验证结果来自同次运行的 REST 读取。
+})
+
+test('restoreSearchRun 先恢复状态，再读取同次已完成结果', async () => { // 验证刷新页面不会重新提交检索。
+  const runId = 'saved-completed-run' // 构造 URL 中保存的运行标识。
+  const state = { run_id: runId, status: 'completed', current_round: 2, query_intent: editableIntent } // 构造 SQLite 轻量状态快照。
+  const expectedResult = { papers: [], run_state: { run_id: runId, current_round: 2, max_rounds: 2 }, query_intent: editableIntent } // 构造同次最终结果快照。
+  const requests = [] // 记录恢复过程的只读请求顺序。
+  const fetchStub = async (url, options) => { // 依路径返回状态或最终结果响应。
+    requests.push({ url, method: options.method }) // 保存请求边界供断言。
+    if (url.endsWith(`/runs/${runId}`)) return { ok: true, status: 200, json: async () => state } // 返回已保存轻量状态。
+    return { ok: true, status: 200, json: async () => expectedResult } // 返回已保存完整结果。
+  }
+
+  const restored = await restoreSearchRun(runId, fetchStub, 'http://test.local') // 执行不产生新搜索的恢复读取。
+
+  assert.deepEqual(requests, [{ url: `http://test.local/api/v1/search/runs/${runId}`, method: 'GET' }, { url: `http://test.local/api/v1/search/runs/${runId}/result`, method: 'GET' }]) // 验证只读取状态和同次结果资源。
+  assert.equal(restored.state, state) // 验证状态快照原样返回页面层。
+  assert.equal(restored.result, expectedResult) // 验证完成运行恢复同次最终结果。
+})
+
+test('restoreSearchRun 对运行中状态只恢复进度，不读取或伪造最终结果', async () => { // 验证刷新运行中页面不会重复调用来源。
+  const runId = 'saved-running-run' // 构造尚未完成运行标识。
+  const state = { run_id: runId, status: 'running', current_round: 1, query_intent: editableIntent } // 构造运行中轻量状态。
+  let requestCount = 0 // 记录只应发生一次状态读取。
+  const fetchStub = async () => { // 返回运行中状态且不提供最终结果响应。
+    requestCount += 1 // 记录恢复读取次数。
+    return { ok: true, status: 200, json: async () => state } // 返回固定状态快照。
+  }
+
+  const restored = await restoreSearchRun(runId, fetchStub, 'http://test.local') // 恢复运行中状态。
+
+  assert.equal(requestCount, 1) // 验证不读取尚未就绪的结果接口。
+  assert.equal(restored.state, state) // 验证页面仍可展示当前轮次与状态。
+  assert.equal(restored.result, null) // 验证没有最终结果时不伪造空论文集合。
 })
 
 test('validateQueryIntent 拒绝倒置年份、候选不足和条件冲突', () => { // 验证编辑重搜的关键错误边界。
