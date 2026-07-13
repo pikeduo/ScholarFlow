@@ -77,8 +77,18 @@ class _PassthroughLlmReranker:
         return LlmRankingResult(papers=papers, input_count=len(papers), model_name="test-llm", prompt_tokens=12, completion_tokens=4)  # 构造无需网络和密钥且含成本统计的稳定最终结果。
 
 
-def _build_query_intent(domains: list[str] | None = None, requires_web_evidence: bool = False, search_mode: str = "standard") -> QueryIntent:
-    """构造可用于多源召回协调测试的最小有效查询意图。"""
+def _build_query_intent(domains: list[str] | None = None, requires_web_evidence: bool = False, search_mode: str = "standard", enable_semantic_ranking: bool = True, enable_cross_encoder_ranking: bool = True) -> QueryIntent:
+    """构造可用于多源召回协调测试的最小有效查询意图。
+
+    参数：
+        domains：可选领域标签。
+        requires_web_evidence：是否启用补充网页发现。
+        search_mode：标准或深度检索模式。
+        enable_semantic_ranking：深度模式下是否执行 BGE-M3。
+        enable_cross_encoder_ranking：深度模式下是否执行 Cross Encoder。
+    返回：
+        QueryIntent：包含测试所需排序开关的最小有效意图。
+    """
     return QueryIntent(  # 构造无需 LLM 或网络的查询规划结果。
         original_query="Transformer forecasting",  # 提供用户原始查询文本。
         normalized_query="Transformer forecasting",  # 提供可复现的规范化查询文本。
@@ -86,6 +96,8 @@ def _build_query_intent(domains: list[str] | None = None, requires_web_evidence:
         domains=domains or [],  # 注入当前测试需要的领域标签。
         requires_web_evidence=requires_web_evidence,  # 注入当前测试需要的网页证据开关。
         search_mode=search_mode,  # 注入标准或深度模型策略。
+        enable_semantic_ranking=enable_semantic_ranking,  # 注入 BGE-M3 用户选择以验证协调器分支。
+        enable_cross_encoder_ranking=enable_cross_encoder_ranking,  # 注入 Cross Encoder 用户选择以验证协调器分支。
     )
 
 
