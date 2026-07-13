@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue' // 管理搜索表单、筛选分页和恢复轮询生命周期。
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue' // 管理搜索表单、筛选分页和恢复轮询生命周期。
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
@@ -67,6 +67,8 @@ const resultSort = ref('relevance') // 保存服务端支持的当前展示排�
 const resultPageData = ref({ items: [], total: 0, page: 1, page_size: 5, total_pages: 1 }) // 保存服务端返回的当前结果页及分页元数据。
 const resultPageLoading = ref(false) // 标记已保存结果页是否正在读取。
 const resultPageError = ref('') // 保存服务端筛选、排序或分页读取的安全错误。
+const paperListElement = ref(null) // 保存当前页论文列表容器，用于翻页后定位到第一篇结果。
+const shouldScrollToResultList = ref(false) // 仅记录用户主动翻页后的定位需求，筛选刷新不触发滚动。
 const searchHistory = ref([]) // 保存不含查询正文和论文内容的本地运行索引。
 const searchHistoryLoading = ref(false) // 标记运行历史是否正在读取。
 const searchHistoryError = ref('') // 保存历史读取或清理的安全错误。
@@ -133,6 +135,7 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   searchUsageError.value = '' // 清除旧运行用量读取错误。
   resultPageData.value = { items: [], total: 0, page: 1, page_size: RESULT_PAGE_SIZE, total_pages: 1 } // 清除旧运行页面，避免论文卡片短暂错配。
   resultPageError.value = '' // 清除旧运行分页读取错误。
+  shouldScrollToResultList.value = false // 新搜索或恢复运行不能继承旧分页操作的滚动请求。
   if (result.value?.run_state?.run_id) void loadSearchResultPage(result.value.run_state.run_id) // 新运行结果到达后立即读取服务端首个结果页。
 })
 
@@ -250,7 +253,10 @@ function buildConditionChips(formSnapshot) { // 将已提交表单快照转换�
 }
 
 function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在当前总页数内。
-  resultPage.value = Math.min(Math.max(nextPage, 1), paperPagination.value.total_pages) // 防止筛选变化或按钮连点导致越界。
+  const normalizedPage = Math.min(Math.max(nextPage, 1), paperPagination.value.total_pages) // 防止筛选变化或按钮连点导致越界。
+  if (normalizedPage === resultPage.value) return // 首尾页点击无效时不产生额外请求或滚动。
+  shouldScrollToResultList.value = true // 只在用户实际翻页时请求定位到新页首篇论文。
+  resultPage.value = normalizedPage // 交由现有页码监听器读取对应的已保存结果。
 }
 
 function formatHistoryTime(value) { // 将服务端 UTC 时间转换为浏览器本地可读的紧凑时间文本。
@@ -340,9 +346,17 @@ async function loadSearchResultPage(runId = runState.value?.run_id) { // 从服�
     if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) { // 仅接受当前运行且最新条件对应的响应。
       resultPageData.value = nextPage // 替换为后端已校正页码和统计的唯一事实源。
       resultPage.value = nextPage.page // 服务端在筛选收缩页数时可安全校正越界页码。
+      if (shouldScrollToResultList.value) { // 只处理用户点击分页控件发起的页面切换。
+        shouldScrollToResultList.value = false // 先消费标记，避免后续筛选或响应重复滚动。
+        await nextTick() // 等待 Vue 将新页第一篇论文真实渲染到列表容器中。
+        if (requestVersion === resultPageRequestVersion) paperListElement.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }) // 将新页第一条结果置于可视区域顶部。
+      }
     }
   } catch (error) { // 将客户端已净化错误映射为紧凑页面提示。
-    if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) resultPageError.value = error instanceof SearchApiError ? error.message : '读取筛选后的搜索结果时出现未知错误，请稍后重试' // 不展示网络或存储内部细节。
+    if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) { // 只显示当前运行和最新条件的失败。
+      shouldScrollToResultList.value = false // 当前翻页读取失败时取消定位，避免后续请求误触发滚动。
+      resultPageError.value = error instanceof SearchApiError ? error.message : '读取筛选后的搜索结果时出现未知错误，请稍后重试' // 不展示网络或存储内部细节。
+    }
   } finally { // 仅由最新请求关闭加载状态，避免旧请求误导当前筛选界面。
     if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) resultPageLoading.value = false // 恢复分页控件可操作状态。
   }
@@ -734,7 +748,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       </section>
       <p v-if="comparisonError && !comparisonResult" class="comparison-message" role="alert">{{ comparisonError }}</p>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
-      <div v-if="paperPagination.items.length" class="paper-list">
+      <div v-if="paperPagination.items.length" ref="paperListElement" class="paper-list">
         <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.page_size + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="comparisonPaperIds.includes(paper.paper_id)" :comparison-disabled="comparisonPaperIds.length >= 5" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
       </div>
       <div v-else class="empty-state">
