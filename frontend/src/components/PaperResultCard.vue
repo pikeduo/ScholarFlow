@@ -12,7 +12,8 @@ const props = defineProps({ // 声明论文和列表序号输入。
   comparisonDisabled: { type: Boolean, default: false }, // 标记达到比较上限时是否禁止新增选择。
 })
 const emit = defineEmits(['save', 'detail', 'compare']) // 将收藏、详情与比较选择操作交给搜索页统一调用 API。
-const translation = ref(null) // 保存当前卡片可复用的标题和摘要中文译文。
+const titleTranslation = ref(null) // 保存当前卡片独立获得的中文标题译文。
+const abstractTranslation = ref(null) // 保存当前卡片独立获得的中文摘要译文。
 const translationLoading = ref(false) // 标记当前论文翻译请求进行中以避免重复调用模型。
 const translationError = ref('') // 保存可安全展示的翻译失败原因。
 const showTitleTranslation = ref(false) // 控制标题译文是否在原文标题下方显示。
@@ -54,35 +55,38 @@ const scoreLabel = computed(() => { // 将归一化 LLM 分数转为百分比。
   return typeof score === 'number' ? `${Math.round(score * 100)}%` : '—' // 缺失分数时不虚构数值。
 })
 
-function translationCacheKey() { // 为当前论文原文生成本地持久缓存键。
-  const sourceText = `${props.paper.paper_id}\u0000${props.paper.title}\u0000${props.paper.abstract}` // 绑定论文标识和当前标题摘要，原文更新后自然失效。
+function translationCacheKey(field, sourceText) { // 为当前论文单字段原文生成本地持久缓存键。
+  const cacheSource = `${props.paper.paper_id}\u0000${field}\u0000${sourceText}` // 绑定论文标识、字段和当前原文，字段独立且原文更新后自然失效。
   let hash = 0 // 使用轻量哈希避免将完整论文文本暴露为浏览器键名。
-  for (const character of sourceText) hash = ((hash << 5) - hash + character.codePointAt(0)) | 0 // 累积稳定的 32 位文本摘要。
-  return `ScholarFlow:paper:translation:${props.paper.paper_id}:${hash >>> 0}` // 保持项目、模块与论文标识可读且不含原文。
+  for (const character of cacheSource) hash = ((hash << 5) - hash + character.codePointAt(0)) | 0 // 累积稳定的 32 位文本摘要。
+  return `ScholarFlow:paper:translation:${props.paper.paper_id}:${field}:${hash >>> 0}` // 保持项目、模块、字段与论文标识可读且不含原文。
 }
 
-function readCachedTranslation() { // 从浏览器本地持久缓存读取已校验的双字段译文。
+function readCachedTranslation(field, sourceText) { // 从浏览器本地持久缓存读取已校验的单字段译文。
   try { // 私密模式或存储受限时必须保持翻译功能可用。
-    const cached = globalThis.localStorage?.getItem(translationCacheKey()) // 只读取与当前原文完全对应的缓存项。
+    const cached = globalThis.localStorage?.getItem(translationCacheKey(field, sourceText)) // 只读取与当前字段原文完全对应的缓存项。
     const parsed = cached ? JSON.parse(cached) : null // 解析先前写入的 JSON 译文。
-    return parsed && typeof parsed.title_zh === 'string' && typeof parsed.abstract_zh === 'string' && typeof parsed.model_name === 'string' ? parsed : null // 仅接受完整结构避免损坏缓存覆盖原文。
+    return parsed && parsed.field === field && typeof parsed.text_zh === 'string' && typeof parsed.model_name === 'string' ? parsed : null // 仅接受完整结构避免损坏缓存覆盖原文。
   } catch { return null } // 本地缓存不可用或损坏时安全回退模型请求。
 }
 
-function saveCachedTranslation(value) { // 将完整译文写入浏览器本地持久缓存供后续页面复用。
-  try { globalThis.localStorage?.setItem(translationCacheKey(), JSON.stringify(value)) } catch { /* 存储不可用时保留本次内存译文。 */ }
+function saveCachedTranslation(field, sourceText, value) { // 将单字段译文写入浏览器本地持久缓存供后续页面复用。
+  try { globalThis.localStorage?.setItem(translationCacheKey(field, sourceText), JSON.stringify(value)) } catch { /* 存储不可用时保留本次内存译文。 */ }
 }
 
-async function ensureTranslation() { // 优先复用本地缓存，未命中时才调用后端 DeepSeek 翻译。
-  if (translation.value || translationLoading.value) return translation.value // 已在当前卡片获得或正在请求时复用状态。
-  const cached = readCachedTranslation() // 在模型调用前检查本地持久缓存。
-  if (cached) { translation.value = cached; return cached } // 缓存命中时不发起新的模型请求。
+async function ensureTranslation(field) { // 优先复用本地缓存，未命中时才调用后端翻译指定字段。
+  const sourceText = field === 'title' ? props.paper.title : props.paper.abstract // 只选择当前用户请求的单字段原文。
+  const currentTranslation = field === 'title' ? titleTranslation.value : abstractTranslation.value // 读取对应字段的当前卡片内存结果。
+  if (currentTranslation || translationLoading.value) return currentTranslation // 已获得或正在请求时禁止重复模型调用。
+  const cached = readCachedTranslation(field, sourceText) // 在模型调用前检查字段独立的本地持久缓存。
+  if (cached) { if (field === 'title') titleTranslation.value = cached; else abstractTranslation.value = cached; return cached } // 缓存命中时只更新对应字段且不发起模型请求。
   translationLoading.value = true // 立即反馈按钮状态并锁定当前卡片请求。
   translationError.value = '' // 清除用户重试前的旧错误。
   try { // 通过受控后端边界调用 DeepSeek，浏览器不持有任何密钥。
-    translation.value = await translatePaperToChinese(props.paper.paper_id) // 仅传递已保存论文的稳定内部标识。
-    saveCachedTranslation(translation.value) // 成功后缓存双字段译文，供标题或摘要后续独立显示。
-    return translation.value // 返回当前已获得的完整译文。
+    const translated = await translatePaperToChinese(props.paper.paper_id, field) // 仅传递已保存论文标识和用户选择字段。
+    if (field === 'title') titleTranslation.value = translated; else abstractTranslation.value = translated // 只写入当前字段，禁止标题操作影响摘要显示。
+    saveCachedTranslation(field, sourceText, translated) // 成功后缓存单字段译文，供后续同字段复用。
+    return translated // 返回当前已获得的单字段译文。
   } catch (error) { // 将客户端公共错误映射到当前摘要区域。
     translationError.value = error instanceof SearchApiError ? error.message : '论文翻译暂时不可用，请稍后重试' // 不展示网络或服务端内部细节。
     return null // 请求失败时让调用方保持原文并允许重试。
@@ -92,11 +96,11 @@ async function ensureTranslation() { // 优先复用本地缓存，未命中时�
 }
 
 async function translateTitle() { // 独立显示标题译文，同时复用统一缓存和模型调用边界。
-  if (await ensureTranslation()) showTitleTranslation.value = true // 仅在成功获得译文后展示中文标题。
+  if (await ensureTranslation('title')) showTitleTranslation.value = true // 仅在成功获得标题译文后展示中文标题。
 }
 
 async function translateAbstract() { // 在用户已展开摘要后独立显示摘要译文。
-  if (await ensureTranslation()) showAbstractTranslation.value = true // 仅在成功获得译文后展示中文摘要。
+  if (await ensureTranslation('abstract')) showAbstractTranslation.value = true // 仅在成功获得摘要译文后展示中文摘要。
 }
 </script>
 
@@ -120,7 +124,7 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
       </h3>
       <div class="title-translation">
         <button type="button" class="translate-button" :disabled="translationLoading" @click="translateTitle">{{ translationLoading ? '正在翻译…' : showTitleTranslation ? '已显示中文标题' : '翻译标题' }}</button>
-        <p v-if="showTitleTranslation && translation" class="translated-title" lang="zh-CN">中文标题：{{ translation.title_zh }}</p>
+        <p v-if="showTitleTranslation && titleTranslation" class="translated-title" lang="zh-CN">{{ titleTranslation.text_zh }}</p>
       </div>
       <p class="bibliography">
         <span>{{ authors }}</span>
@@ -140,10 +144,10 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
         <p>{{ paper.abstract }}</p>
         <button type="button" class="translate-button" :disabled="translationLoading" @click="translateAbstract">{{ translationLoading ? '正在翻译…' : showAbstractTranslation ? '已显示中文摘要' : '翻译摘要' }}</button>
         <p v-if="translationError" class="translation-error" role="alert">{{ translationError }}</p>
-        <section v-if="showAbstractTranslation && translation" class="translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
+        <section v-if="showAbstractTranslation && abstractTranslation" class="translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
           <strong>中文摘要</strong>
-          <p>{{ translation.abstract_zh }}</p>
-          <small>{{ `由 ${translation.model_name} 翻译` }}</small>
+          <p>{{ abstractTranslation.text_zh }}</p>
+          <small>{{ `由 ${abstractTranslation.model_name} 翻译` }}</small>
         </section>
       </details>
       <div class="paper-footer">

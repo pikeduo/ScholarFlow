@@ -32,9 +32,9 @@ class FakePaperStore:
 class FakeTranslationClient:
     """为路由测试提供不访问 DeepSeek 的翻译替身。"""
 
-    async def translate(self, paper: PaperRecord) -> PaperTranslationResponse:
+    async def translate(self, paper: PaperRecord, field: str) -> PaperTranslationResponse:
         """返回与输入论文绑定的固定中文译文。"""
-        return PaperTranslationResponse(paper_id=paper.paper_id, title_zh="证据驱动检索", abstract_zh="这是一段中文摘要。", model_name="deepseek-v4-flash")  # 模拟已验证的模型响应。
+        return PaperTranslationResponse(paper_id=paper.paper_id, field=field, text_zh="证据驱动检索", model_name="deepseek-v4-flash")  # 模拟已验证的模型响应。
 
 
 @pytest.fixture
@@ -58,16 +58,15 @@ def test_deepseek_translation_client_sends_saved_title_and_abstract_only() -> No
         """检查请求不含无关用户数据并返回固定 DeepSeek 响应。"""
         body = json.loads(request.content.decode("utf-8"))  # 使用显式 UTF-8 解析请求 JSON。
         user_payload = json.loads(body["messages"][1]["content"])  # 读取仅含论文公开文本的用户消息。
-        assert user_payload == {"title": "Evidence Grounded Retrieval", "abstract": "This paper studies retrieval with grounded evidence."}  # 验证不发送额外用户查询或密钥。
+        assert user_payload == {"field": "title", "text": "Evidence Grounded Retrieval"}  # 验证只发送用户请求字段而不发送额外文本或密钥。
         assert body["response_format"] == {"type": "json_object"}  # 验证使用可校验 JSON Output。
-        response_body = {"model": "deepseek-v4-flash", "choices": [{"message": {"content": json.dumps({"title_zh": "证据驱动检索", "abstract_zh": "本文研究具有证据依据的检索。"}, ensure_ascii=False)}}]}  # 构造模型固定翻译响应。
+        response_body = {"model": "deepseek-v4-flash", "choices": [{"message": {"content": json.dumps({"text_zh": "证据驱动检索"}, ensure_ascii=False)}}]}  # 构造模型固定翻译响应。
         return httpx.Response(200, json=response_body, request=request)  # 返回不访问网络的成功响应。
 
     client = DeepSeekPaperTranslationClient(config=Settings(_env_file=None, deepseek_api_key="test-key"), transport=httpx.MockTransport(handler))  # 注入测试密钥与本地传输层。
-    translated = asyncio.run(client.translate(_paper()))  # 执行完整适配器请求与响应校验。
+    translated = asyncio.run(client.translate(_paper(), "title"))  # 执行单字段适配器请求与响应校验。
 
-    assert translated.title_zh == "证据驱动检索"  # 验证标题译文正确映射。
-    assert translated.abstract_zh == "本文研究具有证据依据的检索。"  # 验证摘要译文正确映射。
+    assert translated.field == "title" and translated.text_zh == "证据驱动检索"  # 验证标题字段译文正确映射。
 
 
 def test_paper_translation_endpoint_translates_only_saved_paper(api_client: TestClient) -> None:
@@ -75,10 +74,10 @@ def test_paper_translation_endpoint_translates_only_saved_paper(api_client: Test
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(_paper())  # 注入已保存论文读取替身。
     app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 注入无需网络的翻译替身。
 
-    response = api_client.post("/api/v1/papers/paper-translation-1/translation")  # 通过稳定论文资源触发按需翻译。
+    response = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 通过查询参数传递稳定论文标识并触发标题翻译。
 
     assert response.status_code == 200  # 验证用户主动翻译成功返回。
-    assert response.json()["title_zh"] == "证据驱动检索"  # 验证响应包含可供卡片显示的标题译文。
+    assert response.json()["text_zh"] == "证据驱动检索"  # 验证响应包含可供卡片显示的标题译文。
 
 
 def test_paper_translation_endpoint_rejects_unknown_paper(api_client: TestClient) -> None:
@@ -86,6 +85,6 @@ def test_paper_translation_endpoint_rejects_unknown_paper(api_client: TestClient
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(None)  # 注入未命中论文的只读替身。
     app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 即使配置翻译替身也不得被调用。
 
-    response = api_client.post("/api/v1/papers/missing-paper/translation")  # 请求不在保存快照中的论文标识。
+    response = api_client.post("/api/v1/papers/translation/abstract?paper_id=missing-paper")  # 请求不在保存快照中的论文标识。
 
     assert response.status_code == 404  # 验证未知论文不会进入模型调用边界。

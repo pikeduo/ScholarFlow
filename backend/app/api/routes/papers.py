@@ -1,8 +1,8 @@
 """提供只从已保存搜索结果读取的版本化论文详情接口。"""
 
-from typing import Annotated  # 为 FastAPI 依赖注入声明清晰类型。
+from typing import Annotated, Literal  # 为 FastAPI 依赖注入声明清晰类型与翻译字段范围。
 
-from fastapi import APIRouter, Depends, HTTPException, status  # 声明论文读取与按需翻译路由。
+from fastapi import APIRouter, Depends, HTTPException, Query, status  # 声明论文读取与按需翻译路由。
 
 from backend.app.adapters.deepseek_translation import DeepSeekPaperTranslationClient, PaperTranslationClient, PaperTranslationError  # 隔离 DeepSeek 翻译调用与可替换测试边界。
 from backend.app.api.routes.search import get_search_run_state_store  # 复用 SQLite 搜索结果存储装配，避免新增基础设施。
@@ -49,13 +49,14 @@ def get_paper_detail(
     return paper  # 返回统一 PaperRecord，不额外查询供应商 API。
 
 
-@router.post("/{paper_id}/translation", response_model=PaperTranslationResponse, status_code=status.HTTP_200_OK, summary="翻译已保存论文标题与摘要")
+@router.post("/translation/{field}", response_model=PaperTranslationResponse, status_code=status.HTTP_200_OK, summary="翻译已保存论文标题或摘要")
 async def translate_paper(
-    paper_id: str,
+    field: Literal["title", "abstract"],
+    paper_id: Annotated[str, Query(min_length=1)],
     state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
     translation_client: Annotated[PaperTranslationClient, Depends(get_paper_translation_client)],
 ) -> PaperTranslationResponse:
-    """按用户操作调用 DeepSeek，将已保存论文的标题与摘要翻译为中文。
+    """按用户操作调用 DeepSeek，将已保存论文的指定字段翻译为中文。
 
     参数：
         paper_id：搜索最终结果提供的稳定内部论文标识。
@@ -79,7 +80,7 @@ async def translate_paper(
     if not paper.abstract.strip():  # 前端仅在有摘要时显示入口，后端仍需独立保护。
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="论文摘要暂缺，无法翻译")  # 返回用户可理解的输入状态错误。
     try:  # 将真实模型异常转换为稳定 HTTP 语义。
-        return await translation_client.translate(paper)  # 仅由用户点击触发一次按需翻译调用。
+        return await translation_client.translate(paper, field)  # 仅翻译用户点击的标题或摘要字段。
     except PaperTranslationError as exc:  # 配置、网络和模型输出错误均已在适配器净化。
         logger.exception("论文翻译调用失败：论文=%s", normalized_paper_id)  # 记录完整受控堆栈但不记录标题或摘要。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from None  # 返回可重试且不泄露内部信息的公共提示。

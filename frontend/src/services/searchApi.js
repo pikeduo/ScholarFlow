@@ -355,19 +355,20 @@ export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiB
 }
 
 /** 按用户操作翻译 SQLite 已保存论文的标题与摘要，不向浏览器暴露 DeepSeek 密钥。 */
-export async function translatePaperToChinese(paperId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许论文卡片按需请求中文译文并支持离线测试。
+export async function translatePaperToChinese(paperId, field, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许论文卡片按字段请求中文译文并支持离线测试。
   const normalizedPaperId = String(paperId || '').trim() // 规范化论文卡片提供的稳定内部标识。
   if (!normalizedPaperId) throw new SearchApiError('缺少需要翻译的论文标识') // 阻止无效标识触发后端模型调用。
+  if (!['title', 'abstract'].includes(field)) throw new SearchApiError('翻译字段仅支持标题或摘要') // 防止前端请求超出后端允许范围的文本字段。
   let response // 保存翻译请求的 HTTP 响应供统一错误处理。
   try { // 将网络或代理故障转换为页面可展示的公共提示。
-    response = await fetchImpl(`${apiBaseUrl}/api/v1/papers/${encodeURIComponent(normalizedPaperId)}/translation`, { method: 'POST', headers: { Accept: 'application/json' } }) // 后端只会翻译 SQLite 已保存论文的标题与摘要。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/papers/translation/${field}?paper_id=${encodeURIComponent(normalizedPaperId)}`, { method: 'POST', headers: { Accept: 'application/json' } }) // 使用查询参数传递可能包含斜杠的来源论文标识。
   } catch { // 不向用户暴露浏览器底层网络异常。
     throw new SearchApiError('无法翻译论文，请确认后端已启动') // 给出安全且可操作的失败提示。
   }
   if (!response.ok) throw await parseSearchError(response) // 复用统一公共错误解析并保留后端安全摘要。
   try { // 校验卡片渲染中文标题和摘要所需的最小响应契约。
     const translation = await response.json() // 解析后端返回的按需翻译响应。
-    if (!translation || typeof translation.paper_id !== 'string' || typeof translation.title_zh !== 'string' || typeof translation.abstract_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('论文翻译数据不完整') // 防止损坏响应覆盖原始论文文本。
+    if (!translation || translation.field !== field || typeof translation.paper_id !== 'string' || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('论文翻译数据不完整') // 防止损坏响应覆盖原始论文文本。
     return translation // 返回经过最小校验的中文翻译。
   } catch (error) { // 将 JSON 解析或字段错误映射为稳定前端错误。
     if (error instanceof SearchApiError) throw error // 保留明确的响应契约错误。

@@ -159,20 +159,20 @@ test('streamSearchWithIntent 使用直接意图事件入口并保留编辑重搜
   assert.equal(result, expectedResult) // 验证结果来自同次运行的 REST 读取。
 })
 
-test('translatePaperToChinese 只按论文标识请求后端中文翻译', async () => { // 验证浏览器不会直接调用 DeepSeek 或传递论文正文。
+test('translatePaperToChinese 只按论文标识和字段请求后端中文翻译', async () => { // 验证浏览器不会直接调用 DeepSeek 或传递论文正文。
   let capturedUrl = '' // 保存请求地址以验证稳定资源边界。
   const fetchStub = async (url, options) => { // 提供不访问网络的翻译接口替身。
     capturedUrl = url // 记录后端翻译资源路径。
     assert.equal(options.method, 'POST') // 验证翻译由显式用户操作触发。
     assert.equal(options.body, undefined) // 验证前端不提交或伪造标题摘要正文。
-    return { ok: true, status: 200, json: async () => ({ paper_id: 'paper-1', title_zh: '中文标题', abstract_zh: '中文摘要。', model_name: 'deepseek-v4-flash' }) } // 返回最小完整中文翻译响应。
+    return { ok: true, status: 200, json: async () => ({ paper_id: 'paper-1', field: 'title', text_zh: '中文标题', model_name: 'deepseek-v4-flash' }) } // 返回最小完整单字段翻译响应。
   }
 
-  const translation = await translatePaperToChinese('paper-1', fetchStub, 'http://test.local') // 请求已保存论文的按需翻译。
+  const translation = await translatePaperToChinese('paper-1', 'title', fetchStub, 'http://test.local') // 请求已保存论文标题的按需翻译。
 
-  assert.equal(capturedUrl, 'http://test.local/api/v1/papers/paper-1/translation') // 验证论文标识安全编码到专用资源路径。
-  assert.equal(translation.abstract_zh, '中文摘要。') // 验证中文摘要可返回给卡片展示。
-  await assert.rejects(() => translatePaperToChinese('', fetchStub), /缺少需要翻译/) // 验证空标识不会进入网络层。
+  assert.equal(capturedUrl, 'http://test.local/api/v1/papers/translation/title?paper_id=paper-1') // 验证论文标识以查询参数安全传递，兼容包含斜杠的来源标识。
+  assert.equal(translation.text_zh, '中文标题') // 验证单字段译文可返回给卡片展示。
+  await assert.rejects(() => translatePaperToChinese('', 'title', fetchStub), /缺少需要翻译/) // 验证空标识不会进入网络层。
 })
 
 test('restoreSearchRun 先恢复状态，再读取同次已完成结果', async () => { // 验证刷新页面不会重新提交检索。
