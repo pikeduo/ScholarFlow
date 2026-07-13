@@ -5,8 +5,9 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、历史、用量与路线。
+import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、翻译、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
+import { buildDoiUrl } from '../utils/doi.js' // 将来源 DOI 规范化为安全的固定解析器链接。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -38,6 +39,13 @@ const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作�
 const detailPaper = ref(null) // 保存从 SQLite 读取的当前论文详情。
 const detailLoading = ref(false) // 标记详情读取请求是否进行中。
 const detailError = ref('') // 保存详情读取的安全公共错误。
+const detailTitleTranslation = ref(null) // 保存详情抽屉单独请求的中文标题译文。
+const detailAbstractTranslation = ref(null) // 保存详情抽屉单独请求的中文摘要译文。
+const detailTitleTranslationLoading = ref(false) // 只标记详情标题翻译请求，不能影响摘要操作。
+const detailAbstractTranslationLoading = ref(false) // 只标记详情摘要翻译请求，不能影响标题操作。
+const detailTitleTranslationError = ref('') // 保存详情标题翻译的局部公共错误。
+const detailAbstractTranslationError = ref('') // 保存详情摘要翻译的局部公共错误。
+let detailTranslationVersion = 0 // 标记当前详情论文，阻止关闭或切换后的旧翻译响应覆盖新内容。
 const comparisonPaperIds = ref([]) // 保存当前搜索结果中用户选择的二至五篇论文标识。
 const comparisonResult = ref(null) // 保存后端返回的事实型固定列对比结果。
 const comparisonLoading = ref(false) // 标记比较接口是否正在读取已保存论文。
@@ -89,6 +97,7 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
 const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
 const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
+const detailDoiUrl = computed(() => buildDoiUrl(detailPaper.value?.doi)) // 只为详情中的合法 DOI 渲染固定 doi.org 新标签链接。
 const citationGraphLayout = computed(() => { // 为保留的受限图能力计算确定性圆形布局。
   const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
   const radius = Math.max(95, Math.min(150, nodes.length * 14)) // 按节点数量限定圆形半径以减少重叠。
@@ -438,6 +447,7 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
 async function openPaperDetail(paper) { // 按用户点击只读读取详情，避免卡片渲染时批量请求。
   detailPaper.value = null // 清除上一条详情，防止旧内容在加载期间误导用户。
   detailError.value = '' // 清除上一条详情错误。
+  resetDetailTranslations() // 切换论文时清空上一条论文的字段级译文状态。
   detailLoading.value = true // 展示详情抽屉的读取中状态。
   try { // 统一处理 API 客户端的公共错误。
     detailPaper.value = await getPaperDetail(paper.paper_id) // 仅读取 SQLite 保存的规范化论文记录。
@@ -452,6 +462,39 @@ function closePaperDetail() { // 关闭详情抽屉并释放当前展示数据�
   detailPaper.value = null // 不在页面内长期保留论文详情副本。
   detailError.value = '' // 清除可能存在的错误提示。
   detailLoading.value = false // 防御关闭时遗留的加载状态。
+  resetDetailTranslations() // 关闭时释放标题和摘要的本次页面状态。
+}
+
+function resetDetailTranslations() { // 清空详情抽屉两种字段翻译的显示、加载和错误状态。
+  detailTranslationVersion += 1 // 让正在返回的旧论文翻译响应失效。
+  detailTitleTranslation.value = null // 防止新论文显示旧论文的中文标题。
+  detailAbstractTranslation.value = null // 防止新论文显示旧论文的中文摘要。
+  detailTitleTranslationLoading.value = false // 防御关闭或切换时遗留标题加载状态。
+  detailAbstractTranslationLoading.value = false // 防御关闭或切换时遗留摘要加载状态。
+  detailTitleTranslationError.value = '' // 清除标题字段的旧错误。
+  detailAbstractTranslationError.value = '' // 清除摘要字段的旧错误。
+}
+
+async function translateDetailField(field) { // 在详情抽屉中独立请求指定字段的已缓存中文翻译。
+  if (!detailPaper.value) return // 详情尚未读取完成时不得构造翻译请求。
+  const paperId = detailPaper.value.paper_id // 固定本次请求对应的论文，防止切换详情后写入新论文。
+  const requestVersion = detailTranslationVersion // 记录当前详情版本以识别关闭或切换后的过期响应。
+  const translation = field === 'title' ? detailTitleTranslation : detailAbstractTranslation // 选择当前字段的展示结果状态。
+  const loading = field === 'title' ? detailTitleTranslationLoading : detailAbstractTranslationLoading // 选择当前字段的加载状态。
+  const errorState = field === 'title' ? detailTitleTranslationError : detailAbstractTranslationError // 选择当前字段的错误状态。
+  if (translation.value || loading.value) return // 已翻译或当前字段请求中时不重复调用。
+  loading.value = true // 只让当前字段按钮显示正在翻译。
+  errorState.value = '' // 清除当前字段用户重试前的错误。
+  try { // 复用后端的 SQLite 缓存和 DeepSeek 受控调用边界。
+    const translated = await translatePaperToChinese(paperId, field) // 只提交本次已保存论文标识和当前字段名。
+    if (requestVersion !== detailTranslationVersion || detailPaper.value?.paper_id !== paperId) return // 关闭或切换详情后丢弃旧响应。
+    translation.value = translated // 只写入当前详情论文和当前字段的译文。
+  } catch (error) { // 将客户端公共错误显示在当前字段附近。
+    if (requestVersion !== detailTranslationVersion || detailPaper.value?.paper_id !== paperId) return // 关闭或切换详情后不显示旧请求错误。
+    errorState.value = error instanceof SearchApiError ? error.message : '论文翻译暂时不可用，请稍后重试' // 不展示网络或服务端内部细节。
+  } finally { // 无论成功或失败都恢复该字段重试能力。
+    if (requestVersion === detailTranslationVersion && detailPaper.value?.paper_id === paperId) loading.value = false // 只结束当前详情论文和字段的加载状态。
+  }
 }
 
 function togglePaperComparison(paper) { // 将当前论文加入或移出最多五篇的比较集合。
@@ -710,19 +753,38 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           <p v-else-if="detailError" class="detail-error" role="alert">{{ detailError }}</p>
           <template v-else-if="detailPaper">
             <h2 id="paper-detail-title">{{ detailPaper.title }}</h2>
+            <div class="detail-title-translation">
+              <button type="button" class="detail-translate-button" :disabled="detailTitleTranslationLoading" @click="translateDetailField('title')">{{ detailTitleTranslationLoading ? '正在翻译…' : detailTitleTranslation ? '已显示中文标题' : '翻译标题' }}</button>
+              <p v-if="detailTitleTranslationError" class="detail-translation-error" role="alert">{{ detailTitleTranslationError }}</p>
+              <p v-if="detailTitleTranslation" class="detail-translated-title" lang="zh-CN">{{ detailTitleTranslation.text_zh }}</p>
+            </div>
             <p class="detail-meta">{{ `${(detailPaper.authors || []).map((author) => author.name).filter(Boolean).join('、') || '作者信息暂缺'} · ${detailPaper.year || '年份暂缺'} · ${detailPaper.venue || 'Venue 暂缺'}` }}</p>
             <dl class="detail-identifiers">
               <div><dt>来源</dt><dd>{{ detailPaper.source }}</dd></div>
-              <div v-if="detailPaper.doi"><dt>DOI</dt><dd>{{ detailPaper.doi }}</dd></div>
+              <div v-if="detailPaper.doi"><dt>DOI</dt><dd><a v-if="detailDoiUrl" :href="detailDoiUrl" target="_blank" rel="noopener noreferrer">{{ detailPaper.doi }}</a><span v-else>{{ detailPaper.doi }}</span></dd></div>
               <div v-if="detailPaper.arxiv_id"><dt>arXiv</dt><dd>{{ detailPaper.arxiv_id }}</dd></div>
               <div v-if="detailPaper.openalex_id"><dt>OpenAlex</dt><dd>{{ detailPaper.openalex_id }}</dd></div>
               <div v-if="detailPaper.semantic_scholar_id"><dt>Semantic Scholar</dt><dd>{{ detailPaper.semantic_scholar_id }}</dd></div>
             </dl>
-            <section v-if="detailPaper.abstract" class="detail-section"><h3>摘要</h3><p>{{ detailPaper.abstract }}</p></section>
+            <section v-if="detailPaper.abstract" class="detail-section">
+              <h3>摘要</h3>
+              <p>{{ detailPaper.abstract }}</p>
+              <button type="button" class="detail-translate-button" :disabled="detailAbstractTranslationLoading" @click="translateDetailField('abstract')">{{ detailAbstractTranslationLoading ? '正在翻译…' : detailAbstractTranslation ? '已显示中文摘要' : '翻译摘要' }}</button>
+              <p v-if="detailAbstractTranslationError" class="detail-translation-error" role="alert">{{ detailAbstractTranslationError }}</p>
+              <section v-if="detailAbstractTranslation" class="detail-translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
+                <strong>中文摘要</strong>
+                <p>{{ detailAbstractTranslation.text_zh }}</p>
+                <small>{{ `由 ${detailAbstractTranslation.model_name} 翻译` }}</small>
+              </section>
+            </section>
             <section v-if="detailPaper.keywords?.length" class="detail-section"><h3>关键词</h3><p>{{ detailPaper.keywords.join(' · ') }}</p></section>
             <section v-if="detailPaper.constraint_evidence?.length" class="detail-section"><h3>约束证据</h3><ul><li v-for="evidence in detailPaper.constraint_evidence" :key="evidence">{{ evidence }}</li></ul></section>
-            <section v-if="detailPaper.references?.length" class="detail-section"><h3>已保存的参考文献标识</h3><p>{{ detailPaper.references.join(' · ') }}</p></section>
-            <a v-if="detailPaper.open_access_url" class="detail-link" :href="detailPaper.open_access_url" target="_blank" rel="noopener noreferrer">打开合法公开入口</a>
+            <section v-if="detailPaper.references?.length" class="detail-section">
+              <h3>来源提供的参考文献标识</h3>
+              <p class="reference-description">这些是当前论文引用的上游论文在原始学术来源中的标识，不代表已收藏到“我的文献库”。</p>
+              <p>{{ detailPaper.references.join(' · ') }}</p>
+            </section>
+            <a v-if="detailPaper.open_access_url" class="detail-link" :href="detailPaper.open_access_url" target="_blank" rel="noopener noreferrer">打开合法公开入口（阅读/下载）</a>
           </template>
         </aside>
       </div>
@@ -1662,6 +1724,44 @@ textarea::placeholder { /* 设置查询示例占位。 */
   line-height: 1.35; /* 提升多行标题阅读体验。 */
 }
 
+.detail-title-translation { /* 组织标题下方的独立翻译操作、错误和译文。 */
+  display: grid; /* 让中文标题始终排在原文标题下方。 */
+  gap: 0.45rem; /* 分隔操作、错误提示与译文。 */
+  margin-top: 0.65rem; /* 与原文标题保持紧凑关联。 */
+}
+
+.detail-translate-button { /* 提供详情内按字段请求翻译的轻量入口。 */
+  width: fit-content; /* 保持按钮与文字长度匹配。 */
+  padding: 0.42rem 0.68rem; /* 提供舒适且紧凑的点击面积。 */
+  border: 1px solid #b8ccdc; /* 使用与结果卡一致的蓝灰边界。 */
+  border-radius: 0.5rem; /* 延续详情面板的圆角语言。 */
+  color: #2e6f95; /* 使用品牌交互色。 */
+  background: #f3f8fb; /* 表明翻译为用户主动触发的辅助操作。 */
+  cursor: pointer; /* 明确当前控件可点击。 */
+  font-size: 0.72rem; /* 保持操作低于详情正文层级。 */
+  font-weight: 800; /* 让小字号按钮仍可清晰识别。 */
+}
+
+.detail-translate-button:disabled { /* 当前字段翻译时只禁用自身按钮。 */
+  cursor: default; /* 表达当前请求不可重复提交。 */
+  opacity: 0.72; /* 降低进行中或已显示状态的强调度。 */
+}
+
+.detail-translation-error { /* 在对应字段附近展示安全的翻译失败提示。 */
+  margin: 0; /* 由父容器统一管理垂直间距。 */
+  color: #9b3c36; /* 使用克制红色提醒用户可稍后重试。 */
+  font-size: 0.72rem; /* 保持错误属于局部辅助信息。 */
+  line-height: 1.55; /* 允许中文错误提示自然换行。 */
+}
+
+.detail-translated-title { /* 展示不带额外前缀的中文标题译文。 */
+  margin: 0; /* 由标题翻译容器控制间距。 */
+  color: #2e6f95; /* 用品牌色区分原文标题和中文译文。 */
+  font-size: 0.95rem; /* 让中文标题清晰但不压过原文。 */
+  font-weight: 700; /* 强化中文标题的扫读辨识度。 */
+  line-height: 1.65; /* 保障长标题阅读舒适。 */
+}
+
 .detail-meta, .detail-status, .detail-error { /* 统一详情辅助信息和状态文本。 */
   margin: 0.75rem 0 0; /* 与标题或标签建立稳定间距。 */
   color: #64788a; /* 使用低层级辅助文字。 */
@@ -1703,6 +1803,12 @@ textarea::placeholder { /* 设置查询示例占位。 */
   font-size: 0.7rem; /* 控制技术文本密度。 */
 }
 
+.detail-identifiers dd a { /* 将已校验 DOI 显示为可安全解析的外部链接。 */
+  color: #2e6f95; /* 使用品牌色告知用户可点击访问 DOI 解析器。 */
+  text-decoration-color: #a8c3d4; /* 保持长 DOI 的下划线低干扰。 */
+  text-underline-offset: 0.18em; /* 提升等宽小字号链接可读性。 */
+}
+
 .detail-section { /* 分隔摘要、关键词和证据等事实区块。 */
   margin-top: 1.2rem; /* 保持不同详情主题之间的阅读留白。 */
 }
@@ -1722,6 +1828,41 @@ textarea::placeholder { /* 设置查询示例占位。 */
 
 .detail-section ul { /* 为多条证据保留可理解的列表层级。 */
   padding-left: 1.1rem; /* 显示列表标记而不过度缩进。 */
+}
+
+.detail-section > .detail-translate-button { /* 摘要原文和翻译操作之间保留清晰间距。 */
+  margin-top: 0.7rem; /* 使按钮不与原文摘要连成一体。 */
+}
+
+.detail-translated-abstract { /* 将中文摘要译文与原文明确分层展示。 */
+  margin-top: 0.75rem; /* 与翻译按钮保持舒适阅读间距。 */
+  padding: 0.75rem 0.85rem; /* 为长中文摘要提供稳定留白。 */
+  border-left: 3px solid #7eafc4; /* 使用细色条标记机器翻译内容。 */
+  border-radius: 0 0.55rem 0.55rem 0; /* 延续详情面板的圆角语言。 */
+  background: #f5fafc; /* 使用浅色背景避免与原文混淆。 */
+}
+
+.detail-translated-abstract strong { /* 标记摘要译文区域。 */
+  color: #2e6f95; /* 使用品牌色强调说明标签。 */
+  font-size: 0.72rem; /* 保持为辅助标题层级。 */
+}
+
+.detail-translated-abstract p { /* 设置中文摘要译文正文。 */
+  margin: 0.4rem 0 0; /* 与译文说明保持紧凑关联。 */
+  color: #405b6d; /* 保持长文本阅读对比度。 */
+  line-height: 1.8; /* 提升中文段落阅读舒适度。 */
+}
+
+.detail-translated-abstract small { /* 说明实际生成译文的模型。 */
+  display: block; /* 独占一行避免打断译文正文。 */
+  margin-top: 0.45rem; /* 与译文正文分隔。 */
+  color: #8295a4; /* 弱化来源说明避免喧宾夺主。 */
+  font-size: 0.65rem; /* 保持最低视觉层级。 */
+}
+
+.reference-description { /* 解释来源参考标识与文献库收藏的边界。 */
+  color: #71899a !important; /* 与实际标识列表区分为说明文字。 */
+  font-size: 0.7rem !important; /* 保持边界说明紧凑。 */
 }
 
 .detail-link { /* 标记来源提供的合法公开入口。 */
