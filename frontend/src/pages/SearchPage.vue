@@ -7,7 +7,7 @@ import SearchStats from '../components/SearchStats.vue' // 展示多源检索与
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、翻译、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
-import { buildDoiUrl } from '../utils/doi.js' // 将来源 DOI 规范化为安全的固定解析器链接。
+import { buildDoiUrl, buildPublicPdfUrl } from '../utils/doi.js' // 将 DOI 和来源明确提供的公开 PDF 链接规范化。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -98,6 +98,7 @@ const availableResultSources = computed(() => [...new Set((result.value?.papers 
 const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
 const detailDoiUrl = computed(() => buildDoiUrl(detailPaper.value?.doi)) // 只为详情中的合法 DOI 渲染固定 doi.org 新标签链接。
+const detailPublicPdfUrl = computed(() => buildPublicPdfUrl(detailPaper.value?.open_access_url)) // 只为详情中的来源明确 PDF 渲染独立公开访问入口。
 const citationGraphLayout = computed(() => { // 为保留的受限图能力计算确定性圆形布局。
   const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
   const radius = Math.max(95, Math.min(150, nodes.length * 14)) // 按节点数量限定圆形半径以减少重叠。
@@ -785,6 +786,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
               <p>{{ detailPaper.references.join(' · ') }}</p>
             </section>
             <a v-if="detailDoiUrl" class="detail-link" :href="detailDoiUrl" target="_blank" rel="noopener noreferrer">打开 DOI 页面</a>
+            <a v-if="detailPublicPdfUrl" class="detail-pdf-link" :href="detailPublicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
           </template>
         </aside>
       </div>
@@ -1875,6 +1877,18 @@ textarea::placeholder { /* 设置查询示例占位。 */
   font-size: 0.72rem; /* 控制操作层级。 */
   font-weight: 800; /* 提升链接可发现性。 */
   text-decoration: none; /* 采用按钮视觉而不是默认下划线。 */
+}
+
+.detail-pdf-link { /* 提供独立于 DOI 主入口的来源公开 PDF 访问按钮。 */
+  display: inline-block; /* 让公开 PDF 链接以按钮形式呈现。 */
+  margin: 0.7rem 0 0 0.55rem; /* 与 DOI 按钮并列并在窄屏自然换行。 */
+  padding: 0.55rem 0.75rem; /* 与 DOI 入口保持相同点击面积。 */
+  border-radius: 0.55rem; /* 延续详情抽屉的圆角语言。 */
+  color: #28745a; /* 使用绿色区分公开全文与 DOI 落地页。 */
+  background: #e8f7f0; /* 使用浅绿背景标记来源公开 PDF。 */
+  font-size: 0.72rem; /* 保持操作层级紧凑。 */
+  font-weight: 800; /* 提升入口可发现性。 */
+  text-decoration: none; /* 保持按钮视觉。 */
 }
 
 .empty-state { /* 展示无满足条件结果。 */

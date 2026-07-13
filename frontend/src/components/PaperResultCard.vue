@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue' // 派生卡片信息并管理按需翻译状态。
 
 import { SearchApiError, translatePaperToChinese } from '../services/searchApi.js' // 仅在用户展开摘要后请求后端 DeepSeek 翻译。
-import { buildDoiUrl } from '../utils/doi.js' // 将来源 DOI 规范化为安全解析器链接。
+import { buildDoiUrl, buildPublicPdfUrl } from '../utils/doi.js' // 将 DOI 和来源明确提供的公开 PDF 链接规范化。
 
 const props = defineProps({ // 声明论文和列表序号输入。
   paper: { type: Object, required: true }, // 接收后端 PaperRecord。
@@ -34,6 +34,7 @@ const sources = computed(() => { // 优先展示完整多源溯源列表。
 })
 
 const doiUrl = computed(() => buildDoiUrl(props.paper.doi)) // 仅为符合 DOI 格式的论文渲染固定 doi.org 链接。
+const publicPdfUrl = computed(() => buildPublicPdfUrl(props.paper.open_access_url)) // 仅为来源明确提供的公开 PDF 渲染独立按钮。
 
 const statusMeta = computed(() => { // 将后端三态核验映射为中文展示。
   const mapping = { // 定义稳定状态标签和样式名。
@@ -132,6 +133,7 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
           <span v-if="paper.work_family_id">版本族 {{ paper.work_family_id }}</span>
         </div>
         <div class="paper-actions">
+          <a v-if="publicPdfUrl" class="public-pdf-link" :href="publicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
           <button type="button" :class="{ 'is-selected': comparisonSelected }" :disabled="comparisonDisabled && !comparisonSelected" @click="emit('compare', paper)">{{ comparisonSelected ? '已加入比较' : '加入比较' }}</button>
           <button type="button" class="detail-button" @click="emit('detail', paper)">查看详情</button>
           <button type="button" :class="{ 'is-saved': saved }" :disabled="saving || saved" @click="emit('save', paper)">{{ saving ? '正在收藏…' : saved ? '已收藏' : '收藏到文献库' }}</button>
@@ -437,6 +439,18 @@ h3 a { /* 设置可访问论文标题链接。 */
   cursor: pointer; /* 告知用户可收藏。 */
   font-size: 0.68rem; /* 保持操作紧凑。 */
   font-weight: 800; /* 提升可发现性。 */
+}
+
+.public-pdf-link { /* 提供不改变 DOI 主入口的独立公开 PDF 访问按钮。 */
+  flex: 0 0 auto; /* 防止操作区压缩 PDF 按钮。 */
+  padding: 0.45rem 0.7rem; /* 与相邻操作保持一致的点击面积。 */
+  border: 1px solid #b9dacb; /* 使用绿色边界区分公开全文入口。 */
+  border-radius: 0.55rem; /* 与结果卡其他操作保持一致。 */
+  color: #28745a; /* 使用可信绿色表达来源公开访问。 */
+  background: #e8f7f0; /* 以浅绿背景突出合法公开 PDF。 */
+  font-size: 0.68rem; /* 保持操作区紧凑。 */
+  font-weight: 800; /* 提升小字号可发现性。 */
+  text-decoration: none; /* 使用按钮视觉而非默认链接下划线。 */
 }
 
 .paper-footer button.is-saved { /* 标记已收藏论文。 */
