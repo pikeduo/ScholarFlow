@@ -259,6 +259,14 @@ function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在
   resultPage.value = normalizedPage // 交由现有页码监听器读取对应的已保存结果。
 }
 
+function scrollToCurrentPageFirstPaper() { // 将新页第一篇论文定位到固定顶栏下方，隐藏前置的论文比较区。
+  const paperList = paperListElement.value // 读取已经渲染完成的当前页论文列表容器。
+  if (!paperList || !globalThis.scrollTo) return // 非浏览器环境或列表为空时安全跳过定位。
+  const topbarHeight = globalThis.document?.querySelector('.topbar')?.getBoundingClientRect().height || 0 // 读取响应式固定顶栏的实际高度，避免遮住首篇论文。
+  const listTop = paperList.getBoundingClientRect().top + (globalThis.scrollY || 0) // 将视口坐标换算为文档中的稳定纵向位置。
+  globalThis.scrollTo({ top: Math.max(0, listTop - topbarHeight), behavior: 'smooth' }) // 让比较工具栏恰好滚到顶栏之上，并完整显示第一篇论文。
+}
+
 function formatHistoryTime(value) { // 将服务端 UTC 时间转换为浏览器本地可读的紧凑时间文本。
   const date = new Date(value) // 解析后端序列化的 ISO 时间。
   return Number.isNaN(date.getTime()) ? '时间暂缺' : date.toLocaleString() // 历史 JSON 异常时不抛出页面渲染错误。
@@ -349,7 +357,7 @@ async function loadSearchResultPage(runId = runState.value?.run_id) { // 从服�
       if (shouldScrollToResultList.value) { // 只处理用户点击分页控件发起的页面切换。
         shouldScrollToResultList.value = false // 先消费标记，避免后续筛选或响应重复滚动。
         await nextTick() // 等待 Vue 将新页第一篇论文真实渲染到列表容器中。
-        if (requestVersion === resultPageRequestVersion) paperListElement.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }) // 将新页第一条结果置于可视区域顶部。
+        if (requestVersion === resultPageRequestVersion) scrollToCurrentPageFirstPaper() // 基于固定顶栏实际高度完整显示新页第一篇论文。
       }
     }
   } catch (error) { // 将客户端已净化错误映射为紧凑页面提示。
