@@ -12,6 +12,7 @@ from backend.app.adapters.base import AcademicSearchAdapter  # 验证客户端�
 from backend.app.adapters.semantic_scholar import SemanticScholarClient, SemanticScholarClientError  # 导入待测客户端和领域异常。
 from backend.app.core.config import Settings  # 构造不读取真实 .env 的隔离配置。
 from backend.app.models.query_intent import QueryIntent  # 构造统一适配器输入。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError  # 构造其他进程已进入冷却的来源限流替身。
 
 
 class FakeResponseCache:
@@ -32,6 +33,18 @@ class FakeResponseCache:
     async def set_list(self, key: str, source: str, operation: str, value: list[object]) -> None:
         """保存来源原始数组供下一次适配器调用读取。"""
         self.values[key] = value  # 模拟带 TTL 的成功旁路写入。
+
+
+class RemoteCooldownRateLimiter:
+    """模拟其他进程已经收到 429 并写入共享冷却状态。"""
+
+    async def acquire(self, source: str, requests_per_second: float) -> bool:
+        """始终阻止当前进程继续访问已冷却来源。"""
+        raise SourceCooldownError("semantic_scholar 当前处于跨进程冷却期")  # 模拟 Redis 冷却键命中。
+
+    async def penalize(self, source: str, cooldown_seconds: float) -> bool:
+        """保留限流器接口完整性，当前用例不会触发该方法。"""
+        return True  # 模拟冷却已由其他进程同步。
 
 
 def _load_semantic_scholar_paper_fixture() -> dict[str, object]:
@@ -186,3 +199,23 @@ def test_client_uses_cached_response_before_cooldown_or_second_network_request()
     asyncio.run(client.search(query))  # 首次调用应回源并写入缓存。
     asyncio.run(client.search(query))  # 第二次调用应直接读取缓存。
     assert request_count == 1  # 验证缓存命中没有额外消耗 Semantic Scholar 调用次数。
+
+
+def test_client_skips_network_when_remote_rate_limiter_reports_cooldown() -> None:
+    """Redis 同步的来源冷却应在 HTTP 调用前转换为既有稳定冷却错误。"""
+    request_count = 0  # 统计不应发生的 HTTP 来源调用。
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """记录异常的网络调用，若被调用则测试失败。"""
+        nonlocal request_count  # 更新当前测试闭包中的调用计数。
+        request_count += 1  # 记录意外进入来源传输层的调用。
+        return httpx.Response(500, request=request)  # 返回无关响应，正常路径不应触达。
+
+    client = SemanticScholarClient(  # 构造注入远程冷却替身的来源客户端。
+        settings_override=_build_test_settings(),  # 注入隔离来源配置。
+        transport=httpx.MockTransport(handler),  # 阻止真实网络访问。
+        source_rate_limiter=RemoteCooldownRateLimiter(),  # 模拟其他进程写入 Redis 冷却状态。
+    )
+    with pytest.raises(SemanticScholarClientError, match="冷却期"):  # 验证对协调器保持既有稳定错误契约。
+        asyncio.run(client.search(_build_query_intent()))  # 应在 HTTP 层前停止。
+    assert request_count == 0  # 验证共享冷却没有消耗 Semantic Scholar API 调用。

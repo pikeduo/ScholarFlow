@@ -22,9 +22,13 @@ class RedisAsyncClient(Protocol):
         """读取短期存储中的二进制或文本值。"""
         ...  # 缓存层只依赖最小键值读取能力。
 
-    async def set(self, key: str, value: str, ex: int) -> object:
+    async def set(self, key: str, value: str, ex: int, nx: bool | None = None) -> object:
         """以过期时间写入短期存储值。"""
-        ...  # 缓存层显式要求 TTL，避免形成无限期数据。
+        ...  # 缓存层显式要求 TTL，限流层可通过 NX 原子占用时间窗口。
+
+    async def ttl(self, key: str) -> int:
+        """读取键剩余存活秒数，供跨进程限流等待使用。"""
+        ...  # redis-py 在键不存在、无过期时间时分别返回负数状态码。
 
 
 RedisClientFactory = Callable[[], RedisAsyncClient]  # 允许测试替换客户端构造而不连接真实 Redis。

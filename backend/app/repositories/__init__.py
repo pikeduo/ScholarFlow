@@ -2,5 +2,6 @@
 
 from backend.app.repositories.redis_client import RedisClientManager, get_redis_manager  # 暴露可降级 Redis 生命周期入口。
 from backend.app.repositories.source_cache import SourceResponseCache, get_source_response_cache  # 暴露来源适配器可复用的短期响应缓存边界。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter, get_source_rate_limiter  # 暴露来源适配器可复用的跨进程限流边界。
 
-__all__ = ["RedisClientManager", "SourceResponseCache", "get_redis_manager", "get_source_response_cache"]  # 限制存储包的显式公共 Redis 接口。
+__all__ = ["RedisClientManager", "SourceCooldownError", "SourceRateLimiter", "SourceResponseCache", "get_redis_manager", "get_source_rate_limiter", "get_source_response_cache"]  # 限制存储包的显式公共 Redis 接口。
