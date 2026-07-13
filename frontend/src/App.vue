@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue' // 管理两个首版一级页面的轻量切换状态。
+import { nextTick, ref } from 'vue' // 管理页面切换状态，并等待首页内容更新后再定位视口。
 
 import LibraryPage from './pages/LibraryPage.vue' // 引入个人文献库基础页面。
 import SearchPage from './pages/SearchPage.vue' // 引入当前首版唯一可用的文献搜索页面。
@@ -10,13 +10,21 @@ function showPage(pageName) { // 切换一级页面并将视口返回内容顶�
   activePage.value = pageName // 更新当前页面。
   globalThis.scrollTo?.({ top: 0, behavior: 'smooth' }) // 避免从长结果列表中部进入文献库。
 }
+
+async function goHome() { // 将品牌点击稳定地处理为返回文献搜索首页。
+  activePage.value = 'search' // 先恢复首页对应的一级页面。
+  await nextTick() // 等待搜索页重新挂载，避免定位到已卸载的文献库内容。
+  const mainContent = globalThis.document?.getElementById('main-content') // 读取可聚焦的首页主内容容器。
+  mainContent?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }) // 优先滚动到主内容起始位置。
+  mainContent?.focus?.({ preventScroll: true }) // 将键盘焦点同步交给首页主内容，提升无障碍体验。
+}
 </script>
 
 <template>
   <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
   <div class="app-frame">
     <header class="topbar">
-      <a class="brand" href="#main-content" aria-label="ScholarFlow 文献搜索首页" @click.prevent="showPage('search')">
+      <a class="brand" href="#main-content" aria-label="返回 ScholarFlow 文献搜索首页" @click.prevent="goHome">
         <span class="brand-mark" aria-hidden="true">研</span>
         <span class="brand-copy">
           <strong>ScholarFlow</strong>
@@ -29,7 +37,7 @@ function showPage(pageName) { // 切换一级页面并将视口返回内容顶�
       </nav>
       <span class="system-status"><i aria-hidden="true"></i> 多源检索链路就绪</span>
     </header>
-    <main id="main-content">
+    <main id="main-content" tabindex="-1">
       <SearchPage v-if="activePage === 'search'" />
       <LibraryPage v-else />
     </main>
