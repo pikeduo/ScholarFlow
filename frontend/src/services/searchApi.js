@@ -464,6 +464,8 @@ async function parseSearchError(response) { // 复用 REST 与 SSE 的错误消�
 
 /** 在浏览器与 Node 测试环境中安全深复制纯 JSON 查询意图。 */
 function structuredCloneSafe(value) { // 接收仅包含 JSON 类型的 API 响应对象。
-  if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value) // 优先使用原生结构化复制。
-  return JSON.parse(JSON.stringify(value)) // 旧环境回退到 JSON 深复制。
+  if (typeof globalThis.structuredClone === 'function') { // 优先使用原生结构化复制。
+    try { return globalThis.structuredClone(value) } catch { /* Vue 响应式 Proxy 无法原生复制时回退为 JSON 深复制。 */ }
+  }
+  return JSON.parse(JSON.stringify(value)) // 兼容旧环境和 Vue 响应式嵌套字段。
 }

@@ -316,3 +316,10 @@ test('validateQueryIntent 拒绝倒置年份、候选不足和条件冲突', () 
   assert.throws(() => validateQueryIntent({ ...editableIntent, source_recall_count: 10 }), /不少于最终结果/) // 拒绝来源候选少于最终数量。
   assert.throws(() => validateQueryIntent({ ...editableIntent, must_include: ['ETT'], exclude: ['ett'] }), /不能同时出现在排除条件中/) // 拒绝大小写无关冲突。
 })
+
+test('validateQueryIntent 支持 Vue 响应式嵌套字段', () => { // 验证编辑面板传入的 Proxy 不会导致泛化提交失败。
+  const reactiveTopics = new Proxy(['vision-language model'], {}) // 模拟 Vue 在组件 props 中暴露的响应式数组。
+  const validated = validateQueryIntent({ ...editableIntent, research_topics: reactiveTopics }) // 提交含响应式嵌套字段的完整意图。
+
+  assert.deepEqual(validated.research_topics, ['vision-language model']) // 验证回退深复制后仍保留可序列化的主题条件。
+})
