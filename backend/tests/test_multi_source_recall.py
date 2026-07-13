@@ -9,6 +9,7 @@ from backend.app.models.query_intent import QueryIntent  # 构造协调器所需
 from backend.app.models.semantic_ranking import SemanticRankingResult  # 构造不加载模型的语义粗排替身结果。
 from backend.app.models.cross_encoder_ranking import CrossEncoderRankingResult  # 构造不加载模型的 Cross Encoder 替身结果。
 from backend.app.models.llm_ranking import LlmRankingResult  # 构造不访问外部 API 的 LLM 精排替身结果。
+from backend.app.models.source_routing import SourceRoutePlan  # 构造协调器跨源融合边界所需的固定来源计划。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 导入待测多源召回协调服务。
 from backend.app.services.source_router import SourceRouter  # 使用实际确定性路由器生成执行计划。
 
@@ -41,6 +42,14 @@ class _StubWebDiscoveryAdapter:
     async def discover(self, query: QueryIntent) -> list[SupplementalDiscoveryItem]:
         """返回固定网页发现而不访问网络。"""
         return self._discoveries  # 保持测试结果确定且独立于外部服务。
+
+
+class _FixedAcademicSourceRouter:
+    """仅用于融合测试，显式返回两个来源以覆盖协调器的跨源融合边界。"""
+
+    def route(self, _: QueryIntent):
+        """返回固定双源计划，不依赖轮次来源优先级。"""
+        return SourceRoutePlan(academic_sources=["openalex", "semantic_scholar"], selection_reasons={"openalex": "测试主源", "semantic_scholar": "测试补充源"})  # 模拟未来并行双源或自定义路由计划。
 
 
 class _PassthroughSemanticRanker:
@@ -138,12 +147,12 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     result = asyncio.run(  # 执行不访问网络的多源协调流程。
         coordinator.recall(_build_query_intent(domains=["machine learning"], requires_web_evidence=True))  # 路由 AI 领域并显式启用网页补充。
     )
-    assert [paper.source for paper in result.papers] == ["openalex", "semantic_scholar"]  # 验证首轮仅汇总核心双源，领域第三来源保留给补足轮。
+    assert [paper.source for paper in result.papers] == ["openalex"]  # 验证首轮仅汇总综合主源，下一轮来源保留给后续检索。
     assert len(result.discoveries) == 1  # 验证网页发现不混入论文集合且被独立返回。
     assert result.discoveries[0].mergeable_as_paper is False  # 验证补充网页项仍保持不可合并边界。
-    assert result.source_counts == {"openalex": 1, "semantic_scholar": 1, "tavily": 1}  # 验证首轮实际调用来源的成功数量完整可观测。
+    assert result.source_counts == {"openalex": 1, "tavily": 1}  # 验证首轮实际调用来源的成功数量完整可观测。
     assert result.source_errors == {}  # 验证全部替身成功时不存在降级错误。
-    assert result.raw_paper_count == 2  # 验证来源数量统计与融合前原始论文数量分离保存。
+    assert result.raw_paper_count == 1  # 验证来源数量统计与融合前原始论文数量分离保存。
     assert result.merged_paper_count == 0  # 验证不同论文不会被错误合并。
     assert result.llm_model_name == "test-llm"  # 验证协调器透传实际 LLM 名称。
     assert result.llm_prompt_tokens == 12 and result.llm_completion_tokens == 4  # 验证协调器透传 LLM Token 统计。
@@ -174,16 +183,16 @@ def test_coordinator_respects_individual_local_ranking_options_in_standard_mode(
     assert opted_out_result.cross_encoder_ranking_error == "用户未启用 Cross Encoder 重排，已沿用 BGE-M3 或 RRF 排序"  # 验证用户关闭精排时返回可展示摘要。
 
 
-def test_coordinator_degrades_single_academic_source_without_discarding_other_results() -> None:
-    """任一学术来源失败时协调器应保留其余来源结果并记录安全错误摘要。"""
+def test_coordinator_degrades_the_second_round_academic_source_without_raising() -> None:
+    """第二轮来源失败时协调器应返回安全错误摘要而不抛出内部异常。"""
     settings = Settings(  # 构造路由 OpenAlex 与 Semantic Scholar 的隔离配置。
         _env_file=None,  # 禁止测试读取用户本地配置值。
         semantic_scholar_api_key="test-semantic-key",  # 注入路由可用性测试密钥。
         semantic_scholar_enabled=True,  # 显式启用 Semantic Scholar 路由。
     )
     coordinator = MultiSourceRecallCoordinator(  # 使用一个成功来源和一个失败来源替身构造协调器。
-        source_router=SourceRouter(settings),  # 使用实际核心双源路由规则。
-        academic_adapters={  # 仅注册当前路由会选择的两个核心来源。
+        source_router=SourceRouter(settings),  # 使用实际轮次来源路由规则。
+        academic_adapters={  # 注册首轮和第二轮可能选择的核心来源。
             "openalex": _StubAcademicAdapter("openalex", [_build_paper("openalex", "1")]),  # 模拟主源成功返回。
             "semantic_scholar": _StubAcademicAdapter("semantic_scholar", should_fail=True),  # 模拟语义来源调用失败。
         },
@@ -191,11 +200,11 @@ def test_coordinator_degrades_single_academic_source_without_discarding_other_re
         cross_encoder_reranker=_PassthroughCrossEncoderReranker(),  # 注入离线 Cross Encoder 替身避免测试加载模型。
         llm_reranker=_PassthroughLlmReranker(),  # 注入离线 LLM 替身避免测试访问 DeepSeek。
     )
-    result = asyncio.run(coordinator.recall(_build_query_intent()))  # 执行不访问网络的核心双源协调流程。
-    assert [paper.source for paper in result.papers] == ["openalex"]  # 验证失败来源不会丢弃主源已返回论文。
-    assert result.source_counts == {"openalex": 1, "semantic_scholar": 0}  # 验证失败来源仍记录零结果统计。
+    result = asyncio.run(coordinator.recall(_build_query_intent().model_copy(update={"retrieval_round": 2})))  # 执行不访问网络的第二轮语义来源降级流程。
+    assert result.papers == []  # 验证第二轮来源失败时不会虚构论文结果。
+    assert result.source_counts == {"semantic_scholar": 0}  # 验证失败来源仍记录零结果统计。
     assert result.source_errors == {"semantic_scholar": "学术来源调用失败"}  # 验证调用方仅收到不含内部细节的降级摘要。
-    assert result.raw_paper_count == 1  # 验证失败来源不会虚构进入融合阶段的论文。
+    assert result.raw_paper_count == 0  # 验证第二轮只调用失败的独立来源时不会虚构进入融合阶段的论文。
 
 
 def test_coordinator_reports_unregistered_selected_source_without_raising() -> None:
@@ -234,7 +243,7 @@ def test_coordinator_fuses_cross_source_duplicate_before_returning_result() -> N
         semantic_scholar_enabled=True,  # 显式启用核心补充来源。
     )
     coordinator = MultiSourceRecallCoordinator(  # 使用离线学术来源替身构造协调器。
-        source_router=SourceRouter(settings),  # 使用实际核心双源路由规则。
+        source_router=_FixedAcademicSourceRouter(),  # 使用固定双源计划覆盖协调器跨源融合边界。
         academic_adapters={  # 注册两个会被当前路由选择的离线来源。
             "openalex": _StubAcademicAdapter("openalex", [openalex_paper]),  # 返回首条来源论文。
             "semantic_scholar": _StubAcademicAdapter("semantic_scholar", [semantic_paper]),  # 返回相同 DOI 的补充来源论文。

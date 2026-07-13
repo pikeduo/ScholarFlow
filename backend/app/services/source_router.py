@@ -83,7 +83,7 @@ class SourceRouter:
             academic_source_candidates.append("pubmed")  # 仅在相关领域加入 PubMed 候选，避免每次搜索额外请求 E-utilities。
             candidate_reasons["pubmed"] = "医学/生命科学领域补充 PubMed 生物医学文献元数据"  # 记录 PubMed 被选择的业务原因。
 
-        academic_sources = _select_academic_sources_for_round(academic_source_candidates, query.retrieval_round)  # 前两轮使用至多两个主候选，第三轮优先切换到首个未使用的领域候选。
+        academic_sources = _select_academic_sources_for_round(academic_source_candidates, query.retrieval_round)  # 每轮只调用一个按相关性排序的候选，第三轮优先切换到首个未使用的领域来源。
         selection_reasons = {source_name: candidate_reasons[source_name] for source_name in academic_sources}  # 仅暴露本轮实际调用来源的理由，避免把候选误展示为已调用。
 
         if query.requires_web_evidence and self._settings.tavily_api_key is not None:  # 网页证据必须由查询显式请求且配置可用。
@@ -108,16 +108,18 @@ def _normalize_domains(domains: list[str]) -> set[str]:
 
 
 def _select_academic_sources_for_round(candidates: list[str], retrieval_round: int) -> list[str]:
-    """按轮次选择领域相关来源，第三轮优先调用此前未使用的第三候选。
+    """按轮次选择单个领域相关来源，避免同一运行重复消耗同一来源配额。
 
     参数：
         candidates：已按核心来源和领域相关性排列的可用学术来源。
         retrieval_round：当前工作流轮次，取值由 QueryIntent 的内部字段限制在一到三。
     返回：
-        list[str]：当前轮实际调用的一个或两个学术来源。
+        list[str]：当前轮实际调用的单个学术来源。
     """
-    if retrieval_round < 3:  # 前两轮复用核心主源组合，以便先用不同子查询提高相关性覆盖。
-        return candidates[:2]  # 只有一个候选时自然退化为单源，不扩大不相关调用。
+    if retrieval_round == 1:  # 首轮始终从综合主源开始，优先获得广覆盖候选。
+        return [candidates[0]]  # OpenAlex 始终位于候选首位，保证首轮稳定可执行。
+    if retrieval_round == 2:  # 第二轮切换到下一相关候选，避免向首轮来源重复请求不同表达。
+        return [candidates[min(1, len(candidates) - 1)]]  # 只有一个候选时才安全复用主源完成第二轮。
     if len(candidates) >= 3:  # 存在领域相关的第三候选时优先切换，避免第三轮重复前两源。
         return [candidates[2]]  # 单独调用第三来源，便于审计其对缺口的增益。
     return [candidates[-1]]  # 没有第三候选时复用最相关的已选来源完成按缺口缩小的补足轮。
