@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")  # 支持部署时调整日志详细程度。
     redis_enabled: bool = Field(default=False)  # 控制 Redis 短期存储是否在当前环境启用，默认保持 SQLite 单机可用。
     redis_url: str = Field(default="redis://127.0.0.1:6379/0", min_length=1)  # 默认使用 Windows IPv4-only Redis 可达的本地回环地址。
+    redis_key_prefix: str = Field(default="ScholarFlow", pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")  # 以统一项目名前缀隔离 DB 0 中的 ScholarFlow 键空间。
     redis_socket_timeout_seconds: float = Field(default=2.0, gt=0, le=30)  # 限制 Redis 不可用时单次连接或命令等待时间。
     redis_source_search_cache_ttl_seconds: int = Field(default=14400, ge=60, le=86400)  # 限制学术来源搜索响应最多缓存四小时，避免长期保留过时结果。
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
@@ -56,8 +57,13 @@ class Settings(BaseSettings):
     deepseek_api_base_url: str = Field(default="https://api.deepseek.com", pattern=r"^https://")  # 限制 DeepSeek 使用官方或兼容的 HTTPS 端点。
     deepseek_api_key: SecretStr | None = None  # 保存不可写入日志或 API 响应的 DeepSeek 密钥。
     deepseek_model: str = Field(default="deepseek-v4-flash", min_length=1)  # 默认使用规划指定的低成本 Flash 模型。
-    deepseek_timeout_seconds: float = Field(default=60.0, gt=0, le=300)  # 为最多二十四篇论文的批量 JSON 核验预留响应时间。
-    deepseek_max_output_tokens: int = Field(default=12000, ge=1000, le=50000)  # 限制结构化精排响应规模并避免 JSON 中途截断。
+    deepseek_timeout_seconds: float = Field(default=60.0, gt=0, le=300)  # 为查询规划等非论文精排的 DeepSeek 请求保留响应时间。
+    deepseek_llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)  # 限制单个论文核验小批次的等待时间，避免上游慢响应长期阻塞搜索。
+    deepseek_llm_batch_size: int = Field(default=10, ge=5, le=10)  # 将论文核验固定限制为规划要求的每批五至十篇。
+    deepseek_max_output_tokens: int = Field(default=4000, ge=1000, le=50000)  # 限制单个核验小批次的结构化输出规模，避免无界输出拖慢响应。
+    semantic_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过本地 BGE-M3 粗排并沿用 RRF 顺序。
+    cross_encoder_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过本地 Cross Encoder 重排并沿用已有排序。
+    llm_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过 DeepSeek 论文核验与理由生成。
     academic_source_recall_limit: int = Field(default=50, ge=20, le=100)  # 自然语言搜索时每个学术来源的候选召回上限。
     llm_minimum_relevance_score: float = Field(default=0.2, ge=0.0, le=1.0)  # 最终结果最低 LLM 相关度，阻止零分论文透传。
 

@@ -31,6 +31,7 @@ def test_client_maps_json_output_and_usage_without_network() -> None:
         body = json.loads(request.content.decode("utf-8"))  # 使用显式 UTF-8 检查请求正文。
         assert body["model"] == "deepseek-v4-flash"  # 验证默认模型来自集中配置。
         assert body["response_format"] == {"type": "json_object"}  # 验证启用官方 JSON Output。
+        assert body["max_tokens"] == 4000  # 验证单个论文核验批次使用受控输出上限。
         assert "Transformer forecasting" in body["messages"][1]["content"]  # 验证发送规范化查询而非日志数据。
         content = json.dumps({"assessments": [{"paper_id": "paper-1", "relevance_score": 0.92, "constraint_status": "satisfied", "evidence": ["Transformer Forecasting"], "recommendation_reason": "主题直接相关。"}]}, ensure_ascii=False)  # 构造合法模型 JSON 内容。
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "model": "deepseek-v4-flash", "usage": {"prompt_tokens": 80, "completion_tokens": 30}})  # 返回非流式成功响应。

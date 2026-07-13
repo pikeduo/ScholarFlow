@@ -64,7 +64,7 @@ class DeepSeekPaperAssessmentClient:
         }
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}  # 密钥仅进入请求头且不写日志。
         try:  # 将网络与 HTTP 故障统一转换为适配器错误。
-            async with httpx.AsyncClient(base_url=str(self._config.deepseek_api_base_url).rstrip("/"), timeout=self._config.deepseek_timeout_seconds, transport=self._transport) as client:  # 使用集中端点和超时。
+            async with httpx.AsyncClient(base_url=str(self._config.deepseek_api_base_url).rstrip("/"), timeout=self._config.deepseek_llm_timeout_seconds, transport=self._transport) as client:  # 仅使用论文核验的小批次超时，避免影响查询规划。
                 response = await client.post("/chat/completions", headers=headers, json=request_body)  # 调用 OpenAI 兼容聊天端点。
                 response.raise_for_status()  # 非成功响应不得进入业务解析。
                 response_data = response.json()  # 仅在内存中解析供应商响应，不记录原文。
