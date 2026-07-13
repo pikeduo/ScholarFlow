@@ -331,6 +331,20 @@ export async function getCitationGraph(paperIds, fetchImpl = globalThis.fetch, a
   }
 }
 
+/** 读取当前已保存论文的关键词事实路线，不调用模型或外部来源。 */
+export async function getTechnicalRoutes(paperIds, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读路线请求。
+  const normalizedIds = Array.isArray(paperIds) ? paperIds.map((paperId) => String(paperId || '').trim()) : [] // 规范化内部论文标识。
+  if (!normalizedIds.length || normalizedIds.length > 50 || normalizedIds.some((paperId) => !paperId) || new Set(normalizedIds).size !== normalizedIds.length) throw new SearchApiError('请选择 1 至 50 篇不重复论文生成技术路线') // 保持受限路线边界。
+  const params = new URLSearchParams() // 构建安全编码查询参数。
+  for (const paperId of normalizedIds) params.append('paper_ids', paperId) // 仅提交稳定标识，不传递前端关键词事实。
+  let response // 保存路线读取响应。
+  try { response = await fetchImpl(`${apiBaseUrl}/api/v1/routes?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }) } catch { throw new SearchApiError('无法读取技术路线，请确认后端已启动') } // 将网络错误映射为安全提示。
+  if (!response.ok) throw await parseSearchError(response) // 复用公共错误边界。
+  const routes = await response.json() // 解析路线响应。
+  if (!routes || !Array.isArray(routes.routes)) throw new SearchApiError('技术路线数据不完整') // 校验页面依赖的最小契约。
+  return routes // 返回关键词事实路线。
+}
+
 /** 将 SSE 单帧解析为已净化的事件 data JSON。 */
 function parseSseFrame(frame) { // 接收不含结尾空行的 SSE 文本帧。
   const dataLine = frame.split('\n').find((line) => line.startsWith('data:')) // 仅消费服务端标准 data 行。

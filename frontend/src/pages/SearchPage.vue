@@ -5,7 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, getPaperDetail, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情并比较已保存论文。
+import { SearchApiError, comparePapers, getCitationGraph, getPaperDetail, getTechnicalRoutes, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱与路线。
 import { filterSearchPapers, paginateSearchPapers } from '../utils/searchResults.js' // 对同次最终结果执行本地筛选与分页。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
@@ -41,6 +41,12 @@ const comparisonPaperIds = ref([]) // 保存当前搜索结果中用户选择的
 const comparisonResult = ref(null) // 保存后端返回的事实型固定列对比结果。
 const comparisonLoading = ref(false) // 标记比较接口是否正在读取已保存论文。
 const comparisonError = ref('') // 保存比较接口的安全公共错误。
+const citationGraph = ref(null) // 保存当前搜索结果的受限引用图数据。
+const citationGraphLoading = ref(false) // 标记引用图读取是否进行中。
+const citationGraphError = ref('') // 保存引用图读取的安全公共错误。
+const technicalRoutes = ref(null) // 保存当前结果的关键词事实路线。
+const technicalRoutesLoading = ref(false) // 标记路线读取是否进行中。
+const technicalRoutesError = ref('') // 保存路线读取的安全公共错误。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
@@ -68,6 +74,12 @@ const availableResultSources = computed(() => [...new Set((result.value?.papers 
 const filteredPapers = computed(() => filterSearchPapers(result.value?.papers || [], resultFilters)) // 在内存中筛选，不调用任何后端或来源接口。
 const paperPagination = computed(() => paginateSearchPapers(filteredPapers.value, resultPage.value, RESULT_PAGE_SIZE)) // 将筛选结果切分为稳定页面。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
+const citationGraphLayout = computed(() => { // 为受限节点集合生成确定性圆形布局，避免引入额外可视化依赖。
+  const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
+  const radius = Math.max(95, Math.min(150, nodes.length * 14)) // 按节点数量限定圆形半径以减少重叠。
+  return nodes.map((node, index) => ({ ...node, x: 210 + radius * Math.cos((Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2), y: 190 + radius * Math.sin((Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2) })) // 返回 SVG 视图坐标。
+})
+const citationGraphNodeMap = computed(() => new Map(citationGraphLayout.value.map((node) => [node.paper_id, node]))) // 供边线快速查找两端节点坐标。
 
 watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd], () => { // 任意筛选变化时回到第一页避免越界空页。
   resultPage.value = 1 // 保持筛选后的首屏结果可见。
@@ -82,6 +94,10 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   comparisonPaperIds.value = [] // 新运行结果不能复用旧运行的论文选择。
   comparisonResult.value = null // 清除旧结果可能对应的比较列。
   comparisonError.value = '' // 清除旧运行比较错误。
+  citationGraph.value = null // 清除旧运行的关系图数据。
+  citationGraphError.value = '' // 清除旧运行图谱错误。
+  technicalRoutes.value = null // 清除旧运行路线集合。
+  technicalRoutesError.value = '' // 清除旧运行路线错误。
 })
 
 function useExample(example) { // 将示例查询填入输入框但不自动发起外部调用。
@@ -333,6 +349,47 @@ function closePaperComparison() { // 关闭比较弹层而保留选择，方便�
   comparisonError.value = '' // 清除抽层错误信息。
   comparisonLoading.value = false // 防御关闭时遗留加载状态。
 }
+
+async function openCitationGraph() { // 读取当前最终结果内可验证的引用和版本族关系。
+  const paperIds = (result.value?.papers || []).map((paper) => paper.paper_id).filter(Boolean) // 只提交当前同次搜索的稳定论文标识。
+  if (!paperIds.length) { // 无搜索结果时不能生成空图。
+    citationGraphError.value = '当前没有可用于生成引用图的论文' // 提供明确空状态提示。
+    return // 不发起无效请求。
+  }
+  citationGraphLoading.value = true // 打开图谱读取中弹层。
+  citationGraphError.value = '' // 清除旧图谱失败提示。
+  try { // 将客户端公共错误映射为页面提示。
+    citationGraph.value = await getCitationGraph(paperIds, undefined, undefined, 30) // 只读取 SQLite 已保存的最多 30 个节点。
+  } catch (error) { // 不展示底层网络或持久化细节。
+    citationGraphError.value = error instanceof SearchApiError ? error.message : '读取引用图时出现未知错误，请稍后重试' // 保持可安全展示的错误边界。
+  } finally { // 无论成功失败都结束读取状态。
+    citationGraphLoading.value = false // 恢复图谱操作按钮。
+  }
+}
+
+function closeCitationGraph() { // 关闭引用图弹层并释放本次布局数据。
+  citationGraph.value = null // 不在页面内长期保留关系图副本。
+  citationGraphError.value = '' // 清除图谱错误提示。
+  citationGraphLoading.value = false // 防御关闭时遗留的加载状态。
+}
+
+function openCitationGraphPaper(node) { // 点击图节点后复用已有详情读取入口。
+  closeCitationGraph() // 先关闭关系图避免两个弹层叠加。
+  void openPaperDetail(node) // 使用节点中的稳定标识只读读取完整论文详情。
+}
+
+async function openTechnicalRoutes() { // 从当前已保存论文关键词读取保守路线。
+  const paperIds = (result.value?.papers || []).map((paper) => paper.paper_id).filter(Boolean) // 只提交本次搜索稳定论文标识。
+  technicalRoutesLoading.value = true // 展示路线读取中状态。
+  technicalRoutesError.value = '' // 清除旧错误。
+  try { technicalRoutes.value = await getTechnicalRoutes(paperIds) } catch (error) { technicalRoutesError.value = error instanceof SearchApiError ? error.message : '读取技术路线时出现未知错误，请稍后重试' } finally { technicalRoutesLoading.value = false } // 保持安全错误边界并恢复按钮。
+}
+
+function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
+  technicalRoutes.value = null // 不长期保留路线副本。
+  technicalRoutesError.value = '' // 清除路线错误。
+  technicalRoutesLoading.value = false // 防御关闭时遗留加载状态。
+}
 </script>
 
 <template>
@@ -462,6 +519,13 @@ function closePaperComparison() { // 关闭比较弹层而保留选择，方便�
         <div><strong>论文比较</strong><span>{{ `已选择 ${comparisonPaperIds.length} / 5 篇` }}</span></div>
         <div><button type="button" :disabled="comparisonPaperIds.length < 2 || comparisonLoading" @click="openPaperComparison">{{ comparisonLoading ? '正在整理比较…' : `比较 ${comparisonPaperIds.length} 篇` }}</button><button v-if="comparisonPaperIds.length" type="button" class="comparison-clear" @click="clearPaperComparison">清空</button></div>
       </section>
+      <section class="citation-toolbar" aria-label="引用图入口">
+        <div><strong>引用图</strong><span>仅显示当前结果中可验证的引用与版本族关系，最多 30 个节点。</span></div>
+        <button type="button" :disabled="citationGraphLoading || !result.papers.length" @click="openCitationGraph">{{ citationGraphLoading ? '正在读取图谱…' : '查看引用图' }}</button>
+      </section>
+      <section class="citation-toolbar" aria-label="技术路线入口"><div><strong>技术路线</strong><span>按已保存关键词聚合，不包含模型推断。</span></div><button type="button" :disabled="technicalRoutesLoading || !result.papers.length" @click="openTechnicalRoutes">{{ technicalRoutesLoading ? '正在整理路线…' : '查看技术路线' }}</button></section>
+      <p v-if="technicalRoutesError && !technicalRoutes" class="comparison-message" role="alert">{{ technicalRoutesError }}</p>
+      <p v-if="citationGraphError && !citationGraph" class="comparison-message" role="alert">{{ citationGraphError }}</p>
       <p v-if="comparisonError && !comparisonResult" class="comparison-message" role="alert">{{ comparisonError }}</p>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="paperPagination.items.length" class="paper-list">
@@ -515,6 +579,25 @@ function closePaperComparison() { // 关闭比较弹层而保留选择，方便�
           </div>
         </aside>
       </div>
+      <div v-if="citationGraph || citationGraphLoading" class="paper-detail-backdrop" @click.self="closeCitationGraph">
+        <aside class="citation-graph-panel" role="dialog" aria-modal="true" aria-labelledby="citation-graph-title">
+          <button class="detail-close" type="button" aria-label="关闭引用图" @click="closeCitationGraph">×</button>
+          <p class="eyebrow">SAVED CITATION GRAPH</p>
+          <h2 id="citation-graph-title">当前结果引用图</h2>
+          <p v-if="citationGraphLoading" class="detail-status">正在读取已保存论文的引用与版本族事实…</p>
+          <template v-else-if="citationGraph">
+            <p class="detail-meta">{{ citationGraph.truncated ? `已按上限展示 ${citationGraph.nodes.length} 个节点；图外引用不会被扩展。` : `共 ${citationGraph.nodes.length} 个节点、${citationGraph.edges.length} 条可验证关系。` }}</p>
+            <svg class="citation-graph-canvas" viewBox="0 0 420 380" role="img" aria-label="当前搜索结果的引用关系图">
+              <defs><marker id="citation-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6a8a9e" /></marker></defs>
+              <line v-for="edge in citationGraph.edges" :key="`${edge.source_paper_id}-${edge.target_paper_id}-${edge.edge_type}`" :x1="citationGraphNodeMap.get(edge.source_paper_id)?.x" :y1="citationGraphNodeMap.get(edge.source_paper_id)?.y" :x2="citationGraphNodeMap.get(edge.target_paper_id)?.x" :y2="citationGraphNodeMap.get(edge.target_paper_id)?.y" :class="['citation-edge', `is-${edge.edge_type}`]" :marker-end="edge.edge_type === 'cites' ? 'url(#citation-arrow)' : undefined" />
+              <g v-for="node in citationGraphLayout" :key="node.paper_id" class="citation-node" @click="openCitationGraphPaper(node)"><circle :cx="node.x" :cy="node.y" r="23" /><text :x="node.x" :y="node.y - 2">{{ String(node.year || '—').slice(-2) }}</text><text :x="node.x" :y="node.y + 10">{{ node.source.slice(0, 5) }}</text></g>
+            </svg>
+            <ul class="citation-graph-legend"><li><span class="legend-line"></span>引用</li><li><span class="legend-line is-same-work"></span>同一版本族</li><li>点击节点查看详情</li></ul>
+            <p v-if="!citationGraph.edges.length" class="detail-status">当前已保存结果之间没有可验证的内部关系边。</p>
+          </template>
+        </aside>
+      </div>
+      <div v-if="technicalRoutes || technicalRoutesLoading" class="paper-detail-backdrop" @click.self="closeTechnicalRoutes"><aside class="paper-comparison-panel" role="dialog" aria-modal="true" aria-labelledby="technical-routes-title"><button class="detail-close" type="button" aria-label="关闭技术路线" @click="closeTechnicalRoutes">×</button><p class="eyebrow">SAVED KEYWORD ROUTES</p><h2 id="technical-routes-title">技术路线</h2><p v-if="technicalRoutesLoading" class="detail-status">正在按已保存关键词聚合论文…</p><ul v-else-if="technicalRoutes" class="citation-graph-legend"><li v-for="route in technicalRoutes.routes" :key="route.route_id"><strong>{{ route.name }}</strong>：{{ route.summary }}<br><small>{{ `论文 ${route.paper_ids.join('、')}；证据：${route.evidence.join('、')}` }}</small></li><li v-if="!technicalRoutes.routes.length">当前结果没有可用于聚合路线的已保存关键词。</li></ul></aside></div>
       <section v-if="discoveries.length" class="discovery-section" aria-labelledby="discovery-title">
         <div>
           <p class="eyebrow">SUPPLEMENTAL WEB EVIDENCE</p>
