@@ -25,12 +25,14 @@ class CrossEncoderReranker:
         self._text_builder = text_builder or PaperTextBuilder(embedding_model_name=model_name)  # 为精排模型建立独立的文本哈希身份。
         self._enabled = enabled  # 保存是否应跳过本地 Cross Encoder 以缩短快速检索路径。
 
-    def rerank(self, papers: list[PaperRecord], query: QueryIntent) -> CrossEncoderRankingResult:
+    def rerank(self, papers: list[PaperRecord], query: QueryIntent, *, enabled: bool = True, disabled_reason: str | None = None) -> CrossEncoderRankingResult:
         """按 Cross Encoder 分数重排并截断；模型不可用时按 BGE-M3 分数降级。"""
         if not papers:  # 空候选不需要模型加载。
             return CrossEncoderRankingResult(papers=[], input_count=0, truncated_count=0, model_name=self._model_name)  # 返回稳定空结果。
-        if not self._enabled:  # 快速路径不得触发模型加载、文本构造或成对推理。
-            return self._disabled_result(papers)  # 沿用 BGE-M3 或 RRF 的既有排序。
+        if not enabled:  # 标准模式不得触发模型加载、文本构造或成对推理。
+            return self._disabled_result(papers, disabled_reason or "标准模式已跳过 Cross Encoder 重排，已沿用 RRF 排序")  # 沿用上游排序并说明模式策略。
+        if not self._enabled:  # 部署环境显式关闭深度模型阶段时不应触发模型加载。
+            return self._disabled_result(papers, "Cross Encoder 重排已按配置跳过，已沿用 BGE-M3 或 RRF 排序")  # 沿用 BGE-M3 或 RRF 的既有排序。
         document_texts = [self._text_builder.build_reranker_text(paper).text for paper in papers]  # 只构造标题和摘要组成的精排论文侧文本。
         query_text = self._text_builder.build_query_text(query).text  # 使用 QueryIntent 的结构化条件构造查询侧文本。
         try:  # 将模型不可用转为可继续检索的安全降级。
@@ -55,12 +57,12 @@ class CrossEncoderReranker:
         logger.warning("Cross Encoder 重排降级：输入=%d，截断=%d，保留=%d", result.input_count, result.truncated_count, len(result.papers))  # 记录安全降级统计。
         return result  # 返回仍可交给 LLM 核验的稳定候选。
 
-    def _disabled_result(self, papers: list[PaperRecord]) -> CrossEncoderRankingResult:
+    def _disabled_result(self, papers: list[PaperRecord], ranking_error: str) -> CrossEncoderRankingResult:
         """在用户显式关闭 Cross Encoder 时沿用已有排序并执行候选截断。"""
 
         retained_papers = sorted(papers, key=lambda paper: (-_score_or_negative_infinity(paper.semantic_score), -paper.rrf_score, paper.paper_id))[:self._candidate_limit]  # 优先保留已有 BGE-M3 分数，不存在时回退 RRF。
-        result = CrossEncoderRankingResult(papers=retained_papers, input_count=len(papers), truncated_count=len(papers) - len(retained_papers), model_name=self._model_name, ranking_error="Cross Encoder 重排已按配置跳过，已沿用 BGE-M3 或 RRF 排序")  # 返回可展示的主动降级摘要。
-        logger.info("Cross Encoder 重排已按配置跳过：输入=%d，保留=%d", result.input_count, len(result.papers))  # 记录节省本地模型耗时的安全统计。
+        result = CrossEncoderRankingResult(papers=retained_papers, input_count=len(papers), truncated_count=len(papers) - len(retained_papers), model_name=self._model_name, ranking_error=ranking_error)  # 返回可展示的主动降级摘要。
+        logger.info("Cross Encoder 重排已跳过：输入=%d，保留=%d，原因=%s", result.input_count, len(result.papers), ranking_error)  # 记录节省本地模型耗时的安全统计。
         return result  # 将快速路径候选交给最终核验或直接结果整理。
 
 

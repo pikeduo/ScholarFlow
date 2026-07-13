@@ -1,6 +1,7 @@
 """提供 BGE-M3 语义粗排、稳定降级和候选截断服务。"""
 
 from backend.app.adapters.bge_m3 import BgeM3Encoder, BgeM3EncoderError, SemanticTextEncoder  # 使用可替换的本地语义编码边界。
+from backend.app.core.config import settings  # 读取可配置的快速路径开关。
 from backend.app.core.logging import logger  # 记录不包含查询和论文文本的语义排序统计。
 from backend.app.models.paper import PaperRecord  # 使用规则过滤后的融合论文记录。
 from backend.app.models.query_intent import QueryIntent  # 使用规范化查询文本进行跨语言语义匹配。
@@ -14,7 +15,7 @@ DEFAULT_SEMANTIC_CANDIDATE_LIMIT = 60  # 遵循规划书 BGE-M3 粗排阶段默�
 class SemanticRanker:
     """通过 BGE-M3 dense 向量为融合论文打分，并在模型不可用时安全保留 RRF 顺序。"""
 
-    def __init__(self, encoder: SemanticTextEncoder | None = None, candidate_limit: int = DEFAULT_SEMANTIC_CANDIDATE_LIMIT, model_name: str = "BAAI/bge-m3", text_builder: PaperTextBuilder | None = None) -> None:
+    def __init__(self, encoder: SemanticTextEncoder | None = None, candidate_limit: int = DEFAULT_SEMANTIC_CANDIDATE_LIMIT, model_name: str = "BAAI/bge-m3", text_builder: PaperTextBuilder | None = None, enabled: bool = settings.semantic_ranking_enabled) -> None:
         """保存可替换编码器和候选上限，不在构造阶段加载或下载模型。"""
         if candidate_limit < 1:  # 空或负候选上限会导致后续工作流无法产生候选。
             raise ValueError("candidate_limit 必须大于零")  # 在服务装配阶段尽早暴露无效策略。
@@ -22,8 +23,9 @@ class SemanticRanker:
         self._candidate_limit = candidate_limit  # 保存 BGE 粗排后进入下一阶段的最大候选数。
         self._model_name = model_name  # 保存可观测的模型名称而不暴露本地路径。
         self._text_builder = text_builder or PaperTextBuilder(embedding_model_name=model_name)  # 使用与模型身份一致的文本构造器供索引阶段复用。
+        self._enabled = enabled  # 保存是否应跳过本地模型以缩短快速检索路径。
 
-    def rank(self, papers: list[PaperRecord], query: QueryIntent) -> SemanticRankingResult:
+    def rank(self, papers: list[PaperRecord], query: QueryIntent, *, enabled: bool = True, disabled_reason: str | None = None) -> SemanticRankingResult:
         """按语义分数粗排论文并截断；编码不可用时以 RRF 稳定降级。
 
         参数：
@@ -34,6 +36,10 @@ class SemanticRanker:
         """
         if not papers:  # 空候选无需调用模型或构造文档文本。
             return SemanticRankingResult(papers=[], input_count=0, truncated_count=0, model_name=self._model_name)  # 返回稳定空结果。
+        if not enabled:  # 标准模式不得触发模型加载、文本构造或向量计算。
+            return self._disabled_result(papers, disabled_reason or "标准模式已跳过 BGE-M3 语义粗排，已按 RRF 排序")  # 按已有 RRF 顺序保留可解释检索结果。
+        if not self._enabled:  # 部署环境显式关闭深度模型阶段时不应触发模型加载。
+            return self._disabled_result(papers, "BGE-M3 语义粗排已按配置跳过，已按 RRF 排序")  # 按已有 RRF 顺序保留可解释检索结果。
         document_texts = [self._text_builder.build_embedding_text(paper).text for paper in papers]  # 使用与文献库索引一致的 BGE-M3 论文文本。
         query_text = self._text_builder.build_query_text(query).text  # 将结构化约束转为跨语言语义查询文本。
         try:  # 仅将模型不可用映射为可降级业务结果，其他编程错误保持可见。
@@ -56,6 +62,14 @@ class SemanticRanker:
         result = SemanticRankingResult(papers=fallback_papers, input_count=len(papers), truncated_count=len(papers) - len(fallback_papers), model_name=self._model_name, ranking_error="BGE-M3 语义粗排不可用，已按 RRF 降级")  # 返回不含底层错误详情的安全摘要。
         logger.warning("BGE-M3 粗排降级：输入=%d，截断=%d，保留=%d", result.input_count, result.truncated_count, len(result.papers))  # 记录安全降级统计。
         return result  # 返回仍可交给下一阶段的稳定候选列表。
+
+    def _disabled_result(self, papers: list[PaperRecord], ranking_error: str) -> SemanticRankingResult:
+        """在用户显式关闭 BGE-M3 时按 RRF 顺序截断且不加载本地模型。"""
+
+        retained_papers = sorted(papers, key=lambda paper: (-paper.rrf_score, paper.paper_id))[:self._candidate_limit]  # 复用融合阶段已有的确定性排序。
+        result = SemanticRankingResult(papers=retained_papers, input_count=len(papers), truncated_count=len(papers) - len(retained_papers), model_name=self._model_name, ranking_error=ranking_error)  # 返回可展示的主动降级摘要。
+        logger.info("BGE-M3 语义粗排已跳过：输入=%d，保留=%d，原因=%s", result.input_count, len(result.papers), ranking_error)  # 记录节省本地模型耗时的安全统计。
+        return result  # 将快速路径结果交给后续阶段。
 
 
 def _score_or_negative_infinity(score: float | None) -> float:

@@ -46,17 +46,27 @@ class _StubWebDiscoveryAdapter:
 class _PassthroughSemanticRanker:
     """在协调器测试中保留候选顺序，避免加载或下载 BGE-M3 模型。"""
 
-    def rank(self, papers: list[PaperRecord], _: QueryIntent) -> SemanticRankingResult:
+    def __init__(self) -> None:
+        """记录协调器为每次调用选择的模型阶段开关。"""
+        self.enabled_values: list[bool] = []  # 保存标准与深度模式传入的开关，供策略测试断言。
+
+    def rank(self, papers: list[PaperRecord], _: QueryIntent, *, enabled: bool = True, disabled_reason: str | None = None) -> SemanticRankingResult:
         """返回未截断候选，模拟语义阶段已成功完成。"""
-        return SemanticRankingResult(papers=papers, input_count=len(papers), truncated_count=0, model_name="test-bge-m3")  # 构造无需模型的稳定排序结果。
+        self.enabled_values.append(enabled)  # 记录是否允许当前模式执行语义模型。
+        return SemanticRankingResult(papers=papers, input_count=len(papers), truncated_count=0, model_name="test-bge-m3", ranking_error=None if enabled else disabled_reason)  # 构造无需模型的稳定排序结果。
 
 
 class _PassthroughCrossEncoderReranker:
     """在协调器测试中保留候选顺序，避免加载或下载 Cross Encoder 模型。"""
 
-    def rerank(self, papers: list[PaperRecord], _: QueryIntent) -> CrossEncoderRankingResult:
+    def __init__(self) -> None:
+        """记录协调器为每次调用选择的模型阶段开关。"""
+        self.enabled_values: list[bool] = []  # 保存标准与深度模式传入的开关，供策略测试断言。
+
+    def rerank(self, papers: list[PaperRecord], _: QueryIntent, *, enabled: bool = True, disabled_reason: str | None = None) -> CrossEncoderRankingResult:
         """返回未截断候选，模拟 Cross Encoder 阶段已成功完成。"""
-        return CrossEncoderRankingResult(papers=papers, input_count=len(papers), truncated_count=0, model_name="test-reranker")  # 构造无需模型的稳定精排结果。
+        self.enabled_values.append(enabled)  # 记录是否允许当前模式执行交叉编码模型。
+        return CrossEncoderRankingResult(papers=papers, input_count=len(papers), truncated_count=0, model_name="test-reranker", ranking_error=None if enabled else disabled_reason)  # 构造无需模型的稳定精排结果。
 
 
 class _PassthroughLlmReranker:
@@ -67,7 +77,7 @@ class _PassthroughLlmReranker:
         return LlmRankingResult(papers=papers, input_count=len(papers), model_name="test-llm", prompt_tokens=12, completion_tokens=4)  # 构造无需网络和密钥且含成本统计的稳定最终结果。
 
 
-def _build_query_intent(domains: list[str] | None = None, requires_web_evidence: bool = False) -> QueryIntent:
+def _build_query_intent(domains: list[str] | None = None, requires_web_evidence: bool = False, search_mode: str = "standard") -> QueryIntent:
     """构造可用于多源召回协调测试的最小有效查询意图。"""
     return QueryIntent(  # 构造无需 LLM 或网络的查询规划结果。
         original_query="Transformer forecasting",  # 提供用户原始查询文本。
@@ -75,6 +85,7 @@ def _build_query_intent(domains: list[str] | None = None, requires_web_evidence:
         query_language="en",  # 标记查询语言。
         domains=domains or [],  # 注入当前测试需要的领域标签。
         requires_web_evidence=requires_web_evidence,  # 注入当前测试需要的网页证据开关。
+        search_mode=search_mode,  # 注入标准或深度模型策略。
     )
 
 
@@ -126,6 +137,29 @@ def test_coordinator_collects_selected_sources_and_keeps_web_discoveries_separat
     assert result.llm_prompt_tokens == 12 and result.llm_completion_tokens == 4  # 验证协调器透传 LLM Token 统计。
     assert result.coverage_report is not None  # 验证最终核验后会生成可供后续多轮控制器消费的覆盖报告。
     assert result.coverage_report.should_continue is True  # 验证首轮高相关论文不足目标时报告建议继续而不自行发起调用。
+
+
+def test_coordinator_only_enables_local_ranking_models_in_deep_mode() -> None:
+    """标准模式必须跳过本地排序模型，深度模式才允许执行它们。"""
+    semantic_ranker = _PassthroughSemanticRanker()  # 记录 BGE-M3 阶段收到的模式开关。
+    cross_encoder_reranker = _PassthroughCrossEncoderReranker()  # 记录 Cross Encoder 阶段收到的模式开关。
+    coordinator = MultiSourceRecallCoordinator(  # 装配只含一个离线来源和三个可观测排序替身的协调器。
+        source_router=SourceRouter(Settings(_env_file=None)),  # 使用确定性默认来源路由。
+        academic_adapters={"openalex": _StubAcademicAdapter("openalex", [_build_paper("openalex", "1")])},  # 提供不访问网络的最小候选集合。
+        semantic_ranker=semantic_ranker,  # 注入可观测 BGE-M3 替身。
+        cross_encoder_reranker=cross_encoder_reranker,  # 注入可观测 Cross Encoder 替身。
+        llm_reranker=_PassthroughLlmReranker(),  # 保持两种模式均执行 LLM 核验替身。
+    )
+
+    standard_result = asyncio.run(coordinator.recall(_build_query_intent(search_mode="standard")))  # 执行标准模式并验证本地模型跳过。
+    deep_result = asyncio.run(coordinator.recall(_build_query_intent(search_mode="deep")))  # 执行深度模式并验证本地模型获准运行。
+
+    assert semantic_ranker.enabled_values == [False, True]  # 验证 BGE-M3 只在深度模式进入执行路径。
+    assert cross_encoder_reranker.enabled_values == [False, True]  # 验证 Cross Encoder 只在深度模式进入执行路径。
+    assert standard_result.semantic_ranking_error == "标准模式已跳过 BGE-M3 语义粗排，已按 RRF 排序"  # 验证标准模式返回可展示的跳过说明。
+    assert standard_result.cross_encoder_ranking_error == "标准模式已跳过 Cross Encoder 重排，已沿用 RRF 排序"  # 验证标准模式不伪装为模型故障。
+    assert standard_result.llm_model_name == "test-llm" and standard_result.llm_prompt_tokens == 12  # 验证标准模式仍会执行 LLM 核验阶段。
+    assert deep_result.semantic_ranking_error is None and deep_result.cross_encoder_ranking_error is None  # 验证深度模式不会报告主动跳过。
 
 
 def test_coordinator_degrades_single_academic_source_without_discarding_other_results() -> None:

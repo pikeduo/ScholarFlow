@@ -98,8 +98,9 @@ class MultiSourceRecallCoordinator:
                 source_errors[source_name] = error_message  # 保存安全可展示的网页来源错误摘要。
         fusion_result = self._paper_fusion_service.fuse(recalled_papers)  # 在 API 边界前统一执行身份解析、字段融合、版本族与 RRF。
         filter_result = self._paper_filter.filter(fusion_result.papers, query)  # 在进入语义排序前应用可解释的确定性规则过滤。
-        ranking_result = self._semantic_ranker.rank(filter_result.papers, query)  # 按 BGE-M3 语义相关性重排并截断后续候选。
-        cross_encoder_result = self._cross_encoder_reranker.rerank(ranking_result.papers, query)  # 按 Cross Encoder 精细相关性重排并截断 LLM 候选。
+        deep_ranking_enabled = query.search_mode == "deep"  # 仅深度模式允许执行本地 BGE-M3 与 Cross Encoder。
+        ranking_result = self._semantic_ranker.rank(filter_result.papers, query, enabled=deep_ranking_enabled, disabled_reason="标准模式已跳过 BGE-M3 语义粗排，已按 RRF 排序")  # 标准模式沿用 RRF，深度模式才按 BGE-M3 相关性重排。
+        cross_encoder_result = self._cross_encoder_reranker.rerank(ranking_result.papers, query, enabled=deep_ranking_enabled, disabled_reason="标准模式已跳过 Cross Encoder 重排，已沿用 RRF 排序")  # 标准模式不加载 Cross Encoder，深度模式才执行精细重排。
         llm_result = await self._llm_reranker.rerank(cross_encoder_result.papers, query)  # 核验硬约束、绑定公开证据并截断最终结果。
         coverage_report = self._coverage_gap_analyzer.analyze(query, llm_result.papers, new_valid_count=len(llm_result.papers), source_counts=source_counts, unavailable_sources=tuple(source_errors))  # 首轮将最终高质量候选数作为新增量，后续控制器会传入跨轮差值。
         logger.info("多源召回完成：原始论文=%d，融合论文=%d，过滤=%d，语义截断=%d，交叉编码截断=%d，LLM淘汰=%d，LLM截断=%d，最终结果=%d，网页发现=%d，来源错误=%d", fusion_result.input_count, fusion_result.fused_count, filter_result.filtered_count, ranking_result.truncated_count, cross_encoder_result.truncated_count, llm_result.rejected_count, llm_result.truncated_count, len(llm_result.papers), len(discoveries), len(source_errors))  # 记录不含完整查询、密钥和响应正文的阶段统计。

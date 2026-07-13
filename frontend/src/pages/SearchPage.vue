@@ -6,6 +6,7 @@ import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并�
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、历史、用量与路线。
+import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -552,13 +553,14 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
             <legend>检索模式</legend>
             <label :class="['mode-option', { 'is-selected': form.searchMode === 'standard' }]">
               <input v-model="form.searchMode" type="radio" value="standard" :disabled="loading">
-              <span><strong>标准</strong><small>1–2 轮 · 更快</small></span>
+              <span><strong>标准</strong><small>1–2 轮 · DeepSeek 核验 · 更快</small></span>
             </label>
             <label :class="['mode-option', { 'is-selected': form.searchMode === 'deep' }]">
               <input v-model="form.searchMode" type="radio" value="deep" :disabled="loading">
-              <span><strong>深度</strong><small>最多 3 轮 · 补足缺口</small></span>
+              <span><strong>深度</strong><small>最多 3 轮 · BGE-M3 + Cross Encoder</small></span>
             </label>
           </fieldset>
+          <p v-if="form.searchMode === 'deep'" class="deep-mode-warning" role="status">深度模式会加载 BGE-M3 与 Cross Encoder，搜索耗时明显更长。</p>
           <button class="advanced-toggle" type="button" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced">
             {{ showAdvanced ? '收起约束条件' : '添加约束条件' }}
             <span aria-hidden="true">{{ showAdvanced ? '−' : '+' }}</span>
@@ -645,7 +647,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           <dl v-else-if="searchUsage">
             <div><dt>API</dt><dd>{{ searchUsage.api_call_count }} 次</dd></div>
             <div><dt>Token</dt><dd>{{ searchUsage.token_usage }}</dd></div>
-            <div><dt>总耗时</dt><dd>{{ `${searchUsage.latency_ms} ms` }}</dd></div>
+            <div><dt>总耗时</dt><dd>{{ formatDuration(searchUsage.latency_ms) }}</dd></div>
             <div><dt>缓存命中</dt><dd>{{ `${searchUsage.cache_hits} 次` }}</dd></div>
           </dl>
         </div>
@@ -1082,6 +1084,14 @@ legend { /* 标记检索模式字段组。 */
 .mode-option small { /* 显示模式成本说明。 */
   color: #91a0ae; /* 降低辅助信息权重。 */
   font-size: 0.61rem; /* 控制信息密度。 */
+}
+
+.deep-mode-warning { /* 在深度模式被选中时明确提示本地模型带来的额外等待。 */
+  max-width: 19rem; /* 限制提示宽度，避免挤压模式选择控件。 */
+  margin: 0; /* 由父级弹性布局统一控制间距。 */
+  color: #7a5b2c; /* 使用克制的琥珀色提示而非错误色。 */
+  font-size: 0.66rem; /* 保持为辅助说明，不压过检索控件。 */
+  line-height: 1.45; /* 提升较长警告文本的可读性。 */
 }
 
 .advanced-toggle { /* 设置高级约束开关。 */
