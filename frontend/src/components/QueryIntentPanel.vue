@@ -12,7 +12,7 @@ const emit = defineEmits(['resubmit']) // 向页面提交校验后的完整 Quer
 
 const fields = reactive({}) // 保存适合表单编辑的字符串字段。
 const panelError = ref('') // 保存不泄露内部信息的本地校验错误。
-const expanded = ref(true) // 默认展示解析结果，便于用户核对 Query Agent。
+const expanded = ref(false) // 默认收起解析结果，用户需要编辑时再主动展开。
 
 watch(() => props.intent, loadIntent, { immediate: true, deep: true }) // 新检索完成后同步替换编辑副本。
 
