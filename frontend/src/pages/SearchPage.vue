@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue' // 管理搜索表单、恢复轮询生命周期和结果派生数据。
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue' // 管理搜索表单、筛选分页和恢复轮询生命周期。
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索，并按 run_id 恢复已保存运行。
+import { filterSearchPapers, paginateSearchPapers } from '../utils/searchResults.js' // 对同次最终结果执行本地筛选与分页。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -35,6 +36,9 @@ const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防
 const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
+const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
+const resultPage = ref(1) // 保存当前结果分页页码。
+const RESULT_PAGE_SIZE = 5 // 限制单页论文卡片数量，避免结果较多时页面过长。
 const RECOVERY_POLL_INTERVAL_MS = 3000 // 使用短周期只读轮询作为刷新后无法重连 POST SSE 的回退。
 const RECOVERY_POLL_MAX_ATTEMPTS = 20 // 最多轮询一分钟，避免异常状态无限占用浏览器和后端资源。
 let recoveryPollTimer = null // 保存当前待执行轮询定时器，便于新搜索和卸载时取消。
@@ -53,6 +57,21 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
   completionTokens: result.value?.query_planning_completion_tokens || 0, // 展示规划输出 Token。
   durationMs: result.value?.query_planning_duration_ms || 0, // 展示规划耗时。
 }))
+const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
+const filteredPapers = computed(() => filterSearchPapers(result.value?.papers || [], resultFilters)) // 在内存中筛选，不调用任何后端或来源接口。
+const paperPagination = computed(() => paginateSearchPapers(filteredPapers.value, resultPage.value, RESULT_PAGE_SIZE)) // 将筛选结果切分为稳定页面。
+
+watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd], () => { // 任意筛选变化时回到第一页避免越界空页。
+  resultPage.value = 1 // 保持筛选后的首屏结果可见。
+})
+
+watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另一运行时重置旧筛选和页码。
+  resultFilters.source = 'all' // 恢复来源不过滤。
+  resultFilters.relevance = 'all' // 恢复核验状态不过滤。
+  resultFilters.yearStart = '' // 清除旧年份起点。
+  resultFilters.yearEnd = '' // 清除旧年份终点。
+  resultPage.value = 1 // 回到结果第一页。
+})
 
 function useExample(example) { // 将示例查询填入输入框但不自动发起外部调用。
   form.queryText = example // 允许用户继续编辑示例。
@@ -160,6 +179,10 @@ function buildConditionChips(formSnapshot) { // 将已提交表单快照转换�
   if (formSnapshot.shouldInclude) chips.push({ label: `优先：${formSnapshot.shouldInclude}`, tone: 'neutral' }) // 展示软偏好。
   if (formSnapshot.exclude) chips.push({ label: `排除：${formSnapshot.exclude}`, tone: 'negative' }) // 展示排除条件。
   return chips // 返回保持表单顺序的标签列表。
+}
+
+function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在当前总页数内。
+  resultPage.value = Math.min(Math.max(nextPage, 1), paperPagination.value.totalPages) // 防止筛选变化或按钮连点导致越界。
 }
 
 async function submitSearch() { // 执行完整多源检索并更新页面状态。
@@ -341,7 +364,7 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
       <header class="results-header">
         <div>
           <p class="eyebrow">EVIDENCE-GROUNDED RESULTS</p>
-          <h2 id="results-title">最终推荐 <span>{{ result.papers.length }}</span></h2>
+          <h2 id="results-title">最终推荐 <span>{{ paperPagination.total }} / {{ result.papers.length }}</span></h2>
           <p class="submitted-query">“{{ submittedQuery }}”</p>
         </div>
         <div class="route-summary" aria-label="本次检索来源">
@@ -351,14 +374,28 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
       <div class="condition-row" aria-label="当前检索条件">
         <span v-for="chip in conditionChips" :key="chip.label" :class="['condition-chip', `is-${chip.tone}`]">{{ chip.label }}</span>
       </div>
+      <section v-if="result.papers.length" class="result-controls" aria-label="搜索结果筛选">
+        <div class="filter-fields">
+          <label>来源<select v-model="resultFilters.source"><option value="all">全部来源</option><option v-for="source in availableResultSources" :key="source" :value="source">{{ source }}</option></select></label>
+          <label>核验<select v-model="resultFilters.relevance"><option value="all">全部状态</option><option value="satisfied">已满足</option><option value="uncertain">待确认</option><option value="not_satisfied">未满足</option></select></label>
+          <label>起始年<input v-model="resultFilters.yearStart" type="number" min="1800" max="2100" placeholder="不限"></label>
+          <label>结束年<input v-model="resultFilters.yearEnd" type="number" min="1800" max="2100" placeholder="不限"></label>
+        </div>
+        <p>{{ `筛选后 ${paperPagination.total} 篇，第 ${paperPagination.page} / ${paperPagination.totalPages} 页` }}</p>
+      </section>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
-      <div v-if="result.papers.length" class="paper-list">
-        <PaperResultCard v-for="(paper, index) in result.papers" :key="paper.paper_id" :paper="paper" :rank="index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" @save="savePaper" />
+      <div v-if="paperPagination.items.length" class="paper-list">
+        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.pageSize + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" @save="savePaper" />
       </div>
       <div v-else class="empty-state">
-        <strong>暂未找到满足全部条件的论文</strong>
-        <p>可以放宽年份、必须词或排除条件后重新检索。</p>
+        <strong>{{ result.papers.length ? '没有论文符合当前筛选条件' : '暂未找到满足全部条件的论文' }}</strong>
+        <p>{{ result.papers.length ? '可以调整来源、年份或核验状态筛选。' : '可以放宽年份、必须词或排除条件后重新检索。' }}</p>
       </div>
+      <nav v-if="paperPagination.totalPages > 1" class="result-pagination" aria-label="搜索结果分页">
+        <button type="button" :disabled="paperPagination.page === 1" @click="changeResultPage(paperPagination.page - 1)">上一页</button>
+        <span>{{ `${paperPagination.page} / ${paperPagination.totalPages}` }}</span>
+        <button type="button" :disabled="paperPagination.page === paperPagination.totalPages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
+      </nav>
       <section v-if="discoveries.length" class="discovery-section" aria-labelledby="discovery-title">
         <div>
           <p class="eyebrow">SUPPLEMENTAL WEB EVIDENCE</p>
@@ -926,6 +963,77 @@ legend { /* 标记检索模式字段组。 */
   gap: 0.85rem; /* 分隔论文结果。 */
 }
 
+.result-controls { /* 组织结果集合内的本地筛选与分页摘要。 */
+  display: grid; /* 垂直排列筛选字段和摘要文字。 */
+  gap: 0.65rem; /* 分隔筛选控件和当前页信息。 */
+  padding: 0.9rem 1rem; /* 提供紧凑且独立的控制区域。 */
+  border: 1px solid #d8e5ec; /* 使用浅蓝边界表达本地结果操作。 */
+  border-radius: 0.85rem; /* 与结果区卡片保持一致圆角。 */
+  background: rgba(255, 255, 255, 0.72); /* 轻量区分于论文卡片。 */
+}
+
+.filter-fields { /* 响应式排列四个本地筛选字段。 */
+  display: grid; /* 建立均匀可收缩的字段网格。 */
+  grid-template-columns: repeat(4, minmax(0, 1fr)); /* 宽屏每行展示四项。 */
+  gap: 0.65rem; /* 分隔相邻筛选字段。 */
+}
+
+.filter-fields label { /* 纵向排列筛选标题和控件。 */
+  display: grid; /* 建立紧凑双行结构。 */
+  gap: 0.3rem; /* 分隔文字和输入控件。 */
+  color: #607487; /* 使用辅助正文颜色。 */
+  font-size: 0.64rem; /* 保持筛选为次级结果操作。 */
+  font-weight: 800; /* 提升小字号标签可读性。 */
+}
+
+.filter-fields select,
+.filter-fields input { /* 统一来源、状态和年份筛选控件。 */
+  min-width: 0; /* 允许窄屏网格收缩。 */
+  padding: 0.45rem 0.5rem; /* 提供可点击与可输入区域。 */
+  border: 1px solid #d5e1e9; /* 保持轻量可辨识边界。 */
+  border-radius: 0.5rem; /* 与结果区控件协调。 */
+  color: #334e68; /* 使用正文深色。 */
+  background: #fbfdfe; /* 保持输入背景干净。 */
+  font: inherit; /* 继承页面字体。 */
+  font-size: 0.68rem; /* 控制筛选区域信息密度。 */
+}
+
+.result-controls p { /* 展示筛选后数量和当前页。 */
+  margin: 0; /* 移除默认段落空白。 */
+  color: #8293a5; /* 使用辅助文字层级。 */
+  font-size: 0.66rem; /* 保持摘要紧凑。 */
+}
+
+.result-pagination { /* 提供不请求后端的本地分页操作。 */
+  display: flex; /* 横向排列上一页、页码和下一页。 */
+  align-items: center; /* 垂直对齐分页元素。 */
+  justify-content: center; /* 将分页控件置于结果列表底部中央。 */
+  gap: 0.75rem; /* 分隔控件与当前页信息。 */
+}
+
+.result-pagination button { /* 设置本地分页按钮。 */
+  padding: 0.5rem 0.8rem; /* 提供舒适点击面积。 */
+  border: 1px solid #b8ccdc; /* 使用品牌蓝灰边界。 */
+  border-radius: 0.55rem; /* 保持控件圆角一致。 */
+  color: #2e6f95; /* 使用品牌交互色。 */
+  background: #f3f8fb; /* 使用浅蓝背景。 */
+  cursor: pointer; /* 告知用户可切换本地页面。 */
+  font: inherit; /* 继承页面字体。 */
+  font-size: 0.68rem; /* 保持分页操作为辅助层级。 */
+  font-weight: 800; /* 增强操作可见性。 */
+}
+
+.result-pagination button:disabled { /* 标记第一页或末页不可继续切换。 */
+  cursor: default; /* 阻止无效操作反馈。 */
+  opacity: 0.48; /* 弱化不可用分页按钮。 */
+}
+
+.result-pagination span { /* 展示当前页与总页数。 */
+  color: #607487; /* 使用辅助文字色。 */
+  font-size: 0.68rem; /* 保持分页信息紧凑。 */
+  font-weight: 800; /* 提升页码可扫读性。 */
+}
+
 .library-message { /* 展示收藏操作结果。 */
   margin: -0.7rem 0 0; /* 拉近检索条件与操作反馈。 */
   padding: 0.65rem 0.75rem; /* 提供提示条留白。 */
@@ -1014,6 +1122,10 @@ legend { /* 标记检索模式字段组。 */
   .advanced-fields { /* 将高级字段改为两列。 */
     grid-template-columns: repeat(2, minmax(0, 1fr)); /* 减少单列宽度压力。 */
   }
+
+  .filter-fields { /* 平板将结果筛选收敛为两列。 */
+    grid-template-columns: repeat(2, minmax(0, 1fr)); /* 保证年份输入仍可用。 */
+  }
 }
 
 @media (max-width: 620px) { /* 调整手机搜索页布局。 */
@@ -1033,6 +1145,10 @@ legend { /* 标记检索模式字段组。 */
 
   .advanced-fields { /* 将高级条件改为单列。 */
     grid-template-columns: 1fr; /* 每行一个字段。 */
+  }
+
+  .filter-fields { /* 手机将结果筛选改为单列。 */
+    grid-template-columns: 1fr; /* 提升触摸输入可用性。 */
   }
 
   .route-summary { /* 手机来源标签左对齐。 */

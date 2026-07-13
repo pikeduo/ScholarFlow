@@ -2,6 +2,7 @@ import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证�
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
 import { SearchApiError, createQueryIntent, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE 与运行恢复入口。
+import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
   queryText: '检索 Transformer forecasting 论文', // 提供中英混合查询。
@@ -178,6 +179,28 @@ test('restoreSearchRun 对运行中状态只恢复进度，不读取或伪造最
   assert.equal(requestCount, 1) // 验证不读取尚未就绪的结果接口。
   assert.equal(restored.state, state) // 验证页面仍可展示当前轮次与状态。
   assert.equal(restored.result, null) // 验证没有最终结果时不伪造空论文集合。
+})
+
+test('filterSearchPapers 按来源、年份与核验状态筛选且保持原始排序', () => { // 验证本地筛选不改变后端相关性排序或发起新请求。
+  const papers = [
+    { paper_id: 'paper-1', source: 'openalex', year: 2024, constraint_status: 'satisfied' },
+    { paper_id: 'paper-2', source: 'semantic_scholar', year: 2021, constraint_status: 'uncertain' },
+    { paper_id: 'paper-3', source: 'openalex', year: 2018, constraint_status: 'satisfied' },
+  ] // 构造按相关性已排序的最终论文集合。
+
+  const filtered = filterSearchPapers(papers, { source: 'openalex', relevance: 'satisfied', yearStart: '2020', yearEnd: '' }) // 组合来源、核验和年份起点筛选。
+
+  assert.deepEqual(filtered.map((paper) => paper.paper_id), ['paper-1']) // 验证只保留全部条件满足的论文且顺序不变。
+})
+
+test('paginateSearchPapers 校正越界页码并保留稳定页面摘要', () => { // 验证分页不依赖后端接口也不会产生越界空页。
+  const papers = [{ paper_id: 'paper-1' }, { paper_id: 'paper-2' }, { paper_id: 'paper-3' }] // 构造三篇已筛选论文。
+
+  const page = paginateSearchPapers(papers, 9, 2) // 请求远超总页数的页码。
+
+  assert.equal(page.page, 2) // 验证页码被校正为最后一页。
+  assert.equal(page.totalPages, 2) // 验证总页数按固定页大小计算。
+  assert.deepEqual(page.items.map((paper) => paper.paper_id), ['paper-3']) // 验证最后一页保留剩余论文。
 })
 
 test('validateQueryIntent 拒绝倒置年份、候选不足和条件冲突', () => { // 验证编辑重搜的关键错误边界。
