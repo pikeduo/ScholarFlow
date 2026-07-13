@@ -51,7 +51,7 @@ class FakeMultiRoundSearchController:
         self._result = result  # 保存成功请求应返回的多轮结果。
         self._should_fail = should_fail  # 保存是否模拟控制器未预期故障。
 
-    async def run(self, _: QueryIntent, *, event_publisher: object | None = None) -> MultiRoundSearchResult:
+    async def run(self, _: QueryIntent, *, event_publisher: object | None = None, started_at: float | None = None) -> MultiRoundSearchResult:
         """按测试配置返回结果或触发安全 HTTP 错误边界。"""
         if self._should_fail:  # 仅在错误边界用例模拟内部错误。
             raise RuntimeError("模拟多轮控制器故障")  # 让路由转换为稳定 503 响应。

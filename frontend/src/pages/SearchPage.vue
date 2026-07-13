@@ -645,9 +645,8 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           <dl v-else-if="searchUsage">
             <div><dt>API</dt><dd>{{ searchUsage.api_call_count }} 次</dd></div>
             <div><dt>Token</dt><dd>{{ searchUsage.token_usage }}</dd></div>
-            <div><dt>费用</dt><dd>{{ `$${searchUsage.cost_usd.toFixed(4)}` }}</dd></div>
-            <div><dt>耗时</dt><dd>{{ `${searchUsage.latency_ms} ms` }}</dd></div>
-            <div><dt>缓存</dt><dd>{{ `${searchUsage.cache_hits} 次命中` }}</dd></div>
+            <div><dt>总耗时</dt><dd>{{ `${searchUsage.latency_ms} ms` }}</dd></div>
+            <div><dt>缓存命中</dt><dd>{{ `${searchUsage.cache_hits} 次` }}</dd></div>
           </dl>
         </div>
       </section>

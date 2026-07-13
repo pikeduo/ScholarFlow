@@ -73,13 +73,14 @@ def _paper(paper_id: str, *, doi: str | None = None) -> PaperRecord:
     return PaperRecord(paper_id=paper_id, title=f"Forecasting Paper {paper_id}", abstract="Time series forecasting result.", doi=doi, source="openalex", constraint_status="satisfied", llm_relevance_score=0.9)  # 让覆盖分析将其计入高相关结果。
 
 
-def _round_result(papers: list[PaperRecord], *, source_errors: dict[str, str] | None = None) -> MultiSourceRecallResult:
+def _round_result(papers: list[PaperRecord], *, source_errors: dict[str, str] | None = None, cache_hit_count: int = 0) -> MultiSourceRecallResult:
     """构造单来源离线召回、排序和核验完成后的最小结果。"""
     return MultiSourceRecallResult(  # 返回控制器实际需要的路由、论文、来源数量和错误字段。
         route_plan=SourceRoutePlan(academic_sources=["openalex"], selection_reasons={"openalex": "测试来源"}),  # 声明本轮使用一个学术来源。
         papers=papers,  # 注入本轮已排序和核验的论文。
         source_counts={"openalex": len(papers)},  # 以论文数量模拟来源成功返回数量。
         source_errors=source_errors or {},  # 注入可选的安全来源错误。
+        cache_hit_count=cache_hit_count,  # 注入本轮无需访问外部来源的有效缓存命中数。
         raw_paper_count=len(papers),  # 提供最小原始召回统计。
         work_family_count=len(papers),  # 提供不影响控制器判断的版本族统计。
     )
@@ -144,6 +145,19 @@ def test_controller_persists_initial_round_and_completed_snapshots() -> None:
     assert state_store.saved_states[0].status == "running" and state_store.saved_states[0].current_round == 0  # 验证外部来源调用前已持久化初始状态。
     assert state_store.saved_states[-1].status == "completed"  # 验证最终停止原因对应的完成状态已持久化。
     assert state_store.saved_states[-1].stop_reason == result.run_state.stop_reason  # 验证持久化终态与 API 返回保持一致。
+
+
+def test_controller_records_total_latency_and_does_not_count_cached_source_as_api_call() -> None:
+    """缓存命中应独立计数，并从本轮实际外部 API 次数中排除。"""
+    state_store = _RecordingStateStore()  # 构造记录最终快照的离线存储替身。
+    coordinator = _StubCoordinator([_round_result([_paper("paper-1")], cache_hit_count=1)])  # 模拟唯一来源响应由 Redis 有效缓存直接提供。
+
+    result = asyncio.run(MultiRoundSearchController(coordinator, state_store=state_store).run(_query()))  # 执行不访问网络的单轮工作流。
+
+    assert result.run_state.api_call_count == 0  # 验证缓存命中不会被误报为一次外部 API 调用。
+    assert result.run_state.cache_hits == 1  # 验证运行快照保留有效缓存命中数。
+    assert result.run_state.latency_ms >= 0  # 验证最终结果总是包含非负端到端耗时。
+    assert state_store.saved_states[-1].latency_ms == result.run_state.latency_ms  # 验证 SQLite 持久化边界保存的是最终总耗时。
 
 
 def test_langgraph_conditional_nodes_do_not_recall_when_budget_is_exhausted() -> None:

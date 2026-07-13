@@ -3,6 +3,7 @@
 import asyncio  # 在 SSE 请求内并发执行多轮控制器与事件流生成器。
 import json  # 将已净化事件编码为 SSE data 行。
 from functools import lru_cache  # 在服务进程内复用昂贵的本地模型和来源限流状态。
+from time import perf_counter  # 在 HTTP 入口记录包含查询规划的端到端搜索耗时。
 from typing import Annotated  # 为 FastAPI 依赖注入声明清晰的参数类型。
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status  # 声明路由、依赖、查询参数和稳定 HTTP 错误。
@@ -160,7 +161,7 @@ async def search_multi_round(
         HTTPException：控制器未能形成稳定结果时返回不泄露内部实现的 503 响应。
     """
     try:  # 控制器会隔离来源错误，此处仅转换未预期的服务边界故障。
-        return await controller.run(query)  # 直接使用编辑后的意图，避免重复调用 Query Agent。
+        return await controller.run(query, started_at=perf_counter())  # 直接使用编辑后的意图，避免重复调用 Query Agent。
     except Exception:  # 不向调用方暴露模型装配、来源实现或工作流内部细节。
         logger.exception("多轮多源检索接口调用失败")  # 在受控日志保留完整堆栈供运维排查。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回安全、可理解且稳定的公共错误。
@@ -180,7 +181,7 @@ async def stream_multi_round_search_events(
     返回：
         StreamingResponse：`text/event-stream` 响应，事件不携带完整查询或论文摘要。
     """
-    return _create_multi_round_sse_response(query, controller, state_store)  # 复用流式执行、结果持久化和连接关闭边界。
+    return _create_multi_round_sse_response(query, controller, state_store, started_at=perf_counter())  # 复用流式执行、结果持久化和连接关闭边界。
 
 
 @router.post("/natural-multi-round/events", status_code=status.HTTP_200_OK, summary="以 SSE 流返回自然语言多轮检索进度")
@@ -200,12 +201,13 @@ async def stream_natural_multi_round_search_events(
     返回：
         StreamingResponse：不携带论文摘要的 `text/event-stream` 进度流。
     """
+    started_at = perf_counter()  # 将 Query Agent 规划阶段也纳入用户点击到结果完成的总耗时。
     try:  # 规划失败时不能退回到整句低质量学术搜索。
         planning_result = await planner.plan(request)  # 先得到真实、可编辑的英文结构化查询意图。
     except QueryPlanningError:  # 适配层已净化密钥、URL 和供应商原始响应。
         logger.exception("自然语言 SSE 查询规划失败")  # 记录受控堆栈而不记录用户完整问题。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回稳定公共错误。
-    return _create_multi_round_sse_response(planning_result.query_intent, controller, state_store)  # 使用同一流式控制器路径避免重复执行查询。
+    return _create_multi_round_sse_response(planning_result.query_intent, controller, state_store, started_at=started_at)  # 使用同一流式控制器路径避免重复执行查询。
 
 
 @router.get("/runs", response_model=SearchRunHistoryPage, status_code=status.HTTP_200_OK, summary="读取本地搜索运行历史")
@@ -399,13 +401,14 @@ async def search_natural_multi_round(
     异常：
         HTTPException：规划或控制器不可用时返回稳定且不泄露内部细节的 503 响应。
     """
+    started_at = perf_counter()  # 将自然语言入口的规划与多轮检索统一计入同一次总耗时。
     try:  # 查询规划失败时禁止退回整句低质量检索。
         planning_result = await planner.plan(request)  # 先获得可编辑且可审计的结构化英文检索意图。
     except QueryPlanningError:  # 适配层已净化密钥、URL 与原始响应正文。
         logger.exception("多轮自然语言查询规划失败")  # 保留受控堆栈供服务排查。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回安全公共错误。
     try:  # 多轮控制器使用规划意图执行实际召回、排序和缺口修复。
-        result = await controller.run(planning_result.query_intent)  # 不将原始自然语言整句直接传递给来源适配器。
+        result = await controller.run(planning_result.query_intent, started_at=started_at)  # 不将原始自然语言整句直接传递给来源适配器。
     except Exception:  # 隔离控制器装配或未预期内部错误。
         logger.exception("多轮自然语言检索接口调用失败")  # 仅记录受控堆栈，不记录完整原始查询。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回稳定服务不可用响应。
@@ -428,13 +431,13 @@ def _encode_sse_event(event: SearchProgressEvent) -> str:
     return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {payload}\n\n"  # 按 EventSource 可解析的 id、event 和 data 行返回。
 
 
-def _create_multi_round_sse_response(query: QueryIntent, controller: MultiRoundSearchController, state_store: SearchRunStateStore) -> StreamingResponse:
+def _create_multi_round_sse_response(query: QueryIntent, controller: MultiRoundSearchController, state_store: SearchRunStateStore, *, started_at: float) -> StreamingResponse:
     """构造执行同次多轮检索、持久化结果并实时发送轻量事件的 SSE 响应。"""
     publisher = InMemorySearchRunEventPublisher()  # 为当前 HTTP 连接创建独立且有界的事件队列。
 
     async def run_and_store_result() -> MultiRoundSearchResult:
         """运行控制器并在完成后保存完整结果，前端可按 run_id 一次读取。"""
-        result = await controller.run(query, event_publisher=publisher)  # 执行一次真实多轮搜索并发布进度事件。
+        result = await controller.run(query, event_publisher=publisher, started_at=started_at)  # 执行一次真实多轮搜索并发布进度事件。
         try:  # 结果保存失败不应删除已完成运行状态或终态事件。
             state_store.save_result(result)  # 将完整最终结果与轻量状态分离持久化。
         except SearchRunStoreError:  # 不向 SSE 客户端暴露数据库路径、SQL 或内部异常。

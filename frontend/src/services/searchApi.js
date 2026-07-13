@@ -426,7 +426,7 @@ export async function getSearchRunUsage(runId, fetchImpl = globalThis.fetch, api
   if (!response.ok) throw await parseSearchError(response) // 复用稳定的后端公共错误边界。
   try { // 校验搜索页展示所依赖的最小统计字段。
     const usage = await response.json() // 解析由后端模型序列化的只读快照。
-    if (!usage || typeof usage.run_id !== 'string' || typeof usage.api_call_count !== 'number' || typeof usage.token_usage !== 'number' || typeof usage.cost_usd !== 'number' || typeof usage.latency_ms !== 'number' || typeof usage.cache_hits !== 'number' || !Array.isArray(usage.selected_sources)) throw new SearchApiError('搜索用量数据不完整') // 防止不完整响应误导用户。
+    if (!usage || typeof usage.run_id !== 'string' || typeof usage.api_call_count !== 'number' || typeof usage.token_usage !== 'number' || typeof usage.latency_ms !== 'number' || typeof usage.cache_hits !== 'number' || !Array.isArray(usage.selected_sources)) throw new SearchApiError('搜索用量数据不完整') // 防止不完整响应误导用户。
     return usage // 返回同次运行的真实观测数据。
   } catch (error) { // 将 JSON 解析或契约错误转换为统一安全提示。
     if (error instanceof SearchApiError) throw error // 保留可直接展示的业务错误。

@@ -46,6 +46,7 @@ class MultiSourceRecallResult(BaseModel):
     discoveries: list[SupplementalDiscoveryItem] = Field(default_factory=list)  # 保存独立于论文集合的网页发现结果。
     source_counts: dict[str, int] = Field(default_factory=dict)  # 保存每个来源的成功结果数。
     source_errors: dict[str, str] = Field(default_factory=dict)  # 保存不含密钥、路径和响应正文的来源错误摘要。
+    cache_hit_count: int = Field(default=0, ge=0)  # 保存本轮来源响应 Redis 缓存的有效命中次数。
     raw_paper_count: int = Field(default=0, ge=0)  # 保存跨来源融合前的原始学术论文数量。
     merged_paper_count: int = Field(default=0, ge=0)  # 保存因身份融合而被合并的重复来源记录数量。
     filtered_paper_count: int = Field(default=0, ge=0)  # 保存融合后因确定性规则被移除的论文数量。

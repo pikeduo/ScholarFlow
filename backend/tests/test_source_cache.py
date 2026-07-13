@@ -2,7 +2,7 @@
 
 import asyncio  # 在同步 pytest 用例中驱动缓存异步方法。
 
-from backend.app.repositories.source_cache import SourceResponseCache  # 导入待测来源响应缓存。
+from backend.app.repositories.source_cache import SourceResponseCache, begin_source_cache_usage, end_source_cache_usage  # 导入待测来源响应缓存与本次搜索命中统计边界。
 
 
 class FakeRedisClient:
@@ -58,6 +58,22 @@ def test_source_cache_uses_hashed_key_and_search_ttl() -> None:
     cached = asyncio.run(cache.get_list(key, "semantic_scholar", "search"))  # 读取同一键验证缓存命中。
     assert cached == [{"paperId": "paper-1"}]  # 验证 JSON 往返不改变来源响应结构。
     assert client.last_ttl_seconds == 3600  # 验证写入必须始终携带受控 TTL。
+
+
+def test_source_cache_counts_only_valid_hits_in_current_search() -> None:
+    """结构有效的缓存读取应只计入当前搜索的命中统计。"""
+    client = FakeRedisClient()  # 构造无需真实 Redis 的内存客户端。
+    cache = SourceResponseCache(FakeRedisProvider(client), search_ttl_seconds=60)  # 构造待测来源响应缓存。
+    key = cache.build_key("openalex", "works", {"query": "forecasting"})  # 使用不暴露查询正文的稳定键。
+    asyncio.run(cache.set_list(key, "openalex", "works", [{"id": "work-1"}]))  # 预先写入结构正确的 JSON 列表。
+
+    usage_token = begin_source_cache_usage()  # 开始模拟一次完整多源搜索的统计上下文。
+    try:  # 确保断言失败时仍会清理 ContextVar。
+        assert asyncio.run(cache.get_list(key, "openalex", "works")) == [{"id": "work-1"}]  # 读取有效缓存以触发命中计数。
+    finally:
+        cache_hits = end_source_cache_usage(usage_token)  # 结束统计并恢复独立上下文。
+
+    assert cache_hits == 1  # 验证有效缓存命中被准确记录一次。
 
 
 def test_source_cache_degrades_when_redis_is_unavailable() -> None:

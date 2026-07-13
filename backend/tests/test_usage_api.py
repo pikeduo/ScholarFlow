@@ -57,7 +57,6 @@ def _build_state() -> SearchRunState:
         selected_sources=["openalex", "semantic_scholar"],
         api_call_count=5,
         token_usage=720,
-        cost_usd=0.024,
         latency_ms=1860,
         cache_hits=3,
         stop_reason="已满足目标数量",
@@ -76,6 +75,7 @@ def test_usage_endpoint_returns_saved_run_metrics(api_client: TestClient) -> Non
     assert payload["run_id"] == "run-usage-1"  # 验证响应保留关联标识。
     assert payload["api_call_count"] == 5  # 验证不重新估算 API 调用数。
     assert payload["token_usage"] == 720  # 验证保留实际 Token 统计。
+    assert "cost_usd" not in payload  # 验证公共用量契约不再暴露未计算的费用字段。
     assert payload["selected_sources"] == ["openalex", "semantic_scholar"]  # 验证保留实际来源顺序。
 
 

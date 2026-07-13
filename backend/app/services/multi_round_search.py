@@ -53,11 +53,11 @@ class MultiRoundSearchController:
         self._standard_max_rounds = standard_max_rounds  # 保存标准模式硬上限。
         self._deep_max_rounds = deep_max_rounds  # 保存深度模式硬上限。
 
-    async def run(self, query: QueryIntent, *, budget_exhausted: bool = False, event_publisher: SearchRunEventPublisher | None = None) -> MultiRoundSearchResult:
+    async def run(self, query: QueryIntent, *, budget_exhausted: bool = False, event_publisher: SearchRunEventPublisher | None = None, started_at: float | None = None) -> MultiRoundSearchResult:
         """通过 LangGraph 条件图执行多轮搜索并返回稳定结果。"""
         from backend.app.agents.search_workflow import MultiRoundSearchWorkflow  # 延迟导入避免 Agent 与服务协议形成模块循环。
 
-        return await MultiRoundSearchWorkflow(self).run(query, budget_exhausted=budget_exhausted, event_publisher=event_publisher)  # 所有生产调用统一走条件节点图。
+        return await MultiRoundSearchWorkflow(self).run(query, budget_exhausted=budget_exhausted, event_publisher=event_publisher, started_at=started_at)  # 所有生产调用统一走条件节点图。
 
     def max_rounds_for(self, query: QueryIntent) -> int:
         """按搜索模式返回已配置且已校验的硬轮次上限。"""

@@ -28,7 +28,6 @@ class SearchRunState(BaseModel):
         candidate_ids：进入排序阶段的候选内部标识。
         api_call_count：本次运行发生的外部 API 调用次数。
         token_usage：本次运行累计的 LLM Token 数量。
-        cost_usd：本次运行累计估算或实际费用。
         latency_ms：本次运行累计耗时。
         cache_hits：本次运行缓存命中次数。
         warnings：安全可展示的降级或约束提示。
@@ -51,7 +50,6 @@ class SearchRunState(BaseModel):
     candidate_ids: list[str] = Field(default_factory=list)  # 保存进入排序与核验阶段的候选标识。
     api_call_count: int = Field(default=0, ge=0)  # 记录本次运行的外部 API 调用数量。
     token_usage: int = Field(default=0, ge=0)  # 记录本次运行累计的 LLM Token 数。
-    cost_usd: float = Field(default=0.0, ge=0.0)  # 记录本次运行累计费用。
     latency_ms: int = Field(default=0, ge=0)  # 记录本次运行累计端到端耗时。
     cache_hits: int = Field(default=0, ge=0)  # 记录检索和规划缓存的命中次数。
     warnings: list[str] = Field(default_factory=list)  # 保存不含密钥和完整敏感查询的警告。

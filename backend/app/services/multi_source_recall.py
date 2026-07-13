@@ -9,6 +9,7 @@ from backend.app.models.discovery import SupplementalDiscoveryItem  # 区分不�
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造协调阶段统一输出。
 from backend.app.models.paper import PaperRecord  # 保存进入后续规范化阶段的论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收已完成查询规划的统一意图。
+from backend.app.repositories.source_cache import begin_source_cache_usage, end_source_cache_usage  # 汇总本轮并发来源调用的有效 Redis 缓存命中。
 from backend.app.services.multi_source_filtering import MultiSourcePaperFilter  # 在语义排序前应用多源确定性规则过滤。
 from backend.app.services.paper_fusion import PaperFusionService  # 在协调器边界执行跨来源身份融合与 RRF 计算。
 from backend.app.services.coverage_analysis import CoverageGapAnalyzer  # 在最终核验后识别下一轮检索需要补足的缺口。
@@ -73,10 +74,14 @@ class MultiSourceRecallCoordinator:
             self._recall_web_discovery_source(source_name, query)  # 保持网页发现与论文召回的错误边界分离。
             for source_name in route_plan.web_discovery_sources  # 仅执行路由器已显式批准的补充来源。
         ]
-        academic_outcomes, discovery_outcomes = await asyncio.gather(  # 并行启动两类来源任务以减少端到端等待时间。
-            asyncio.gather(*academic_tasks),  # 等待所有学术来源完成或各自降级。
-            asyncio.gather(*discovery_tasks),  # 等待所有网页发现来源完成或各自降级。
-        )
+        cache_usage_token = begin_source_cache_usage()  # 在并发来源任务启动前建立本轮独立缓存统计上下文。
+        try:  # 无论来源协调是否意外失败，都必须清理 ContextVar 以隔离下一次搜索。
+            academic_outcomes, discovery_outcomes = await asyncio.gather(  # 并行启动两类来源任务以减少端到端等待时间。
+                asyncio.gather(*academic_tasks),  # 等待所有学术来源完成或各自降级。
+                asyncio.gather(*discovery_tasks),  # 等待所有网页发现来源完成或各自降级。
+            )
+        finally:
+            cache_hit_count = end_source_cache_usage(cache_usage_token)  # 读取并重置本轮各来源共享的有效命中总数。
         recalled_papers: list[PaperRecord] = []  # 按来源计划顺序汇总尚未跨来源融合的论文记录。
         discoveries: list[SupplementalDiscoveryItem] = []  # 汇总永不进入论文融合的网页发现项。
         source_counts: dict[str, int] = {}  # 保存每个来源成功返回的条目数量。
@@ -105,6 +110,7 @@ class MultiSourceRecallCoordinator:
             discoveries=discoveries,  # 返回不可合并的补充网页发现项。
             source_counts=source_counts,  # 返回每个已选来源的成功结果数。
             source_errors=source_errors,  # 返回来源级安全降级错误摘要。
+            cache_hit_count=cache_hit_count,  # 返回本轮未发出外部请求的有效 Redis 缓存命中数。
             raw_paper_count=fusion_result.input_count,  # 返回融合前的原始学术论文数量。
             merged_paper_count=fusion_result.merged_count,  # 返回被身份融合合并的重复记录数量。
             filtered_paper_count=filter_result.filtered_count,  # 返回融合后被规则过滤移除的论文数量。

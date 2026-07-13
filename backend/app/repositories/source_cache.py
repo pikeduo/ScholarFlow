@@ -2,11 +2,45 @@
 
 import hashlib  # 为规范化参数生成不暴露查询正文的稳定摘要。
 import json  # 以可跨进程读取的 JSON 形式保存来源响应。
+from contextvars import ContextVar, Token  # 为单次异步搜索隔离缓存命中计数。
+from dataclasses import dataclass  # 保存轻量且可共享的本次搜索缓存统计。
 from collections.abc import Mapping  # 校验缓存键输入中的参数对象。
 from typing import Protocol  # 定义缓存依赖的最小 Redis 管理器边界。
 
 from backend.app.core.logging import logger  # 记录不包含查询与响应正文的缓存统计。
 from backend.app.repositories.redis_client import RedisAsyncClient, RedisClientManager, get_redis_manager  # 复用已验证 Redis 客户端与降级状态。
+
+
+@dataclass
+class SourceCacheUsage:
+    """保存单次搜索生命周期内的来源响应缓存命中数。"""
+
+    hit_count: int = 0  # 仅在读取到结构有效的 Redis 列表时递增。
+
+
+_source_cache_usage: ContextVar[SourceCacheUsage | None] = ContextVar("source_cache_usage", default=None)  # 隔离并发搜索的统计上下文。
+
+
+def begin_source_cache_usage() -> Token[SourceCacheUsage | None]:
+    """开始记录当前异步搜索的来源缓存命中。"""
+
+    return _source_cache_usage.set(SourceCacheUsage())  # 为当前任务及其并发子任务共享同一统计对象。
+
+
+def end_source_cache_usage(token: Token[SourceCacheUsage | None]) -> int:
+    """结束当前搜索的缓存统计并返回命中次数。"""
+
+    usage = _source_cache_usage.get()  # 在重置前读取当前搜索累计的有效命中数。
+    _source_cache_usage.reset(token)  # 避免后续独立请求继承本次搜索上下文。
+    return usage.hit_count if usage is not None else 0  # 防御未初始化上下文时仍返回稳定零值。
+
+
+def record_source_cache_hit() -> None:
+    """将一次有效来源缓存命中计入当前搜索，未启用统计时静默忽略。"""
+
+    usage = _source_cache_usage.get()  # 获取当前异步调用链绑定的统计对象。
+    if usage is not None:  # 适配器独立调用缓存时不强制要求存在搜索工作流。
+        usage.hit_count += 1  # 并发子任务共享该对象，因而可以汇总同轮各来源命中。
 
 
 class RedisClientProvider(Protocol):
@@ -68,6 +102,7 @@ class SourceResponseCache:
             logger.warning("学术来源缓存读取失败，已回源：来源=%s，操作=%s", source, operation, exc_info=True)  # 记录受控堆栈且不泄露键内容。
             return None  # 继续既有网络请求路径。
         logger.info("学术来源缓存命中：来源=%s，操作=%s，结果数=%d", source, operation, len(decoded_value))  # 记录可观测缓存命中统计。
+        record_source_cache_hit()  # 仅将结构有效且实际可复用的 Redis 响应计入用量。
         return decoded_value  # 返回经 JSON 校验的来源原始结果数组。
 
     async def set_list(self, key: str, source: str, operation: str, value: list[object]) -> None:

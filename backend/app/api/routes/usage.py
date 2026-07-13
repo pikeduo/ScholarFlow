@@ -40,7 +40,6 @@ def get_search_usage(
         run_id=state.run_id,
         api_call_count=state.api_call_count,
         token_usage=state.token_usage,
-        cost_usd=state.cost_usd,
         latency_ms=state.latency_ms,
         cache_hits=state.cache_hits,
         current_round=state.current_round,
