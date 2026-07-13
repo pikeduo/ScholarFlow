@@ -78,6 +78,7 @@ let recoveryPollAttempts = 0 // 记录当前恢复运行的已执行轮询次数
 let resultPageRequestVersion = 0 // 标记最新分页请求，防止快速切换条件时旧响应覆盖新页面。
 
 const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
+const queryKeywords = computed(() => buildQueryKeywords(result.value?.query_intent)) // 从本次已保存 QueryIntent 派生所有论文卡片共用的检索关键词。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
 const showSearchHistory = computed(() => !currentRunId.value) // 仅在不带运行标识的首页展示已保存搜索运行。
 
@@ -146,6 +147,19 @@ function buildConditionChipsFromIntent(intent) { // 将已保存 QueryIntent 转
     shouldInclude: (intent.should_include || []).join(', '), // 回显保存的软约束。
     exclude: (intent.exclude || []).join(', '), // 回显保存的排除条件。
   })
+}
+
+function buildQueryKeywords(intent) { // 将 Query Agent 已解析的核心术语压缩为论文卡片可扫读的关键词。
+  const values = [ // 仅选择实际参与检索语义的正向字段，排除年份、来源和排除词。
+    ...(intent?.research_topics || []), // 优先保留研究主题。
+    ...(intent?.methods || []), // 补充模型、算法或方法。
+    ...(intent?.tasks || []), // 补充具体研究任务。
+    ...(intent?.datasets || []), // 补充目标数据集或基准。
+    ...(intent?.must_include || []), // 保留用户明确要求的硬约束术语。
+    ...(intent?.should_include || []), // 保留用户明确偏好的软约束术语。
+  ]
+  const seen = new Set() // 使用大小写无关键跨字段去重。
+  return values.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 8) // 限制最多八个词，保持卡片元数据紧凑。
 }
 
 function syncRunIdToUrl(runId) { // 将可恢复运行标识写入当前地址而不产生额外历史记录。
@@ -715,7 +729,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       <p v-if="comparisonError && !comparisonResult" class="comparison-message" role="alert">{{ comparisonError }}</p>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="paperPagination.items.length" ref="paperListElement" class="paper-list">
-        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.page_size + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="comparisonPaperIds.includes(paper.paper_id)" :comparison-disabled="comparisonPaperIds.length >= 5" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
+        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :query-keywords="queryKeywords" :rank="(paperPagination.page - 1) * paperPagination.page_size + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="comparisonPaperIds.includes(paper.paper_id)" :comparison-disabled="comparisonPaperIds.length >= 5" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
       </div>
       <div v-else class="empty-state">
         <strong>{{ result.papers.length ? '没有论文符合当前筛选条件' : '暂未找到满足全部条件的论文' }}</strong>

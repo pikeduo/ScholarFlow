@@ -8,6 +8,7 @@ const props = defineProps({ // 声明论文和列表序号输入。
   paper: { type: Object, required: true }, // 接收后端 PaperRecord。
   rank: { type: Number, default: 0 }, // 接收从一开始的结果排名，文献库可隐藏排名列。
   keywords: { type: Array, default: () => [] }, // 接收用户维护或来源提供的关键词。
+  queryKeywords: { type: Array, default: () => [] }, // 接收本次 QueryIntent 解析出的检索关键词，仅在搜索结果卡片展示。
   showRank: { type: Boolean, default: true }, // 控制文献库是否展示搜索相关度排名列。
   showScore: { type: Boolean, default: true }, // 控制非搜索场景是否展示相关度分数。
   enableTranslation: { type: Boolean, default: true }, // 控制仅搜索结果可用的字段翻译入口。
@@ -41,7 +42,11 @@ const sources = computed(() => { // 优先展示完整多源溯源列表。
 
 const doiUrl = computed(() => buildDoiUrl(props.paper.doi)) // 仅为符合 DOI 格式的论文渲染固定 doi.org 链接。
 const publicPdfUrl = computed(() => buildPublicPdfUrl(props.paper.open_access_url)) // 仅为来源明确提供的公开 PDF 渲染独立按钮。
-const displayKeywords = computed(() => { // 优先展示用户维护关键词，并补充来源返回的论文关键词。
+const displayQueryKeywords = computed(() => { // 展示本次查询解析提取的主题、方法、任务和数据集关键词。
+  const seen = new Set() // 保存大小写无关去重键，避免同一术语在多种解析字段中重复。
+  return props.queryKeywords.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 8) // 保留最多八个查询词，避免遮挡论文来源信息。
+})
+const displayPaperKeywords = computed(() => { // 优先展示用户维护关键词，并补充来源返回的论文关键词。
   const values = [...props.keywords, ...(props.paper.keywords || [])] // 合并两个关键词来源供文献库和搜索页共用。
   const seen = new Set() // 保存大小写无关去重键。
   return values.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 12) // 保留最多十二个可扫读关键词。
@@ -102,7 +107,8 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
         <span v-for="source in sources" :key="source" class="source-badge">{{ source }}</span>
         <span :class="['status-badge', statusMeta.className]">{{ statusMeta.label }}</span>
         <span v-if="paper.paper_type" class="type-badge">{{ paper.paper_type }}</span>
-        <span v-for="keyword in displayKeywords" :key="keyword" class="keyword-badge">{{ keyword }}</span>
+        <span v-for="keyword in displayQueryKeywords" :key="`query-${keyword}`" class="query-keyword-badge">检索：{{ keyword }}</span>
+        <span v-for="keyword in displayPaperKeywords" :key="`paper-${keyword}`" class="keyword-badge">{{ keyword }}</span>
       </div>
       <h3>
         <a v-if="doiUrl" :href="doiUrl" target="_blank" rel="noopener noreferrer">{{ paper.title }}</a>
@@ -222,7 +228,8 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
 .source-badge,
 .status-badge,
 .type-badge,
-.keyword-badge { /* 统一标签基础样式。 */
+.keyword-badge,
+.query-keyword-badge { /* 统一来源和查询关键词标签基础样式。 */
   padding: 0.22rem 0.48rem; /* 形成紧凑胶囊。 */
   border-radius: 999px; /* 使用完整圆角。 */
   font-size: 0.64rem; /* 控制元数据密度。 */
@@ -243,6 +250,11 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
 .keyword-badge { /* 展示用户或来源提供的论文关键词。 */
   color: #6a4d1f; /* 使用暖色与来源和核验状态区分。 */
   background: #fff3dc; /* 以低饱和背景保持关键词可扫读。 */
+}
+
+.query-keyword-badge { /* 展示 Query Agent 解析出的本次检索关键词。 */
+  color: #356d55; /* 使用绿色与论文自身关键词区分。 */
+  background: #e9f7ee; /* 以浅绿背景提示该词来自本次检索而非来源元数据。 */
 }
 
 .status-badge.is-satisfied { /* 标记证据支持的约束满足。 */
