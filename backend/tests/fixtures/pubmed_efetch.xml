@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation Status="Publisher">
+      <PMID Version="1">12345678</PMID>
+      <Article>
+        <Journal><JournalIssue CitedMedium="Internet"><PubDate><Year>2025</Year></PubDate></JournalIssue><Title>Journal of Test Medicine</Title></Journal>
+        <ArticleTitle>Transformer models for clinical forecasting</ArticleTitle>
+        <Abstract><AbstractText Label="BACKGROUND">Clinical forecasting needs robust models.</AbstractText><AbstractText Label="METHODS">We evaluated Transformer models.</AbstractText></Abstract>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y"><LastName>Lovelace</LastName><ForeName>Ada</ForeName><Initials>A</Initials></Author>
+          <Author ValidYN="Y"><CollectiveName>ScholarFlow Consortium</CollectiveName></Author>
+        </AuthorList>
+        <PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType></PublicationTypeList>
+      </Article>
+    </MedlineCitation>
+    <PubmedData><ArticleIdList><ArticleId IdType="pubmed">12345678</ArticleId><ArticleId IdType="doi">10.1000/pubmed-test</ArticleId></ArticleIdList></PubmedData>
+  </PubmedArticle>
+</PubmedArticleSet>

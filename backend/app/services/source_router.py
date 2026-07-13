@@ -21,6 +21,26 @@ COMPUTER_SCIENCE_DOMAINS = frozenset(  # 声明首版需要加入 arXiv 与 DBLP
     }
 )
 
+BIOMEDICAL_DOMAINS = frozenset(  # 声明应按需加入 PubMed 的医学与生命科学领域标签集合。
+    {
+        "biomedical",  # 覆盖通用生物医学领域标签。
+        "biomedicine",  # 覆盖生物医学完整英文名称。
+        "biology",  # 覆盖基础生物学检索。
+        "clinical medicine",  # 覆盖临床医学检索。
+        "drug discovery",  # 覆盖药物发现检索。
+        "epidemiology",  # 覆盖流行病学检索。
+        "genetics",  # 覆盖遗传学检索。
+        "health",  # 覆盖健康研究检索。
+        "life science",  # 覆盖生命科学单数标签。
+        "life sciences",  # 覆盖生命科学复数标签。
+        "medicine",  # 覆盖医学通用领域。
+        "medical",  # 覆盖常见医学领域缩写标签。
+        "neuroscience",  # 覆盖神经科学检索。
+        "pharmacology",  # 覆盖药理学检索。
+        "public health",  # 覆盖公共卫生检索。
+    }
+)
+
 
 class SourceRouter:
     """封装来源选择策略，不执行 HTTP 请求或论文融合。
@@ -51,6 +71,9 @@ class SourceRouter:
             academic_sources.extend(["arxiv", "dblp"])  # 仅在相关领域加入两个动态学术来源。
             selection_reasons["arxiv"] = "AI/计算机领域补充预印本与最新研究"  # 记录 arXiv 被选择的业务原因。
             selection_reasons["dblp"] = "AI/计算机领域补充会议与期刊书目元数据"  # 记录 DBLP 被选择的业务原因。
+        if normalized_domains & BIOMEDICAL_DOMAINS:  # 医学或生命科学领域需要 PubMed 补充权威生物医学文献。
+            academic_sources.append("pubmed")  # 仅在相关领域加入 PubMed，避免每次搜索额外请求两次 E-utilities。
+            selection_reasons["pubmed"] = "医学/生命科学领域补充 PubMed 生物医学文献元数据"  # 记录 PubMed 被选择的业务原因。
 
         if self._settings.semantic_scholar_enabled and self._settings.semantic_scholar_api_key is not None:  # 仅在人工启用且密钥实际存在时恢复该来源。
             academic_sources.append("semantic_scholar")  # 将已获批的语义与引文补充源加入学术来源计划。

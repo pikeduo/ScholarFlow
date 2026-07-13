@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field  # 提供来源路由计划的结构化校
 from backend.app.models.discovery import DiscoverySource  # 引用补充网页发现来源类型。
 
 
-RoutableAcademicSource = Literal["openalex", "arxiv", "dblp", "semantic_scholar"]  # 声明当前路由器可主动选择的学术来源。
+RoutableAcademicSource = Literal["openalex", "arxiv", "dblp", "pubmed", "semantic_scholar"]  # 声明当前路由器可主动选择的学术来源。
 
 
 class SourceRoutePlan(BaseModel):

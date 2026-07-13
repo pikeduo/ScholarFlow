@@ -68,6 +68,15 @@ def test_arxiv_online_smoke_search() -> None:
 
 
 @pytest.mark.skipif(not ONLINE_SMOKE_ENABLED, reason=f"仅在 {ONLINE_SMOKE_ENVIRONMENT_VARIABLE}=true 时执行真实学术 API 调用")
+def test_pubmed_online_smoke_search() -> None:
+    """PubMed 应以当前本地配置完成一次最小论文检索。"""
+    from backend.app.adapters.pubmed import PubMedClient  # 延迟导入新适配器，保持在线测试文件其余导入稳定。
+
+    papers = asyncio.run(PubMedClient().search(_smoke_query()))  # 使用真实适配器执行一次最多一篇论文的两步检索。
+    _assert_mapped_papers(papers, "pubmed")  # 验证响应已映射为统一论文记录。
+
+
+@pytest.mark.skipif(not ONLINE_SMOKE_ENABLED, reason=f"仅在 {ONLINE_SMOKE_ENVIRONMENT_VARIABLE}=true 时执行真实学术 API 调用")
 def test_dblp_online_smoke_search() -> None:
     """DBLP 应以当前本地配置完成一次最小论文检索。"""
     papers = asyncio.run(DblpClient().search(_smoke_query()))  # 使用真实适配器调用一次 DBLP 搜索。

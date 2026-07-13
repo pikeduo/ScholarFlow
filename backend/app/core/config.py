@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     arxiv_api_base_url: str = Field(default="https://export.arxiv.org/api", pattern=r"^https://")  # 限制 arXiv 使用 HTTPS API 地址。
     arxiv_timeout_seconds: float = Field(default=15.0, gt=0, le=120)  # 为 Atom XML 响应保留略长的单次请求超时。
     arxiv_requests_per_second: float = Field(default=1 / 3, gt=0, le=1)  # 默认遵守官方建议的连续请求至少间隔三秒。
+    pubmed_api_base_url: str = Field(default="https://eutils.ncbi.nlm.nih.gov/entrez/eutils", pattern=r"^https://")  # 限制 PubMed E-utilities 使用 HTTPS 地址。
+    pubmed_timeout_seconds: float = Field(default=15.0, gt=0, le=120)  # 为 PubMed XML 元数据响应保留合理的单次请求超时。
+    pubmed_requests_per_second: float = Field(default=3.0, gt=0, le=10)  # 未配置 NCBI API Key 时遵守每秒最多三次请求的保守限制。
+    pubmed_tool: str = Field(default="ScholarFlow", min_length=1, max_length=100)  # 向 NCBI 标识调用应用，便于来源侧识别合规流量。
+    pubmed_email: str | None = Field(default=None, max_length=254)  # 可选的 NCBI 联系邮箱，仅在配置后随请求发送。
     dblp_api_base_url: str = Field(default="https://dblp.org/search/publ", pattern=r"^https://")  # 限制 DBLP 使用 HTTPS 出版物搜索地址。
     dblp_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 DBLP 单次请求等待时间。
     dblp_requests_per_second: float = Field(default=1.0, gt=0, le=5)  # 设置保守的 DBLP 来源级请求频率上限。

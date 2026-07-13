@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse  # 返回符合 EventSource 语�
 from backend.app.adapters.arxiv import ArxivClient  # 装配 AI/计算机领域可选的预印本搜索适配器。
 from backend.app.adapters.dblp import DblpClient  # 装配 AI/计算机领域可选的书目搜索适配器。
 from backend.app.adapters.openalex import OpenAlexClient, OpenAlexClientError  # 使用已封装的外部客户端和已净化异常。
+from backend.app.adapters.pubmed import PubMedClient  # 装配医学/生命科学领域可选的 PubMed 搜索适配器。
 from backend.app.adapters.semantic_scholar import SemanticScholarClient  # 装配已启用时可路由的核心语义来源适配器。
 from backend.app.adapters.tavily import TavilyClient  # 装配仅用于独立网页补充发现的适配器。
 from backend.app.core.logging import logger  # 记录服务不可用时的完整错误堆栈。
@@ -72,6 +73,7 @@ def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
             "semantic_scholar": SemanticScholarClient(),  # 注册已启用时可参与核心召回的语义来源。
             "arxiv": ArxivClient(),  # 注册 AI/计算机领域按需使用的预印本来源。
             "dblp": DblpClient(),  # 注册 AI/计算机领域按需使用的书目来源。
+            "pubmed": PubMedClient(),  # 注册医学/生命科学领域按需使用的生物医学来源。
         },
         web_discovery_adapters={"tavily": TavilyClient()},  # 注册独立网页补充来源且永不进入论文融合。
     )

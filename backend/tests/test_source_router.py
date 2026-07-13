@@ -19,13 +19,21 @@ def _build_query_intent(
     )
 
 
-def test_router_uses_openalex_only_for_non_computing_domains() -> None:
+def test_router_uses_openalex_only_for_unmatched_domains() -> None:
     """没有匹配 AI/计算机领域时路由器只应选择 OpenAlex 主源。"""
     router = SourceRouter(Settings(_env_file=None))  # 使用不含外部来源密钥的隔离默认配置。
-    plan = router.route(_build_query_intent(domains=["biology"]))  # 路由不匹配首版动态来源策略的领域。
+    plan = router.route(_build_query_intent(domains=["economics"]))  # 路由不匹配任何动态学术来源策略的领域。
     assert plan.academic_sources == ["openalex"]  # 验证不会无条件调用所有学术来源。
     assert plan.web_discovery_sources == []  # 验证默认不调用补充网页发现来源。
     assert "semantic_scholar" in plan.unavailable_reasons  # 验证待审批语义来源的降级状态可被审计。
+
+
+def test_router_adds_pubmed_only_for_biomedical_domains() -> None:
+    """医学或生命科学领域应按需加入 PubMed，而非让所有搜索都访问 E-utilities。"""
+    router = SourceRouter(Settings(_env_file=None))  # PubMed 匿名访问无需 API Key，测试只验证领域路由策略。
+    plan = router.route(_build_query_intent(domains=["Clinical Medicine", "biology"]))  # 构造与 PubMed 策略匹配的领域标签。
+    assert plan.academic_sources == ["openalex", "pubmed"]  # 验证 PubMed 按固定顺序作为生物医学补充来源加入。
+    assert "pubmed" in plan.selection_reasons  # 验证前端可展示 PubMed 被选择的业务原因。
 
 
 def test_router_adds_arxiv_dblp_and_tavily_only_when_requested() -> None:
