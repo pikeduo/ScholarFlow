@@ -18,11 +18,23 @@ class _FakeReranker:
     """替代真实 Cross Encoder 权重加载的空模型。"""
 
 
+class _FixedDeviceResolver:
+    """为模型加载测试返回固定设备，避免依赖测试机实际 CUDA 状态。"""
+
+    def __init__(self, device: str) -> None:
+        """保存应返回给本地模型适配器的稳定设备名称。"""
+        self._device = device  # 保存 cpu 或 cuda 测试设备。
+
+    def resolve(self, _: str, __: int) -> str:
+        """返回预设设备，模拟已通过显存门槛的硬件探测结果。"""
+        return self._device  # 不导入 torch 或访问真实 GPU。
+
+
 def _fake_flag_embedding_module() -> ModuleType:
     """构造同时提供两种模型构造器的离线 FlagEmbedding 模块。"""
     module = ModuleType("FlagEmbedding")  # 使用生产导入名称创建模块。
     module.BGEM3FlagModel = lambda _model_name, use_fp16=False, device=None: _FakeBgeModel()  # 接收设备参数并返回不下载权重的 BGE 替身。
-    module.FlagReranker = lambda _model_name, use_fp16=False: _FakeReranker()  # 返回不下载权重的重排替身。
+    module.FlagReranker = lambda _model_name, use_fp16=False, devices=None: _FakeReranker()  # 接收显式设备参数并返回不下载权重的重排替身。
     return module  # 返回可注入 sys.modules 的模块对象。
 
 
@@ -60,3 +72,18 @@ def test_cross_encoder_rejects_transformers_five_before_loading_model() -> None:
             encoder._get_model()  # 验证不会继续导入或加载 FlagEmbedding 权重。
 
     assert log_exception.call_count == 1  # 验证不兼容组合被记录为明确的依赖问题。
+
+
+def test_local_rankers_pass_resolved_cuda_and_enable_fp16_to_flag_embedding() -> None:
+    """解析到 CUDA 时，两个本地排序模型都应显式使用 CUDA 并启用半精度。"""
+    calls: list[tuple[str, bool, str | None]] = []  # 保存两个 FlagEmbedding 构造器收到的设备与精度参数。
+    module = _fake_flag_embedding_module()  # 构造不会下载权重的替身模块。
+    module.BGEM3FlagModel = lambda _model_name, use_fp16=False, device=None: calls.append(("bge", use_fp16, device)) or _FakeBgeModel()  # 记录 BGE-M3 的 CUDA 装配参数。
+    module.FlagReranker = lambda _model_name, use_fp16=False, devices=None: calls.append(("cross", use_fp16, devices)) or _FakeReranker()  # 记录 Cross Encoder 的 CUDA 装配参数。
+    resolver = _FixedDeviceResolver("cuda")  # 注入稳定 CUDA 解析结果而不要求测试机存在显卡。
+
+    with patch.dict(sys.modules, {"FlagEmbedding": module}), patch("backend.app.adapters.cross_encoder.distribution_version", return_value="4.57.3"):  # 隔离模型模块与依赖版本元数据。
+        BgeM3Encoder(device_preference="cuda", device_resolver=resolver)._get_model()  # 触发 BGE-M3 的 CUDA 懒加载。
+        BgeCrossEncoder(device_preference="cuda", device_resolver=resolver)._get_model()  # 触发 Cross Encoder 的 CUDA 懒加载。
+
+    assert calls == [("bge", True, "cuda"), ("cross", True, "cuda")]  # 验证两个模型均收到相同 CUDA 设备和半精度策略。

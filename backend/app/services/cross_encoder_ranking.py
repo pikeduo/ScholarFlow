@@ -19,7 +19,7 @@ class CrossEncoderReranker:
         """保存可替换打分器和候选上限，不在构造阶段下载模型。"""
         if candidate_limit < 1:  # 零或负上限会使后续 LLM 核验失去全部候选。
             raise ValueError("candidate_limit 必须大于零")  # 在服务装配阶段尽早暴露无效策略。
-        self._scorer = scorer or BgeCrossEncoder(model_name=model_name)  # 默认使用官方 BGE Cross Encoder，测试可注入替身。
+        self._scorer = scorer or BgeCrossEncoder(model_name=model_name, device_preference=settings.local_model_device, minimum_cuda_memory_mb=settings.local_model_minimum_cuda_memory_mb)  # 默认按集中 CUDA 策略创建 BGE Cross Encoder，测试可注入替身。
         self._candidate_limit = candidate_limit  # 保存 Cross Encoder 后进入 LLM 的最大候选数。
         self._model_name = model_name  # 保存可观测模型名称而不暴露本地路径。
         self._text_builder = text_builder or PaperTextBuilder(embedding_model_name=model_name)  # 为精排模型建立独立的文本哈希身份。

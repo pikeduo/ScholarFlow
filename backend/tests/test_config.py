@@ -27,6 +27,14 @@ def test_settings_allows_explicit_fast_path_switches() -> None:
     assert settings.llm_ranking_enabled is False  # 验证 DeepSeek 精排开关保持关闭。
 
 
+def test_settings_supports_shared_cuda_device_policy_for_local_rankers() -> None:
+    """BGE-M3 与 Cross Encoder 应共享可由环境覆盖的 CUDA 设备策略和显存门槛。"""
+    settings = Settings(_env_file=None, local_model_device="cuda", local_model_minimum_cuda_memory_mb=8192)  # 构造显式 CUDA 的隔离配置。
+
+    assert settings.local_model_device == "cuda"  # 验证显式 CUDA 配置不会被自动策略覆盖。
+    assert settings.local_model_minimum_cuda_memory_mb == 8192  # 验证显存门槛可独立调优。
+
+
 def test_settings_defaults_to_bounded_deepseek_assessment_batches() -> None:
     """论文精排应使用独立短超时、五至十篇批量和受控输出上限。"""
     settings = Settings(_env_file=None)  # 构造不读取用户本地配置的默认设置。

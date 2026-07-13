@@ -2,6 +2,7 @@
 
 from functools import lru_cache  # 缓存配置实例避免重复解析环境变量。
 from pathlib import Path  # 使用跨平台路径表示日志目录。
+from typing import Literal  # 限制本地模型设备策略的公开取值。
 
 from pydantic import Field, SecretStr, field_validator, model_validator  # 声明配置字段、敏感值与字段校验。
 from pydantic_settings import BaseSettings, SettingsConfigDict  # 支持环境变量配置模型。
@@ -68,6 +69,8 @@ class Settings(BaseSettings):
     deepseek_max_output_tokens: int = Field(default=4000, ge=1000, le=50000)  # 限制单个核验小批次的结构化输出规模，避免无界输出拖慢响应。
     semantic_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过本地 BGE-M3 粗排并沿用 RRF 顺序。
     cross_encoder_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过本地 Cross Encoder 重排并沿用已有排序。
+    local_model_device: Literal["auto", "cpu", "cuda"] = Field(default="auto")  # 统一指定 BGE-M3 与 Cross Encoder 的设备；自动模式优先使用显存足够的 CUDA。
+    local_model_minimum_cuda_memory_mb: int = Field(default=4096, ge=1)  # 自动模式启用 CUDA 所需的最小总显存，避免低显存设备频繁 OOM。
     llm_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过 DeepSeek 论文核验与理由生成。
     academic_source_recall_limit: int = Field(default=50, ge=20, le=100)  # 自然语言搜索时每个学术来源的候选召回上限。
     llm_minimum_relevance_score: float = Field(default=0.2, ge=0.0, le=1.0)  # 最终结果最低 LLM 相关度，阻止零分论文透传。

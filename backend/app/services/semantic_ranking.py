@@ -19,7 +19,7 @@ class SemanticRanker:
         """保存可替换编码器和候选上限，不在构造阶段加载或下载模型。"""
         if candidate_limit < 1:  # 空或负候选上限会导致后续工作流无法产生候选。
             raise ValueError("candidate_limit 必须大于零")  # 在服务装配阶段尽早暴露无效策略。
-        self._encoder = encoder or BgeM3Encoder(model_name=model_name)  # 默认使用官方 BGE-M3 懒加载编码器，测试可注入替身。
+        self._encoder = encoder or BgeM3Encoder(model_name=model_name, device_preference=settings.local_model_device, minimum_cuda_memory_mb=settings.local_model_minimum_cuda_memory_mb)  # 默认按集中 CUDA 策略创建 BGE-M3，测试仍可注入替身。
         self._candidate_limit = candidate_limit  # 保存 BGE 粗排后进入下一阶段的最大候选数。
         self._model_name = model_name  # 保存可观测的模型名称而不暴露本地路径。
         self._text_builder = text_builder or PaperTextBuilder(embedding_model_name=model_name)  # 使用与模型身份一致的文本构造器供索引阶段复用。

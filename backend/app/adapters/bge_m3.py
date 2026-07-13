@@ -66,11 +66,19 @@ class TorchEmbeddingDeviceResolver:
 class BgeM3Encoder:
     """使用 FlagEmbedding 在首次实际排序时懒加载 BAAI/bge-m3。"""
 
-    def __init__(self, model_name: str = "BAAI/bge-m3", use_fp16: bool = False, device: str | None = None) -> None:
+    def __init__(self, model_name: str = "BAAI/bge-m3", use_fp16: bool = False, device: str | None = None, device_preference: str = "auto", minimum_cuda_memory_mb: int = 4096, device_resolver: EmbeddingDeviceResolver | None = None) -> None:
         """保存模型配置，不在构造阶段下载模型或占用显存。"""
+        if device is None and device_preference not in {"auto", "cpu", "cuda"}:  # 未传入实际设备时必须校验公开设备偏好。
+            raise ValueError("device_preference 必须为 auto、cpu 或 cuda")  # 防止错误文本被静默回退到 CPU。
+        if minimum_cuda_memory_mb < 1:  # 零显存门槛会破坏自动设备选择的资源保护。
+            raise ValueError("minimum_cuda_memory_mb 必须大于零")  # 在模型加载前拒绝不安全配置。
         self._model_name = model_name  # 保存可替换的 Hugging Face 模型名称。
-        self._use_fp16 = use_fp16  # 保存是否在支持的设备上使用半精度推理。
-        self._device = device  # 保存已解析的设备，None 时交由 FlagEmbedding 自动选择。
+        self._use_fp16 = use_fp16  # 保存是否在兼容设备上使用半精度推理。
+        self._device = device  # 保存调用方已解析的设备，非空时优先于自动策略。
+        self._device_preference = device_preference  # 保存 auto、cpu 或 cuda 的延迟解析偏好。
+        self._minimum_cuda_memory_mb = minimum_cuda_memory_mb  # 保存自动使用 CUDA 所需的显存门槛。
+        self._device_resolver = device_resolver or TorchEmbeddingDeviceResolver()  # 复用可替换设备解析边界，测试不依赖真实 CUDA。
+        self._resolved_device: str | None = device  # 缓存第一次解析出的实际设备，禁止运行中切换模型设备。
         self._model: object | None = None  # 延迟保存首次使用时加载的 FlagEmbedding 模型实例。
 
     def score(self, query_text: str, document_texts: Sequence[str]) -> list[float]:
@@ -112,16 +120,23 @@ class BgeM3Encoder:
         """首次需要时加载 BGE-M3，并将依赖或模型错误映射为安全异常。"""
         if self._model is not None:  # 已加载模型可被同一服务实例复用。
             return self._model  # 避免重复下载、初始化和占用显存。
+        device = self._resolve_device()  # 在首次真实加载前根据配置和硬件能力确定唯一设备。
         started_at = perf_counter()  # 从依赖导入前开始统计下载或缓存加载耗时。
-        logger.info("BGE-M3 模型开始加载：模型=%s", self._model_name)  # 首次下载期间即使长时间无输出也能定位当前阶段。
+        logger.info("BGE-M3 模型开始加载：模型=%s，设备=%s", self._model_name, device)  # 首次下载期间即使长时间无输出也能定位当前阶段和实际设备。
         try:  # 将可选依赖导入延后到真正执行模型推理的时刻。
             from FlagEmbedding import BGEM3FlagModel  # 使用官方 BGE-M3 dense 编码实现。
-            self._model = BGEM3FlagModel(self._model_name, use_fp16=self._use_fp16, device=self._device)  # 首次调用时按配置加载本地或缓存模型。
+            self._model = BGEM3FlagModel(self._model_name, use_fp16=self._use_fp16 or device == "cuda", device=device)  # CUDA 自动启用半精度以减少显存占用并提升推理速度。
         except Exception as error:  # 统一隐藏依赖路径、下载地址和底层运行时细节。
-            logger.exception("BGE-M3 模型加载失败：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 在受控日志中保留下载或设备错误堆栈。
+            logger.exception("BGE-M3 模型加载失败：模型=%s，设备=%s，耗时=%.3f秒", self._model_name, device, perf_counter() - started_at)  # 在受控日志中保留下载或设备错误堆栈。
             raise BgeM3EncoderError("BGE-M3 语义模型不可用") from error  # 向业务层提供稳定安全的降级边界。
-        logger.info("BGE-M3 模型加载完成：模型=%s，耗时=%.3f秒", self._model_name, perf_counter() - started_at)  # 记录缓存或下载完成时间。
+        logger.info("BGE-M3 模型加载完成：模型=%s，设备=%s，耗时=%.3f秒", self._model_name, device, perf_counter() - started_at)  # 记录缓存或下载完成时间。
         return self._model  # 返回完成初始化的模型对象。
+
+    def _resolve_device(self) -> str:
+        """返回模型生命周期内唯一且已验证的实际推理设备。"""
+        if self._resolved_device is None:  # 调用方未传入实际设备时才需要按偏好探测硬件。
+            self._resolved_device = self._device_resolver.resolve(self._device_preference, self._minimum_cuda_memory_mb)  # 自动模式优先 CUDA，显式 CUDA 不可用时返回已净化异常。
+        return self._resolved_device  # 返回缓存后的 cpu 或 cuda，确保权重与推理位于同一设备。
 
 
 def _is_out_of_memory_error(error: Exception) -> bool:
