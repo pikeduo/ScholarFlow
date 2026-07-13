@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 在搜索页和文献库统一展示论文详情与字段翻译。
+import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // 在搜索页和文献库统一展示事实型论文比较。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
@@ -726,21 +727,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <button type="button" :disabled="resultPageLoading || paperPagination.page === paperPagination.total_pages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
       </nav>
       <PaperDetailDrawer :paper="detailPaper" :loading="detailLoading" :error="detailError" @close="closePaperDetail" />
-      <div v-if="comparisonResult || comparisonLoading" class="paper-detail-backdrop" @click.self="closePaperComparison">
-        <aside class="paper-comparison-panel" role="dialog" aria-modal="true" aria-labelledby="paper-comparison-title">
-          <button class="detail-close" type="button" aria-label="关闭论文比较" @click="closePaperComparison">×</button>
-          <p class="eyebrow">SAVED PAPER COMPARISON</p>
-          <h2 id="paper-comparison-title">论文事实对比</h2>
-          <p v-if="comparisonLoading" class="detail-status">正在读取已保存论文与核验证据…</p>
-          <p v-else-if="comparisonError" class="detail-error" role="alert">{{ comparisonError }}</p>
-          <div v-else-if="comparisonResult" class="comparison-grid">
-            <div class="comparison-row comparison-head" :style="{ '--comparison-count': comparisonResult.items.length }"><strong>字段</strong><strong v-for="item in comparisonResult.items" :key="item.paper_id">{{ item.title }}</strong></div>
-            <div v-for="field in [{ label: '出版信息', key: 'publication' }, { label: '关键词', key: 'keywords' }, { label: '摘要', key: 'abstract' }, { label: '推荐理由', key: 'recommendation_reason' }, { label: '约束状态', key: 'constraint_status' }, { label: '核验证据', key: 'constraint_evidence' }, { label: '来源', key: 'sources' }]" :key="field.key" class="comparison-row" :style="{ '--comparison-count': comparisonResult.items.length }">
-              <strong>{{ field.label }}</strong><p v-for="item in comparisonResult.items" :key="item.paper_id">{{ Array.isArray(item[field.key]) ? item[field.key].join(' · ') || '暂无' : item[field.key] || '暂无' }}</p>
-            </div>
-          </div>
-        </aside>
-      </div>
+      <PaperComparisonDialog :result="comparisonResult" :loading="comparisonLoading" :error="comparisonError" @close="closePaperComparison" />
       <section v-if="discoveries.length" class="discovery-section" aria-labelledby="discovery-title">
         <div>
           <p class="eyebrow">SUPPLEMENTAL WEB EVIDENCE</p>
