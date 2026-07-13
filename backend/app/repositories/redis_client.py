@@ -71,7 +71,7 @@ class RedisClientManager:
 
     def __init__(self, config: Settings, client_factory: RedisClientFactory | None = None) -> None:
         """保存配置和可替换客户端工厂，不在构造阶段导入或连接 Redis。"""
-        self._config = config  # 保存生命周期内不变的启用开关、地址、前缀和超时配置。
+        self._config = config  # 保存生命周期内不变的启用开关、地址和超时配置。
         self._client_factory = client_factory  # 保存可选替身工厂，生产环境延迟创建真实工厂。
         self._client: RedisAsyncClient | None = None  # 仅在 ping 成功后保存可供业务层使用的客户端。
         self._status = "disabled" if not config.redis_enabled else "unavailable"  # 初始化为安全回退状态，禁止假定 Redis 已连接。
@@ -80,11 +80,6 @@ class RedisClientManager:
     def status(self) -> str:
         """返回 ``disabled``、``available`` 或 ``unavailable`` 的当前短期存储状态。"""
         return self._status  # 供健康检查和日志读取，不暴露 Redis 地址或认证信息。
-
-    @property
-    def key_prefix(self) -> str:
-        """返回已校验键前缀，供后续缓存和限流适配器构造命名空间。"""
-        return self._config.redis_key_prefix  # 统一避免业务模块自行拼接不一致命名空间。
 
     @property
     def source_search_cache_ttl_seconds(self) -> int:
@@ -114,7 +109,7 @@ class RedisClientManager:
             return False  # 让生命周期继续启动 FastAPI。
         self._client = client  # 只有 ping 成功才发布客户端给后续缓存、限流或事件模块。
         self._status = "available"  # 标记短期存储已通过可用性校验。
-        logger.info("Redis 短期存储已连接，键前缀=%s", self.key_prefix)  # 仅记录非敏感命名空间。
+        logger.info("Redis 短期存储已连接，使用 DB 0 模块化键命名")  # 仅记录稳定且不含认证信息的命名约定。
         return True  # 通知生命周期或测试 Redis 已成功接入。
 
     async def close(self) -> None:
