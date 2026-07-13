@@ -41,6 +41,19 @@ class _RecordingStateStore:
         return None  # 控制器只在本轮执行中调用保存操作。
 
 
+class _FailingCoordinator:
+    """模拟单轮召回服务出现未预期内部故障。"""
+
+    def __init__(self) -> None:
+        """初始化调用计数，验证失败节点不会触发重试循环。"""
+        self.call_count = 0  # 保存召回节点实际执行次数。
+
+    async def recall(self, _: QueryIntent) -> MultiSourceRecallResult:
+        """记录调用并抛出不应泄露给 API 的内部异常。"""
+        self.call_count += 1  # 记录工作流进入失败分支前的唯一来源调用。
+        raise RuntimeError("模拟来源协调器内部故障")  # 触发 LangGraph 召回节点的安全失败路径。
+
+
 def _query(*, target_paper_count: int = 2, search_mode: str = "standard", subqueries: list[QuerySubquery] | None = None) -> QueryIntent:
     """构造可按用例控制目标数量、模式和待执行子查询的查询意图。"""
     return QueryIntent(  # 提供无需 Query Agent 或外部 API 的稳定领域输入。
@@ -141,3 +154,15 @@ def test_langgraph_conditional_nodes_do_not_recall_when_budget_is_exhausted() ->
 
     assert len(coordinator.queries) == 1  # 验证预算条件边没有进入查询演化后的第二轮召回。
     assert result.run_state.stop_reason == "搜索预算已达到上限"  # 验证最终结果保留覆盖服务定义的稳定且不泄露成本细节的停止原因。
+
+
+def test_langgraph_recall_failure_returns_safe_failed_result_without_retry() -> None:
+    """召回节点异常时条件图应整理失败结果，而不是重试或泄露内部异常。"""
+    coordinator = _FailingCoordinator()  # 注入不访问网络的失败服务替身。
+
+    result = asyncio.run(MultiRoundSearchController(coordinator).run(_query()))  # 执行会进入召回失败分支的条件图。
+
+    assert coordinator.call_count == 1  # 验证失败后不会回到召回节点形成无限循环。
+    assert result.run_state.status == "failed"  # 验证状态可供状态接口和前端恢复逻辑消费。
+    assert result.run_state.stop_reason == "搜索执行出现内部错误"  # 验证对外只返回稳定安全摘要。
+    assert result.papers == []  # 验证未获得论文时不会伪造结果。
