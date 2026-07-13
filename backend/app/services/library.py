@@ -6,7 +6,7 @@ from backend.app.core.logging import logger  # 记录收藏数量和操作类型
 from backend.app.models.library import LibraryItem, LibraryItemList, LibraryKeywordFacet, LibrarySaveResult, LibrarySemanticSearchResult, LibrarySort, ReadingStatus, SaveLibraryItemRequest, UpdateLibraryItemRequest  # 接收稳定请求并返回公共领域模型。
 from backend.app.repositories.library import LibraryRepository  # 依赖可替换 SQLite 仓储。
 from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 使用请求级 SQLite 会话维护向量映射状态。
-from backend.app.services.library_vector_index import LibraryPaperIndexer  # 依赖可替换的收藏后语义索引编排器。
+from backend.app.services.library_vector_index import LibraryPaperIndexer  # 依赖可替换的首次语义检索前索引编排器。
 from backend.app.services.library_semantic_search import LibrarySemanticSearcher  # 依赖可替换的文献库自然语言检索器。
 
 
@@ -21,16 +21,13 @@ class LibraryService:
         """保存由 API 或测试注入的文献库仓储。"""
         self._repository = repository  # 服务不依赖全局数据库会话。
         self._vector_metadata_repository = vector_metadata_repository  # 保存可选向量元数据仓储以保持既有直接服务测试兼容。
-        self._paper_indexer = paper_indexer  # 保存可选索引器，允许测试或降级场景不加载模型。
+        self._paper_indexer = paper_indexer  # 保存可选索引器，首次语义检索时才允许加载模型。
         self._semantic_searcher = semantic_searcher  # 保存可选语义检索器，保持既有直接服务测试兼容。
 
     def save(self, request: SaveLibraryItemRequest) -> LibrarySaveResult:
         """保存论文，并明确返回本次是否创建新收藏。"""
         item, created = self._repository.save(request.paper, request.keywords, request.note, request.reading_status)  # 执行身份去重与原子写入。
-        if self._vector_metadata_repository is not None and self._paper_indexer is not None:  # 仅在 API 组合根提供完整阶段五依赖时索引收藏论文。
-            index_result = self._paper_indexer.index(item.paper, self._vector_metadata_repository)  # 在收藏成功后执行可解释的语义索引写入或降级。
-            logger.info("文献库语义索引结果：成功=%s，已复用或写入向量=%s", index_result.indexed, index_result.vector_id is not None)  # 不记录论文标题、ID 或错误底层信息。
-        logger.info("文献库保存完成：新建=%s，关键词数=%d", created, len(item.keywords))  # 不记录标题、备注或完整论文内容。
+        logger.info("文献库保存完成：新建=%s，关键词数=%d，语义索引=待首次检索", created, len(item.keywords))  # 收藏只写 SQLite，不加载 BGE-M3、不记录标题、备注或完整论文内容。
         return LibrarySaveResult(item=item, created=created)  # 返回稳定保存结果。
 
     def list(self, keyword: str | None = None, reading_status: ReadingStatus | None = None, year_start: int | None = None, year_end: int | None = None, venue: str | None = None, sort: LibrarySort = "updated_desc", page: int = 1, page_size: int = 10) -> LibraryItemList:
@@ -62,9 +59,24 @@ class LibraryService:
         if self._vector_metadata_repository is None or self._semantic_searcher is None:  # 直接服务测试或未完成组合根时没有检索依赖。
             raise RuntimeError("文献库语义检索尚未装配")  # 由 API 层映射为安全服务不可用错误。
         items = self._repository.list(keyword=keyword, reading_status=reading_status, year_start=year_start, year_end=year_end, venue=venue)  # 先执行文献库结构化筛选，避免无关论文进入语义结果。
+        await self._ensure_semantic_index(items)  # 仅在用户首次请求语义检索时为当前候选补齐或复用向量。
         result = await self._semantic_searcher.search(query, items, self._vector_metadata_repository, top_k)  # 在筛选集合内执行 BGE、FAISS 和 SQLite 映射过滤。
         logger.info("文献库自然语言检索完成：候选数=%d，返回数=%d，降级=%s", len(items), result.total, result.degraded)  # 仅记录数量和降级状态，不记录查询或论文正文。
         return result  # 返回稳定 API 响应模型。
+
+    async def _ensure_semantic_index(self, items: list[LibraryItem]) -> None:
+        """在首次语义检索前补齐候选论文向量，避免收藏操作等待本地模型加载。"""
+        if not items or self._vector_metadata_repository is None or self._paper_indexer is None:  # 空候选、未装配索引依赖时无需额外工作。
+            return  # 保持空库和显式降级场景的检索路径稳定。
+        index_async = getattr(self._paper_indexer, "index_async", None)  # 读取异步索引入口，兼容历史测试替身。
+        if not callable(index_async):  # 历史替身只有同步入口时不能在现有事件循环中安全调用 asyncio.run。
+            logger.warning("文献库延迟语义索引跳过：索引器不支持异步写入")  # 继续执行检索器，由其决定是否降级。
+            return  # 不让兼容性问题阻塞用户的语义检索请求。
+        successful_count = 0  # 统计已写入或复用向量的候选数量，不记录论文身份。
+        for item in items:  # 逐篇处理，复用索引器内部的 active、pending 和失败降级边界。
+            index_result = await index_async(item.paper, self._vector_metadata_repository)  # 在同一请求会话中安全访问 SQLite 元数据。
+            successful_count += int(index_result.indexed)  # 仅累计可供语义检索使用的向量。
+        logger.info("文献库延迟语义索引完成：候选数=%d，可用向量数=%d", len(items), successful_count)  # 记录首次检索带来的模型工作量，不记录查询或论文内容。
 
     def get(self, item_id: str) -> LibraryItem:
         """读取单条收藏，不存在时抛出稳定业务异常。"""

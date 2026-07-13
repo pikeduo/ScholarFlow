@@ -1,6 +1,6 @@
-"""编排文献库收藏后的文本构造、BGE 向量生成与 FAISS 原子索引写入。"""
+"""编排文献库首次语义检索前的文本构造、BGE 向量生成与 FAISS 原子索引写入。"""
 
-import asyncio  # 在同步文献库服务中受控调用异步嵌入接口。
+import asyncio  # 为兼容同步调用方受控运行异步索引接口。
 from dataclasses import dataclass  # 使用稳定结果对象报告索引成功或可解释降级。
 from pathlib import Path  # 保存默认文献库 FAISS 文件路径。
 from typing import Protocol  # 声明可替换索引器协议，避免业务层绑定具体实现。
@@ -28,15 +28,19 @@ class LibraryVectorIndexResult:
 
 
 class LibraryPaperIndexer(Protocol):
-    """约束文献库服务需要的最小收藏后向量写入能力。"""
+    """约束文献库服务需要的最小延迟向量写入能力。"""
 
     def index(self, paper: PaperRecord, metadata_repository: VectorMetadataRepository) -> LibraryVectorIndexResult:
-        """为收藏论文写入或复用文献库向量，并返回稳定结果。"""
+        """为兼容同步调用方写入或复用文献库向量，并返回稳定结果。"""
         ...  # Protocol 允许 API 测试注入不加载模型的替身。
+
+    async def index_async(self, paper: PaperRecord, metadata_repository: VectorMetadataRepository) -> LibraryVectorIndexResult:
+        """在请求事件循环内延迟写入或复用文献库向量，并返回稳定结果。"""
+        ...  # Protocol 允许异步语义检索路径安全调用真实索引器。
 
 
 class LibraryVectorIndexer:
-    """按“文本→BGE→pending→FAISS→active”顺序执行文献库向量写入。
+    """按“文本→BGE→pending→FAISS→active”顺序执行延迟文献库向量写入。
 
     参数：
         embedding_service：可替换的批量嵌入服务。
@@ -51,7 +55,11 @@ class LibraryVectorIndexer:
         self._index_manager = index_manager or FaissIndexManager(LIBRARY_INDEX_NAME, DEFAULT_LIBRARY_INDEX_PATH)  # 默认管理受 Git 忽略的文献库索引文件。
 
     def index(self, paper: PaperRecord, metadata_repository: VectorMetadataRepository) -> LibraryVectorIndexResult:
-        """写入或复用论文向量；模型或索引不可用时保留收藏成功并返回降级结果。"""
+        """为同步调用方写入或复用论文向量；模型或索引不可用时返回降级结果。"""
+        return asyncio.run(self.index_async(paper, metadata_repository))  # 保留已有同步测试和离线工具的兼容入口。
+
+    async def index_async(self, paper: PaperRecord, metadata_repository: VectorMetadataRepository) -> LibraryVectorIndexResult:
+        """在首次语义检索前异步写入或复用论文向量，并将失败降级为可继续检索的状态。"""
         try:  # 在模型、SQLite 和 FAISS 边界统一执行可解释降级。
             built_text = self._text_builder.build_embedding_text(paper)  # 构造与 BGE 粗排一致的论文语义文本和文本哈希。
             existing = metadata_repository.find(self._index_manager.index_name, paper.paper_id, built_text.text_hash)  # 在编码前检查相同模型和文本是否已有映射。
@@ -61,7 +69,7 @@ class LibraryVectorIndexer:
             if existing is not None and existing.status == "pending":  # 进程异常中断后的 pending 记录不能直接重复写入同一 ID。
                 logger.warning("文献库向量待恢复：索引=%s，状态=pending", self._index_manager.index_name)  # 提示后续重建任务处理半完成状态。
                 return LibraryVectorIndexResult(indexed=False, vector_id=existing.vector_id, reason="向量写入待恢复")  # 收藏保留，避免重复 ID 写入。
-            embedding_batch = asyncio.run(self._embedding_service.encode_documents([built_text.text]))  # 同步文献库服务在工作线程中受控等待单论文异步编码。
+            embedding_batch = await self._embedding_service.encode_documents([built_text.text])  # 在语义检索请求的事件循环内等待单论文异步编码。
             vector = list(embedding_batch.vectors[0])  # 取出与唯一文本对应的归一化向量并转换为 FAISS 输入。
             record = metadata_repository.reserve_pending(self._index_manager.index_name, paper.paper_id, built_text.text_hash, built_text.builder_version, embedding_batch.model_name, embedding_batch.model_revision, embedding_batch.dimension)  # 在 FAISS 写入前持久化稳定 vector_id。
             self._index_manager.add([vector], [record.vector_id])  # 写入临时索引并在校验后原子发布正式文件。

@@ -1,5 +1,6 @@
-"""验证收藏论文的向量写入、同文本复用和失败降级闭环。"""
+"""验证首次语义检索前的向量写入、同文本复用和失败降级闭环。"""
 
+import asyncio  # 在同步 pytest 用例中执行索引器的异步主入口。
 from dataclasses import dataclass, field  # 构造不依赖真实模型和 FAISS 的轻量替身。
 
 from sqlalchemy import create_engine  # 创建隔离内存 SQLite 向量元数据表。
@@ -10,7 +11,7 @@ from backend.app.repositories.database import Base  # 使用统一 ORM 元数据
 from backend.app.repositories.faiss_index import FaissIndexError  # 模拟索引原子保存失败。
 from backend.app.repositories.vector_metadata import EmbeddingRecordRow, IndexMetadataRow, VectorMetadataRepository  # 验证 SQLite 映射生命周期。
 from backend.app.services.embedding import EmbeddingBatch  # 构造无需模型的批量向量结果。
-from backend.app.services.library_vector_index import LibraryVectorIndexer  # 导入待测收藏后索引编排器。
+from backend.app.services.library_vector_index import LibraryVectorIndexer  # 导入待测延迟索引编排器。
 
 
 class _StubEmbeddingService:
@@ -64,14 +65,14 @@ def _paper(abstract: str = "A semantic retrieval paper.") -> PaperRecord:
 
 
 def test_index_writes_pending_vector_then_activates_and_reuses_same_text() -> None:
-    """首次收藏应写入 active 映射；相同文本再次收藏不得重复编码或写入。"""
+    """首次语义检索应写入 active 映射；相同文本再次检索不得重复编码或写入。"""
     repository, session = _metadata_repository()  # 创建隔离 SQLite 向量元数据仓储。
     embedding_service = _StubEmbeddingService()  # 使用无需模型的编码器替身。
     index_manager = _StubIndexManager()  # 使用无需 FAISS 的索引替身。
-    indexer = LibraryVectorIndexer(embedding_service=embedding_service, index_manager=index_manager)  # 装配待测收藏后索引器。
+    indexer = LibraryVectorIndexer(embedding_service=embedding_service, index_manager=index_manager)  # 装配待测延迟索引器。
     try:  # 确保测试结束关闭数据库会话。
-        first = indexer.index(_paper(), repository)  # 执行完整文本、向量、pending、写入和激活流程。
-        second = indexer.index(_paper(), repository)  # 使用相同论文文本再次调用。
+        first = asyncio.run(indexer.index_async(_paper(), repository))  # 执行异步主入口的完整文本、向量、pending、写入和激活流程。
+        second = asyncio.run(indexer.index_async(_paper(), repository))  # 使用相同论文文本再次调用异步主入口。
 
         assert first.indexed is True and first.vector_id is not None  # 验证首次调用完成可检索向量写入。
         assert second.indexed is True and second.reason == "已复用现有向量"  # 验证第二次调用识别 active 缓存。

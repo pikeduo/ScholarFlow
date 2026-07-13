@@ -15,7 +15,7 @@ from backend.app.services.search_run_store import SearchRunStateStore, SqliteSea
 from backend.app.services.search_events import InMemorySearchRunEventPublisher, SearchRunEventPublisher  # 对外导出 SSE 进度事件发布边界与内存实现。
 from backend.app.services.paper_text import BuiltText, PaperTextBuilder, PaperTextBuilderError  # 对外导出统一文本构造与哈希边界。
 from backend.app.services.embedding import EmbeddingBatch, EmbeddingService, EmbeddingServiceConfig, EmbeddingServiceError  # 对外导出批量嵌入服务与稳定结果契约。
-from backend.app.services.library_vector_index import LibraryVectorIndexResult, LibraryVectorIndexer  # 对外导出文献库收藏后向量写入编排器。
+from backend.app.services.library_vector_index import LibraryVectorIndexResult, LibraryVectorIndexer  # 对外导出文献库首次语义检索前的延迟向量写入编排器。
 from backend.app.services.library_semantic_search import LibrarySemanticSearchService  # 对外导出文献库自然语言语义检索服务。
 from backend.app.services.source_router import SourceRouter  # 对外导出动态来源路由服务。
 

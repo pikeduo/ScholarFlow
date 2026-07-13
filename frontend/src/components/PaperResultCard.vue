@@ -126,7 +126,7 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
       <section v-if="displayQueryKeywords.length || displayPaperKeywords.length" class="keyword-section" aria-label="论文关键词">
         <strong>关键词</strong>
         <div>
-          <span v-for="keyword in displayQueryKeywords" :key="`query-${keyword}`" class="query-keyword-badge">检索：{{ keyword }}</span>
+          <span v-for="keyword in displayQueryKeywords" :key="`query-${keyword}`" class="query-keyword-badge">{{ keyword }}</span>
           <span v-for="keyword in displayPaperKeywords" :key="`paper-${keyword}`" class="keyword-badge">{{ keyword }}</span>
         </div>
       </section>

@@ -14,7 +14,7 @@ from backend.app.repositories.faiss_index import FaissIndexManager  # 管理默�
 from backend.app.repositories.library import LibraryRepository  # 装配 SQLite 文献库仓储。
 from backend.app.repositories.vector_metadata import VectorMetadataRepository  # 装配 SQLite 向量映射仓储。
 from backend.app.services.library import LibraryItemNotFoundError, LibraryService  # 编排文献库业务并映射不存在错误。
-from backend.app.services.library_vector_index import DEFAULT_LIBRARY_INDEX_PATH, LIBRARY_INDEX_NAME, LibraryPaperIndexer, LibraryVectorIndexer  # 装配可覆盖的收藏后向量索引依赖。
+from backend.app.services.library_vector_index import DEFAULT_LIBRARY_INDEX_PATH, LIBRARY_INDEX_NAME, LibraryPaperIndexer, LibraryVectorIndexer  # 装配可覆盖的首次语义检索前向量索引依赖。
 from backend.app.services.library_semantic_search import LibrarySemanticSearchService, LibrarySemanticSearcher  # 装配可覆盖的自然语言语义检索依赖。
 
 
@@ -31,7 +31,7 @@ def get_database_session() -> Iterator[Session]:
 
 
 _library_index_manager = FaissIndexManager(LIBRARY_INDEX_NAME, DEFAULT_LIBRARY_INDEX_PATH)  # 创建进程级共享索引管理器，构造阶段不触发 I/O。
-_library_paper_indexer = LibraryVectorIndexer(index_manager=_library_index_manager)  # 复用共享管理器完成收藏后向量写入。
+_library_paper_indexer = LibraryVectorIndexer(index_manager=_library_index_manager)  # 复用共享管理器完成首次语义检索前的延迟向量写入。
 _library_semantic_searcher = LibrarySemanticSearchService(index_manager=_library_index_manager)  # 复用共享管理器完成自然语言查询读取。
 
 

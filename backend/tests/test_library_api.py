@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool  # 让多线程测试客户端共享同�
 
 from backend.app.api.routes.library import get_database_session, get_library_paper_indexer, get_library_semantic_searcher, get_library_service  # 覆盖生产数据库、模型和服务依赖。
 from backend.app.models.library import LibrarySemanticSearchResult  # 构造不加载真实模型的自然语言检索响应。
-from backend.app.services.library_vector_index import LibraryVectorIndexResult  # 构造不加载真实模型的收藏后索引替身。
+from backend.app.services.library_vector_index import LibraryVectorIndexResult  # 构造不加载真实模型的延迟索引替身。
 from backend.app.main import app  # 导入已装配文献库路由的 FastAPI 应用。
 from backend.app.models.paper import PaperRecord  # 构造去重优先级测试论文。
 from backend.app.repositories.database import Base  # 使用生产元数据创建测试表。
@@ -50,12 +50,22 @@ def library_client() -> Iterator[TestClient]:
 
 
 class _NoopLibraryPaperIndexer:
-    """在 API 单测中替代真实模型和 FAISS 的无操作收藏后索引器。"""
+    """在 API 单测中替代真实模型和 FAISS 的无操作延迟索引器。"""
+
+    index_calls = 0  # 记录同步兼容入口，验证收藏路径不会调用它。
+    async_index_calls = 0  # 记录首次语义检索前的异步索引调用次数。
 
     def index(self, paper: PaperRecord, metadata_repository: object) -> LibraryVectorIndexResult:
         """不加载模型、不写入索引，仅返回可解释测试降级结果。"""
+        type(self).index_calls += 1  # 记录同步入口是否被错误用于收藏路径。
         _ = paper, metadata_repository  # 明确测试替身不会读取论文内容或 SQLite 映射。
         return LibraryVectorIndexResult(indexed=False, vector_id=None, reason="测试未启用语义索引")  # 保持收藏 API 响应契约不变。
+
+    async def index_async(self, paper: PaperRecord, metadata_repository: object) -> LibraryVectorIndexResult:
+        """记录首次语义检索前的延迟索引调用，且不加载真实 BGE 或 FAISS。"""
+        type(self).async_index_calls += 1  # 记录异步索引只在语义检索请求时发生。
+        _ = paper, metadata_repository  # 明确测试替身不会读取论文内容或 SQLite 映射。
+        return LibraryVectorIndexResult(indexed=False, vector_id=None, reason="测试未启用语义索引")  # 保持后续语义检索响应契约不变。
 
 
 class _NoopLibrarySemanticSearcher:
@@ -106,6 +116,19 @@ def test_library_semantic_search_uses_stable_route_and_response_contract(library
 
     assert response.status_code == 200  # 验证固定语义检索路径未被 /{item_id} 路由吞掉。
     assert response.json() == {"items": [], "total": 0, "degraded": False, "degradation_reason": None}  # 验证空语义结果保持稳定公共契约。
+
+
+def test_library_save_defers_vector_index_until_first_semantic_search(library_client: TestClient) -> None:
+    """收藏必须只写 SQLite，用户首次执行语义检索时才触发延迟索引。"""
+    _NoopLibraryPaperIndexer.index_calls = 0  # 重置类级同步调用统计，隔离同文件其他用例。
+    _NoopLibraryPaperIndexer.async_index_calls = 0  # 重置类级异步调用统计，隔离同文件其他用例。
+    saved = library_client.post("/api/v1/library/items", json={"paper": _paper_payload()})  # 保存论文且不允许等待模型。
+    before_search = _NoopLibraryPaperIndexer.async_index_calls  # 读取语义检索前的延迟调用次数。
+    searched = library_client.get("/api/v1/library/items/semantic-search", params={"query": "semantic retrieval", "top_k": 5})  # 用户首次主动发起自然语言检索。
+
+    assert saved.status_code == 200 and saved.json()["created"] is True  # 验证收藏仍保持原有稳定响应。
+    assert _NoopLibraryPaperIndexer.index_calls == 0 and before_search == 0  # 验证收藏操作没有调用同步或异步模型索引。
+    assert searched.status_code == 200 and _NoopLibraryPaperIndexer.async_index_calls == 1  # 验证首次语义检索才调用延迟索引入口。
 
 
 def test_library_filters_updates_and_deletes_item(library_client: TestClient) -> None:
