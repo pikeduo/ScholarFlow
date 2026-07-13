@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, comparePapers, createQueryIntent, getCitationGraph, getPaperDetail, getSearchRunUsage, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱、用量与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、详情、比较、图谱、分页、用量与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -241,6 +241,22 @@ test('getSearchRunUsage 读取同次运行快照并拒绝缺失运行标识', as
   assert.equal(capturedUrl, 'http://test.local/api/v1/usage/run-1') // 验证路径只编码并传递稳定运行标识。
   assert.equal(usage, expectedUsage) // 验证完整快照原样交给页面展示。
   await assert.rejects(() => getSearchRunUsage(''), /缺少需要读取用量/) // 验证空标识在网络请求前被拒绝。
+})
+
+test('getSearchRunPapers 提交服务端筛选排序和分页参数', async () => { // 验证页面不再依赖前端本地切片作为唯一事实源。
+  let capturedUrl = '' // 保存经过安全编码的只读查询地址。
+  const expectedPage = { run_id: 'run-1', items: [{ paper_id: 'paper-2' }], total: 1, page: 1, page_size: 5, total_pages: 1 } // 构造最小完整服务端分页响应。
+  const fetchStub = async (url, options) => { // 提供不访问网络的分页读取替身。
+    capturedUrl = url // 记录请求地址供断言。
+    assert.equal(options.method, 'GET') // 验证筛选和排序不会改写结果快照。
+    return { ok: true, status: 200, json: async () => expectedPage } // 返回固定结果页。
+  }
+
+  const page = await getSearchRunPapers('run-1', { source: 'openalex', relevance: 'satisfied', yearStart: '2020', yearEnd: '2025', sort: 'year_desc', page: 1, pageSize: 5 }, fetchStub, 'http://test.local') // 请求完整筛选与排序组合。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/search/runs/run-1/papers?page=1&page_size=5&sort=year_desc&source=openalex&relevance=satisfied&year_start=2020&year_end=2025') // 验证查询参数固定、完整且顺序稳定。
+  assert.equal(page, expectedPage) // 验证服务端分页响应原样返回给页面。
+  await assert.rejects(() => getSearchRunPapers('', {}, fetchStub), /缺少需要读取结果/) // 验证空运行标识在网络请求前被拒绝。
 })
 
 test('filterSearchPapers 按来源、年份与核验状态筛选且保持原始排序', () => { // 验证本地筛选不改变后端相关性排序或发起新请求。

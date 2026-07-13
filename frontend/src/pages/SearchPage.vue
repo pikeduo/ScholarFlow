@@ -5,8 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, getCitationGraph, getPaperDetail, getSearchRunUsage, getTechnicalRoutes, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、用量与路线。
-import { filterSearchPapers, paginateSearchPapers } from '../utils/searchResults.js' // 对同次最终结果执行本地筛选与分页。
+import { SearchApiError, comparePapers, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、用量与路线。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -54,12 +53,17 @@ const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE �
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
 const resultPage = ref(1) // 保存当前结果分页页码。
+const resultSort = ref('relevance') // 保存服务端支持的当前展示排序策略。
+const resultPageData = ref({ items: [], total: 0, page: 1, page_size: 5, total_pages: 1 }) // 保存服务端返回的当前结果页及分页元数据。
+const resultPageLoading = ref(false) // 标记已保存结果页是否正在读取。
+const resultPageError = ref('') // 保存服务端筛选、排序或分页读取的安全错误。
 const RESULT_PAGE_SIZE = 5 // 限制单页论文卡片数量，避免结果较多时页面过长。
 const RECOVERY_POLL_INTERVAL_MS = 3000 // 使用短周期只读轮询作为刷新后无法重连 POST SSE 的回退。
 const RECOVERY_POLL_MAX_ATTEMPTS = 20 // 最多轮询一分钟，避免异常状态无限占用浏览器和后端资源。
 let recoveryPollTimer = null // 保存当前待执行轮询定时器，便于新搜索和卸载时取消。
 let recoveryRunId = '' // 保存当前允许轮询的运行标识，防止旧响应覆盖新搜索。
 let recoveryPollAttempts = 0 // 记录当前恢复运行的已执行轮询次数。
+let resultPageRequestVersion = 0 // 标记最新分页请求，防止快速切换条件时旧响应覆盖新页面。
 
 const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
@@ -74,8 +78,7 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
   durationMs: result.value?.query_planning_duration_ms || 0, // 展示规划耗时。
 }))
 const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
-const filteredPapers = computed(() => filterSearchPapers(result.value?.papers || [], resultFilters)) // 在内存中筛选，不调用任何后端或来源接口。
-const paperPagination = computed(() => paginateSearchPapers(filteredPapers.value, resultPage.value, RESULT_PAGE_SIZE)) // 将筛选结果切分为稳定页面。
+const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
 const citationGraphLayout = computed(() => { // 为受限节点集合生成确定性圆形布局，避免引入额外可视化依赖。
   const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
@@ -84,8 +87,13 @@ const citationGraphLayout = computed(() => { // 为受限节点集合生成确�
 })
 const citationGraphNodeMap = computed(() => new Map(citationGraphLayout.value.map((node) => [node.paper_id, node]))) // 供边线快速查找两端节点坐标。
 
-watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd], () => { // 任意筛选变化时回到第一页避免越界空页。
+watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd, resultSort.value], () => { // 任意筛选或排序变化时回到第一页避免越界空页。
   resultPage.value = 1 // 保持筛选后的首屏结果可见。
+  void loadSearchResultPage() // 由服务端基于已保存结果执行筛选、排序与分页。
+})
+
+watch(() => resultPage.value, () => { // 用户切换页码时只读取同次已保存结果，不重新检索。
+  void loadSearchResultPage() // 将当前页码作为服务端分页参数。
 })
 
 watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另一运行时重置旧筛选和页码。
@@ -104,6 +112,9 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   searchUsage.value = null // 防止旧运行统计混入新搜索结果。
   searchUsageLoading.value = false // 新运行开始前取消旧请求遗留的加载提示。
   searchUsageError.value = '' // 清除旧运行用量读取错误。
+  resultPageData.value = { items: [], total: 0, page: 1, page_size: RESULT_PAGE_SIZE, total_pages: 1 } // 清除旧运行页面，避免论文卡片短暂错配。
+  resultPageError.value = '' // 清除旧运行分页读取错误。
+  if (result.value?.run_state?.run_id) void loadSearchResultPage(result.value.run_state.run_id) // 新运行结果到达后立即读取服务端首个结果页。
 })
 
 function useExample(example) { // 将示例查询填入输入框但不自动发起外部调用。
@@ -216,7 +227,34 @@ function buildConditionChips(formSnapshot) { // 将已提交表单快照转换�
 }
 
 function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在当前总页数内。
-  resultPage.value = Math.min(Math.max(nextPage, 1), paperPagination.value.totalPages) // 防止筛选变化或按钮连点导致越界。
+  resultPage.value = Math.min(Math.max(nextPage, 1), paperPagination.value.total_pages) // 防止筛选变化或按钮连点导致越界。
+}
+
+async function loadSearchResultPage(runId = runState.value?.run_id) { // 从服务端读取当前筛选、排序和页码对应的已保存结果页。
+  const normalizedRunId = String(runId || '').trim() // 规范化当前完整结果关联的稳定运行标识。
+  if (!normalizedRunId) return // 尚未获得完成结果或运行标识时不请求资源。
+  const requestVersion = ++resultPageRequestVersion // 记录本次请求版本以丢弃快速筛选时的迟到响应。
+  resultPageLoading.value = true // 明确展示页面正在刷新已保存结果。
+  resultPageError.value = '' // 清除当前请求前的安全错误。
+  try { // 不传递论文事实，只传递公开筛选、排序和分页参数。
+    const nextPage = await getSearchRunPapers(normalizedRunId, { // 读取同次 SQLite 最终结果的当前页。
+      source: resultFilters.source,
+      relevance: resultFilters.relevance,
+      yearStart: resultFilters.yearStart,
+      yearEnd: resultFilters.yearEnd,
+      sort: resultSort.value,
+      page: resultPage.value,
+      pageSize: RESULT_PAGE_SIZE,
+    })
+    if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) { // 仅接受当前运行且最新条件对应的响应。
+      resultPageData.value = nextPage // 替换为后端已校正页码和统计的唯一事实源。
+      resultPage.value = nextPage.page // 服务端在筛选收缩页数时可安全校正越界页码。
+    }
+  } catch (error) { // 将客户端已净化错误映射为紧凑页面提示。
+    if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) resultPageError.value = error instanceof SearchApiError ? error.message : '读取筛选后的搜索结果时出现未知错误，请稍后重试' // 不展示网络或存储内部细节。
+  } finally { // 仅由最新请求关闭加载状态，避免旧请求误导当前筛选界面。
+    if (requestVersion === resultPageRequestVersion && runState.value?.run_id === normalizedRunId) resultPageLoading.value = false // 恢复分页控件可操作状态。
+  }
 }
 
 async function loadSearchUsage(runId) { // 读取当前结果对应的持久化用量，不发起新的检索或来源调用。
@@ -544,13 +582,15 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       </div>
       <section v-if="result.papers.length" class="result-controls" aria-label="搜索结果筛选">
         <div class="filter-fields">
-          <label>来源<select v-model="resultFilters.source"><option value="all">全部来源</option><option v-for="source in availableResultSources" :key="source" :value="source">{{ source }}</option></select></label>
-          <label>核验<select v-model="resultFilters.relevance"><option value="all">全部状态</option><option value="satisfied">已满足</option><option value="uncertain">待确认</option><option value="not_satisfied">未满足</option></select></label>
-          <label>起始年<input v-model="resultFilters.yearStart" type="number" min="1800" max="2100" placeholder="不限"></label>
-          <label>结束年<input v-model="resultFilters.yearEnd" type="number" min="1800" max="2100" placeholder="不限"></label>
+          <label>来源<select v-model="resultFilters.source" :disabled="resultPageLoading"><option value="all">全部来源</option><option v-for="source in availableResultSources" :key="source" :value="source">{{ source }}</option></select></label>
+          <label>核验<select v-model="resultFilters.relevance" :disabled="resultPageLoading"><option value="all">全部状态</option><option value="satisfied">已满足</option><option value="uncertain">待确认</option><option value="not_satisfied">未满足</option></select></label>
+          <label>起始年<input v-model="resultFilters.yearStart" type="number" min="1800" max="2100" placeholder="不限" :disabled="resultPageLoading"></label>
+          <label>结束年<input v-model="resultFilters.yearEnd" type="number" min="1800" max="2100" placeholder="不限" :disabled="resultPageLoading"></label>
+          <label>排序<select v-model="resultSort" :disabled="resultPageLoading"><option value="relevance">相关性</option><option value="year_desc">最新发表</option><option value="citation_desc">引用量</option></select></label>
         </div>
-        <p>{{ `筛选后 ${paperPagination.total} 篇，第 ${paperPagination.page} / ${paperPagination.totalPages} 页` }}</p>
+        <p>{{ resultPageLoading ? '正在读取已保存的筛选结果…' : `筛选后 ${paperPagination.total} 篇，第 ${paperPagination.page} / ${paperPagination.total_pages} 页` }}</p>
       </section>
+      <p v-if="resultPageError" class="comparison-message" role="alert">{{ resultPageError }}</p>
       <section class="comparison-toolbar" aria-label="论文比较选择">
         <div><strong>论文比较</strong><span>{{ `已选择 ${comparisonPaperIds.length} / 5 篇` }}</span></div>
         <div><button type="button" :disabled="comparisonPaperIds.length < 2 || comparisonLoading" @click="openPaperComparison">{{ comparisonLoading ? '正在整理比较…' : `比较 ${comparisonPaperIds.length} 篇` }}</button><button v-if="comparisonPaperIds.length" type="button" class="comparison-clear" @click="clearPaperComparison">清空</button></div>
@@ -565,16 +605,16 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       <p v-if="comparisonError && !comparisonResult" class="comparison-message" role="alert">{{ comparisonError }}</p>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="paperPagination.items.length" class="paper-list">
-        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.pageSize + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="comparisonPaperIds.includes(paper.paper_id)" :comparison-disabled="comparisonPaperIds.length >= 5" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
+        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :rank="(paperPagination.page - 1) * paperPagination.page_size + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="comparisonPaperIds.includes(paper.paper_id)" :comparison-disabled="comparisonPaperIds.length >= 5" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
       </div>
       <div v-else class="empty-state">
         <strong>{{ result.papers.length ? '没有论文符合当前筛选条件' : '暂未找到满足全部条件的论文' }}</strong>
         <p>{{ result.papers.length ? '可以调整来源、年份或核验状态筛选。' : '可以放宽年份、必须词或排除条件后重新检索。' }}</p>
       </div>
-      <nav v-if="paperPagination.totalPages > 1" class="result-pagination" aria-label="搜索结果分页">
-        <button type="button" :disabled="paperPagination.page === 1" @click="changeResultPage(paperPagination.page - 1)">上一页</button>
-        <span>{{ `${paperPagination.page} / ${paperPagination.totalPages}` }}</span>
-        <button type="button" :disabled="paperPagination.page === paperPagination.totalPages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
+      <nav v-if="paperPagination.total_pages > 1" class="result-pagination" aria-label="搜索结果分页">
+        <button type="button" :disabled="resultPageLoading || paperPagination.page === 1" @click="changeResultPage(paperPagination.page - 1)">上一页</button>
+        <span>{{ `${paperPagination.page} / ${paperPagination.total_pages}` }}</span>
+        <button type="button" :disabled="resultPageLoading || paperPagination.page === paperPagination.total_pages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
       </nav>
       <div v-if="detailPaper || detailLoading || detailError" class="paper-detail-backdrop" @click.self="closePaperDetail">
         <aside class="paper-detail-panel" role="dialog" aria-modal="true" aria-labelledby="paper-detail-title">

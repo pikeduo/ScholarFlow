@@ -260,6 +260,39 @@ export async function getSearchRunResult(runId, fetchImpl = globalThis.fetch, ap
   }
 }
 
+/** 按条件分页读取已保存搜索结果，不重新执行多源检索。 */
+export async function getSearchRunPapers(runId, options = {}, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页和测试复用稳定结果读取请求。
+  const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
+  if (!normalizedRunId) throw new SearchApiError('缺少需要读取结果的搜索运行标识') // 阻止无效资源路径进入网络层。
+  const page = Number(options.page || 1) // 读取页面当前请求页码。
+  const pageSize = Number(options.pageSize || 5) // 读取页面期望的单页数量。
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 20) throw new SearchApiError('结果分页参数无效') // 保持与后端一致的基础分页边界。
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), sort: String(options.sort || 'relevance') }) // 构建可安全编码的固定查询参数。
+  const source = String(options.source || '').trim() // 读取可选来源条件。
+  const relevance = String(options.relevance || '').trim() // 读取可选核验状态条件。
+  const yearStart = String(options.yearStart || '').trim() // 读取可选年份下界。
+  const yearEnd = String(options.yearEnd || '').trim() // 读取可选年份上界。
+  if (source && source !== 'all') params.set('source', source) // 仅在用户实际筛选时传递来源字段。
+  if (relevance && relevance !== 'all') params.set('relevance', relevance) // 仅在用户实际筛选时传递核验状态。
+  if (yearStart) params.set('year_start', yearStart) // 将非空年份下界交给后端统一校验。
+  if (yearEnd) params.set('year_end', yearEnd) // 将非空年份上界交给后端统一校验。
+  let response // 保存分页读取 HTTP 响应。
+  try { // 只发起不改变结果快照的 GET 请求。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/papers?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取同次持久化结果。
+  } catch { // 网络故障时不得回退到前端猜测或重新检索。
+    throw new SearchApiError('无法读取已保存的搜索结果，请确认后端已启动') // 返回安全且可执行的公共提示。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用后端已净化错误边界。
+  try { // 校验结果列表与分页控件所依赖的最小契约。
+    const resultPage = await response.json() // 解析服务端筛选、排序后的结果页。
+    if (!resultPage || typeof resultPage.run_id !== 'string' || !Array.isArray(resultPage.items) || typeof resultPage.total !== 'number' || typeof resultPage.page !== 'number' || typeof resultPage.page_size !== 'number' || typeof resultPage.total_pages !== 'number') throw new SearchApiError('搜索结果分页数据不完整') // 防止页面以损坏元数据渲染。
+    return resultPage // 返回服务端唯一事实源的当前页结果。
+  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
+    if (error instanceof SearchApiError) throw error // 保留可直接展示的业务错误。
+    throw new SearchApiError('搜索结果分页数据无法解析') // 不展示原始响应正文。
+  }
+}
+
 /** 按论文标识读取 SQLite 已保存详情，不触发新的学术来源检索。 */
 export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读详情请求。
   const normalizedPaperId = String(paperId || '').trim() // 规范化卡片提供的内部论文标识。

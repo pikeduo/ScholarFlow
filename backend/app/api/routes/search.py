@@ -5,7 +5,7 @@ import json  # 将已净化事件编码为 SSE data 行。
 from functools import lru_cache  # 在服务进程内复用昂贵的本地模型和来源限流状态。
 from typing import Annotated  # 为 FastAPI 依赖注入声明清晰的参数类型。
 
-from fastapi import APIRouter, Depends, HTTPException, status  # 声明路由、依赖和稳定 HTTP 错误。
+from fastapi import APIRouter, Depends, HTTPException, Query, status  # 声明路由、依赖、查询参数和稳定 HTTP 错误。
 from fastapi.responses import StreamingResponse  # 返回符合 EventSource 语义的文本事件流。
 
 from backend.app.adapters.arxiv import ArxivClient  # 装配 AI/计算机领域可选的预印本搜索适配器。
@@ -21,11 +21,14 @@ from backend.app.models.query import QuerySchema  # 接收 FastAPI 自动校验�
 from backend.app.models.query_intent import QueryIntent  # 接收已规划完成的多源检索意图。
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
 from backend.app.models.search_run import SearchRunState  # 声明可按运行标识读取的持久化状态响应。
+from backend.app.models.search_result_page import SearchResultRelevance, SearchResultSort, SearchRunPaperPage  # 声明已保存结果分页读取契约。
+from backend.app.models.paper import PaperSource  # 限制结果来源筛选只能使用已知学术来源。
 from backend.app.models.search_event import SearchProgressEvent  # 传递不含敏感查询和论文摘要的 SSE 事件。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
 from backend.app.services.multi_round_search import MultiRoundSearchController  # 执行有限轮次的召回、缺口修复与保护性停止。
 from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore, SearchRunStoreError  # 装配 SQLite 状态持久化并映射安全读取错误。
 from backend.app.services.search_events import InMemorySearchRunEventPublisher  # 在单次流式请求内连接控制器和事件响应。
+from backend.app.services.search_result_page import SearchResultPageService  # 在已保存结果上执行确定性筛选、排序和分页。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
 from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
 from backend.app.adapters.deepseek_query_planner import QueryPlanningError  # 将查询规划故障转换为稳定 HTTP 错误。
@@ -33,6 +36,15 @@ from backend.app.services.source_router import SourceRouter  # 使用确定性�
 
 
 router = APIRouter(prefix="/search")  # 将检索接口归入固定资源路径。
+
+
+def get_search_result_page_service() -> SearchResultPageService:
+    """构造无状态结果分页服务，保持 API 路由不承载筛选业务细节。
+
+    返回：
+        SearchResultPageService：只处理已保存最终结果的纯业务服务。
+    """
+    return SearchResultPageService()  # 服务无外部依赖，不会在构造时读取数据库或调用来源。
 
 
 def get_openalex_search_service() -> OpenAlexSearchService:
@@ -243,6 +255,58 @@ def get_search_run_result(
     if result is None:  # 运行尚未完成或不存在时不能伪造空论文结果。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索最终结果尚未就绪")  # 让前端继续等待或显示明确提示。
     return result  # 返回同一次多轮搜索得到的真实最终结果。
+
+
+@router.get("/runs/{run_id}/papers", response_model=SearchRunPaperPage, status_code=status.HTTP_200_OK, summary="筛选、排序并分页读取已保存搜索结果")
+def get_search_run_papers(
+    run_id: str,
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+    page_service: Annotated[SearchResultPageService, Depends(get_search_result_page_service)],
+    source: PaperSource | None = Query(default=None),
+    relevance: SearchResultRelevance | None = Query(default=None),
+    year_start: int | None = Query(default=None, ge=1800, le=2100),
+    year_end: int | None = Query(default=None, ge=1800, le=2100),
+    sort: SearchResultSort = Query(default="relevance"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=5, ge=1, le=20),
+) -> SearchRunPaperPage:
+    """从 SQLite 已完成结果快照读取一页论文，绝不重新执行搜索。
+
+    参数：
+        run_id：SSE 或恢复流程提供的稳定搜索运行标识。
+        state_store：可替换的完整结果快照存储适配层。
+        page_service：可单测的筛选、排序与分页业务服务。
+        source：可选实际来源筛选。
+        relevance：可选已有约束核验状态筛选。
+        year_start：可选发表年份下界。
+        year_end：可选发表年份上界。
+        sort：相关性、年份或引用量展示排序策略。
+        page：从一开始的请求页码。
+        page_size：单页最多返回的论文数。
+    返回：
+        SearchRunPaperPage：来自同次完成快照的一页规范化论文。
+    异常：
+        HTTPException：年份范围非法时返回 422，结果未就绪时返回 404，存储异常时返回 503。
+    """
+    if year_start is not None and year_end is not None and year_start > year_end:  # 跨字段年份边界必须在读取快照前拒绝。
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="起始年份不能晚于结束年份")  # 返回可直接展示的参数错误。
+    try:  # 将持久化读取故障隔离为稳定 HTTP 边界。
+        result = state_store.get_result(run_id)  # 只读取 SSE 同次已保存完成结果，不访问外部来源。
+    except SearchRunStoreError:  # 不向前端暴露 SQLite、JSON 或实现细节。
+        logger.exception("搜索结果分页读取接口失败：运行=%s", run_id)  # 仅记录安全运行标识与完整堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="搜索结果暂时不可用，请稍后重试") from None  # 返回稳定公共错误。
+    if result is None:  # 未完成运行不能伪造分页空集合。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索最终结果尚未就绪")  # 保持与完整结果读取接口一致的语义。
+    return page_service.build_page(  # 将纯业务逻辑委托给可测试服务，不改写原始结果快照。
+        result,
+        source=source,
+        relevance=relevance,
+        year_start=year_start,
+        year_end=year_end,
+        sort=sort,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.post("/natural", response_model=MultiSourceRecallResult, status_code=status.HTTP_200_OK, summary="按自然语言检索多源论文")
