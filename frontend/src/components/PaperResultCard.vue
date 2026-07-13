@@ -33,17 +33,6 @@ const sources = computed(() => { // 优先展示完整多源溯源列表。
   return [...new Set(sourceNames.length ? sourceNames : [props.paper.source])] // 去重并在无溯源时回退主来源。
 })
 
-const safePaperUrl = computed(() => { // 只允许浏览器打开 HTTP 或 HTTPS 学术链接。
-  const candidate = props.paper.open_access_url // 优先使用来源给出的合法开放访问链接。
-  if (!candidate) return null // 无链接时不渲染可点击标题。
-  try { // 防止无效或危险协议进入 href。
-    const url = new URL(candidate) // 使用浏览器 URL 解析器校验。
-    return ['http:', 'https:'].includes(url.protocol) ? url.href : null // 只接受网页协议。
-  } catch { // 无法解析的链接视为不可访问。
-    return null // 返回空值让标题退化为纯文本。
-  }
-})
-
 const doiUrl = computed(() => buildDoiUrl(props.paper.doi)) // 仅为符合 DOI 格式的论文渲染固定 doi.org 链接。
 
 const statusMeta = computed(() => { // 将后端三态核验映射为中文展示。
@@ -103,7 +92,7 @@ async function translateAbstract() { // 在用户已展开摘要后独立显示�
         <span v-if="paper.paper_type" class="type-badge">{{ paper.paper_type }}</span>
       </div>
       <h3>
-        <a v-if="safePaperUrl" :href="safePaperUrl" target="_blank" rel="noopener noreferrer">{{ paper.title }}</a>
+        <a v-if="doiUrl" :href="doiUrl" target="_blank" rel="noopener noreferrer">{{ paper.title }}</a>
         <span v-else>{{ paper.title }}</span>
       </h3>
       <div class="title-translation">

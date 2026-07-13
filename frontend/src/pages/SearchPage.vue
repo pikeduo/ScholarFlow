@@ -784,7 +784,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
               <p class="reference-description">这些是当前论文引用的上游论文在原始学术来源中的标识，不代表已收藏到“我的文献库”。</p>
               <p>{{ detailPaper.references.join(' · ') }}</p>
             </section>
-            <a v-if="detailPaper.open_access_url" class="detail-link" :href="detailPaper.open_access_url" target="_blank" rel="noopener noreferrer">打开合法公开入口（阅读/下载）</a>
+            <a v-if="detailDoiUrl" class="detail-link" :href="detailDoiUrl" target="_blank" rel="noopener noreferrer">打开 DOI 页面</a>
           </template>
         </aside>
       </div>
@@ -1865,7 +1865,7 @@ textarea::placeholder { /* 设置查询示例占位。 */
   font-size: 0.7rem !important; /* 保持边界说明紧凑。 */
 }
 
-.detail-link { /* 标记来源提供的合法公开入口。 */
+.detail-link { /* 标记可在新标签页打开的 DOI 解析入口。 */
   display: inline-block; /* 允许链接使用按钮式留白。 */
   margin-top: 1.35rem; /* 与详情正文拉开距离。 */
   padding: 0.55rem 0.75rem; /* 提供舒适点击区域。 */
