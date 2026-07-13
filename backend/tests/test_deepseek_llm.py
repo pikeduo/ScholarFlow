@@ -45,6 +45,20 @@ def test_client_maps_json_output_and_usage_without_network() -> None:
     assert result.prompt_tokens == 80 and result.completion_tokens == 30  # 验证 Token 统计映射。
 
 
+def test_client_repairs_unescaped_quotes_in_model_json_output() -> None:
+    """模型偶发遗漏字符串引号转义时，适配器应修复格式后仍执行完整字段校验。"""
+    malformed_content = '''```json
+{"assessments":[{"paper_id":"paper-1","relevance_score":0.92,"constraint_status":"satisfied","evidence":["Transformer "Forecasting""],"recommendation_reason":"标题包含 "Transformer"，与查询直接相关。"}]}
+```'''  # 构造围栏与字符串内部未转义双引号并存的真实模型常见瑕疵。
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"choices": [{"message": {"content": malformed_content}}], "model": "deepseek-v4-flash", "usage": {"prompt_tokens": 80, "completion_tokens": 30}}))  # 使用离线响应复现无效 JSON。
+    client = DeepSeekPaperAssessmentClient(config=Settings(_env_file=None, deepseek_api_key="test-key"), transport=transport)  # 注入隔离配置与无网络传输层。
+
+    result = asyncio.run(client.assess(_query(), [_paper()]))  # 执行受限本地修复后的完整解析。
+
+    assert result.assessments[0].evidence == ['Transformer "Forecasting"']  # 验证证据中的字面量引号未被丢失。
+    assert result.assessments[0].recommendation_reason == '标题包含 "Transformer"，与查询直接相关。'  # 验证理由中的字面量引号被正确保留。
+
+
 def test_client_rejects_missing_api_key_before_request() -> None:
     """缺少 DeepSeek 密钥时适配器应返回已净化配置错误。"""
     client = DeepSeekPaperAssessmentClient(config=Settings(_env_file=None))  # 构造无密钥且不读取本地环境文件的配置。
