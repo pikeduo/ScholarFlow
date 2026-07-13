@@ -70,6 +70,15 @@ class LibraryRepository:
         row = self._session.get(LibraryItemRow, item_id)  # 使用主键高效查找记录。
         return _to_library_item(row) if row is not None else None  # 不存在时返回空值交由服务映射。
 
+    def find_paper(self, paper_id: str) -> PaperRecord | None:
+        """按论文内部标识读取文献库快照，不触发任何外部学术来源调用。"""
+        rows = self._session.scalars(select(LibraryItemRow)).all()  # 文献库为个人小集合，使用确定性本地扫描避免 JSON 模糊查询误命中。
+        for row in rows:  # 逐条恢复已保存快照并比较稳定论文标识。
+            paper = PaperRecord.model_validate_json(row.paper_json)  # 通过统一模型校验历史快照结构。
+            if paper.paper_id == paper_id:  # 仅返回与请求标识完全一致的已收藏论文。
+                return paper  # 命中后立即结束扫描。
+        return None  # 未收藏或标识不一致时保持安全空结果。
+
     def update(self, item_id: str, changes: dict[str, object]) -> LibraryItem | None:
         """只更新请求明确提交的关键词、备注或阅读状态。"""
         row = self._session.get(LibraryItemRow, item_id)  # 定位待更新收藏。

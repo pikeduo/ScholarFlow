@@ -9,7 +9,7 @@ import pytest  # 提供夹具声明能力。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证翻译路由。
 
 from backend.app.adapters.deepseek_translation import DeepSeekPaperTranslationClient  # 导入待测 DeepSeek 翻译适配器。
-from backend.app.api.routes.papers import get_paper_translation_client, get_paper_translation_store  # 覆盖真实翻译和缓存依赖避免接口测试访问网络。
+from backend.app.api.routes.papers import get_library_paper_repository, get_paper_translation_client, get_paper_translation_store  # 覆盖真实翻译、文献库和缓存依赖避免接口测试访问网络。
 from backend.app.api.routes.search import get_search_run_state_store  # 覆盖 SQLite 论文读取依赖。
 from backend.app.core.config import Settings  # 构造隔离且含测试密钥的配置。
 from backend.app.main import app  # 导入已装配版本化路由的 FastAPI 应用。
@@ -27,6 +27,18 @@ class FakePaperStore:
     def get_paper(self, _: str) -> PaperRecord | None:
         """返回固定论文，避免路由触发真实持久化读取。"""
         return self._paper  # 路由只依赖此最小读取接口。
+
+
+class FakeLibraryPaperRepository:
+    """为翻译接口提供不访问真实 SQLite 的文献库快照替身。"""
+
+    def __init__(self, paper: PaperRecord | None = None) -> None:
+        """保存可选的已收藏论文快照。"""
+        self._paper = paper  # 保存命中或空值。
+
+    def find_paper(self, paper_id: str) -> PaperRecord | None:
+        """仅对相同论文标识返回收藏快照。"""
+        return self._paper if self._paper is not None and self._paper.paper_id == paper_id else None  # 模拟生产精确匹配规则。
 
 
 class FakeTranslationClient:
@@ -76,6 +88,7 @@ def api_client() -> Iterator[TestClient]:
     app.dependency_overrides.pop(get_search_run_state_store, None)  # 清理 SQLite 替身避免污染其他测试。
     app.dependency_overrides.pop(get_paper_translation_client, None)  # 清理翻译替身避免污染其他测试。
     app.dependency_overrides.pop(get_paper_translation_store, None)  # 清理译文缓存替身避免污染其他测试。
+    app.dependency_overrides.pop(get_library_paper_repository, None)  # 清理文献库回退替身避免读取真实数据库。
 
 
 def _paper() -> PaperRecord:
@@ -105,6 +118,7 @@ def test_paper_translation_endpoint_translates_only_saved_paper(api_client: Test
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(_paper())  # 注入已保存论文读取替身。
     app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 注入无需网络的翻译替身。
     app.dependency_overrides[get_paper_translation_store] = lambda: FakeTranslationStore()  # 注入不写用户 SQLite 的缓存替身。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 保持搜索快照命中测试不访问真实文献库。
 
     response = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 通过查询参数传递稳定论文标识并触发标题翻译。
 
@@ -119,6 +133,7 @@ def test_paper_translation_endpoint_reuses_sqlite_cache_by_field_and_source_text
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(_paper())  # 提供可翻译的已保存论文。
     app.dependency_overrides[get_paper_translation_client] = lambda: translation_client  # 记录模型调用次数。
     app.dependency_overrides[get_paper_translation_store] = lambda: translation_store  # 避免写入真实 SQLite。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 保持缓存测试不访问真实文献库。
 
     first_title = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 首次标题请求应调用模型并写缓存。
     second_title = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 同一标题请求应直接命中缓存。
@@ -134,7 +149,20 @@ def test_paper_translation_endpoint_rejects_unknown_paper(api_client: TestClient
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(None)  # 注入未命中论文的只读替身。
     app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 即使配置翻译替身也不得被调用。
     app.dependency_overrides[get_paper_translation_store] = lambda: FakeTranslationStore()  # 未知论文不应读取或写入缓存。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 保持未知论文测试不访问真实文献库。
 
     response = api_client.post("/api/v1/papers/translation/abstract?paper_id=missing-paper")  # 请求不在保存快照中的论文标识。
 
     assert response.status_code == 404  # 验证未知论文不会进入模型调用边界。
+
+
+def test_paper_translation_endpoint_falls_back_to_saved_library_paper(api_client: TestClient) -> None:
+    """搜索快照清理后，用户收藏的论文仍可按字段独立复用翻译入口。"""
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperStore(None)  # 模拟搜索结果快照不再保存该论文。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository(_paper())  # 注入用户已收藏的论文快照。
+    app.dependency_overrides[get_paper_translation_client] = lambda: FakeTranslationClient()  # 注入无需外网的翻译替身。
+    app.dependency_overrides[get_paper_translation_store] = lambda: FakeTranslationStore()  # 注入隔离译文缓存。
+
+    response = api_client.post("/api/v1/papers/translation/title?paper_id=paper-translation-1")  # 请求收藏论文标题的独立翻译。
+
+    assert response.status_code == 200 and response.json()["field"] == "title"  # 验证文献库快照也可安全进入字段级翻译边界。

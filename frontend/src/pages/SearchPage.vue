@@ -2,12 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue' // 管理搜索表单、筛选分页和恢复轮询生命周期。
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
+import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 在搜索页和文献库统一展示论文详情与字段翻译。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、翻译、比较、图谱、服务端分页、历史、用量与路线。
+import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
-import { buildDoiUrl, buildPublicPdfUrl } from '../utils/doi.js' // 将 DOI 和来源明确提供的公开 PDF 链接规范化。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -39,13 +39,6 @@ const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作�
 const detailPaper = ref(null) // 保存从 SQLite 读取的当前论文详情。
 const detailLoading = ref(false) // 标记详情读取请求是否进行中。
 const detailError = ref('') // 保存详情读取的安全公共错误。
-const detailTitleTranslation = ref(null) // 保存详情抽屉单独请求的中文标题译文。
-const detailAbstractTranslation = ref(null) // 保存详情抽屉单独请求的中文摘要译文。
-const detailTitleTranslationLoading = ref(false) // 只标记详情标题翻译请求，不能影响摘要操作。
-const detailAbstractTranslationLoading = ref(false) // 只标记详情摘要翻译请求，不能影响标题操作。
-const detailTitleTranslationError = ref('') // 保存详情标题翻译的局部公共错误。
-const detailAbstractTranslationError = ref('') // 保存详情摘要翻译的局部公共错误。
-let detailTranslationVersion = 0 // 标记当前详情论文，阻止关闭或切换后的旧翻译响应覆盖新内容。
 const comparisonPaperIds = ref([]) // 保存当前搜索结果中用户选择的二至五篇论文标识。
 const comparisonResult = ref(null) // 保存后端返回的事实型固定列对比结果。
 const comparisonLoading = ref(false) // 标记比较接口是否正在读取已保存论文。
@@ -99,8 +92,6 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
 const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
 const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
-const detailDoiUrl = computed(() => buildDoiUrl(detailPaper.value?.doi)) // 只为详情中的合法 DOI 渲染固定 doi.org 新标签链接。
-const detailPublicPdfUrl = computed(() => buildPublicPdfUrl(detailPaper.value?.open_access_url)) // 只为详情中的来源明确 PDF 渲染独立公开访问入口。
 const citationGraphLayout = computed(() => { // 为保留的受限图能力计算确定性圆形布局。
   const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
   const radius = Math.max(95, Math.min(150, nodes.length * 14)) // 按节点数量限定圆形半径以减少重叠。
@@ -470,7 +461,6 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
 async function openPaperDetail(paper) { // 按用户点击只读读取详情，避免卡片渲染时批量请求。
   detailPaper.value = null // 清除上一条详情，防止旧内容在加载期间误导用户。
   detailError.value = '' // 清除上一条详情错误。
-  resetDetailTranslations() // 切换论文时清空上一条论文的字段级译文状态。
   detailLoading.value = true // 展示详情抽屉的读取中状态。
   try { // 统一处理 API 客户端的公共错误。
     detailPaper.value = await getPaperDetail(paper.paper_id) // 仅读取 SQLite 保存的规范化论文记录。
@@ -485,39 +475,6 @@ function closePaperDetail() { // 关闭详情抽屉并释放当前展示数据�
   detailPaper.value = null // 不在页面内长期保留论文详情副本。
   detailError.value = '' // 清除可能存在的错误提示。
   detailLoading.value = false // 防御关闭时遗留的加载状态。
-  resetDetailTranslations() // 关闭时释放标题和摘要的本次页面状态。
-}
-
-function resetDetailTranslations() { // 清空详情抽屉两种字段翻译的显示、加载和错误状态。
-  detailTranslationVersion += 1 // 让正在返回的旧论文翻译响应失效。
-  detailTitleTranslation.value = null // 防止新论文显示旧论文的中文标题。
-  detailAbstractTranslation.value = null // 防止新论文显示旧论文的中文摘要。
-  detailTitleTranslationLoading.value = false // 防御关闭或切换时遗留标题加载状态。
-  detailAbstractTranslationLoading.value = false // 防御关闭或切换时遗留摘要加载状态。
-  detailTitleTranslationError.value = '' // 清除标题字段的旧错误。
-  detailAbstractTranslationError.value = '' // 清除摘要字段的旧错误。
-}
-
-async function translateDetailField(field) { // 在详情抽屉中独立请求指定字段的已缓存中文翻译。
-  if (!detailPaper.value) return // 详情尚未读取完成时不得构造翻译请求。
-  const paperId = detailPaper.value.paper_id // 固定本次请求对应的论文，防止切换详情后写入新论文。
-  const requestVersion = detailTranslationVersion // 记录当前详情版本以识别关闭或切换后的过期响应。
-  const translation = field === 'title' ? detailTitleTranslation : detailAbstractTranslation // 选择当前字段的展示结果状态。
-  const loading = field === 'title' ? detailTitleTranslationLoading : detailAbstractTranslationLoading // 选择当前字段的加载状态。
-  const errorState = field === 'title' ? detailTitleTranslationError : detailAbstractTranslationError // 选择当前字段的错误状态。
-  if (translation.value || loading.value) return // 已翻译或当前字段请求中时不重复调用。
-  loading.value = true // 只让当前字段按钮显示正在翻译。
-  errorState.value = '' // 清除当前字段用户重试前的错误。
-  try { // 复用后端的 SQLite 缓存和 DeepSeek 受控调用边界。
-    const translated = await translatePaperToChinese(paperId, field) // 只提交本次已保存论文标识和当前字段名。
-    if (requestVersion !== detailTranslationVersion || detailPaper.value?.paper_id !== paperId) return // 关闭或切换详情后丢弃旧响应。
-    translation.value = translated // 只写入当前详情论文和当前字段的译文。
-  } catch (error) { // 将客户端公共错误显示在当前字段附近。
-    if (requestVersion !== detailTranslationVersion || detailPaper.value?.paper_id !== paperId) return // 关闭或切换详情后不显示旧请求错误。
-    errorState.value = error instanceof SearchApiError ? error.message : '论文翻译暂时不可用，请稍后重试' // 不展示网络或服务端内部细节。
-  } finally { // 无论成功或失败都恢复该字段重试能力。
-    if (requestVersion === detailTranslationVersion && detailPaper.value?.paper_id === paperId) loading.value = false // 只结束当前详情论文和字段的加载状态。
-  }
 }
 
 function togglePaperComparison(paper) { // 将当前论文加入或移出最多五篇的比较集合。
@@ -768,45 +725,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <span>{{ `${paperPagination.page} / ${paperPagination.total_pages}` }}</span>
         <button type="button" :disabled="resultPageLoading || paperPagination.page === paperPagination.total_pages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
       </nav>
-      <div v-if="detailPaper || detailLoading || detailError" class="paper-detail-backdrop" @click.self="closePaperDetail">
-        <aside class="paper-detail-panel" role="dialog" aria-modal="true" aria-labelledby="paper-detail-title">
-          <button class="detail-close" type="button" aria-label="关闭论文详情" @click="closePaperDetail">×</button>
-          <p class="eyebrow">SAVED PAPER DETAIL</p>
-          <p v-if="detailLoading" class="detail-status">正在读取已保存的论文详情…</p>
-          <p v-else-if="detailError" class="detail-error" role="alert">{{ detailError }}</p>
-          <template v-else-if="detailPaper">
-            <h2 id="paper-detail-title">{{ detailPaper.title }}</h2>
-            <div class="detail-title-translation">
-              <button type="button" class="detail-translate-button" :disabled="detailTitleTranslationLoading" @click="translateDetailField('title')">{{ detailTitleTranslationLoading ? '正在翻译…' : detailTitleTranslation ? '已显示中文标题' : '翻译标题' }}</button>
-              <p v-if="detailTitleTranslationError" class="detail-translation-error" role="alert">{{ detailTitleTranslationError }}</p>
-              <p v-if="detailTitleTranslation" class="detail-translated-title" lang="zh-CN">{{ detailTitleTranslation.text_zh }}</p>
-            </div>
-            <p class="detail-meta">{{ `${(detailPaper.authors || []).map((author) => author.name).filter(Boolean).join('、') || '作者信息暂缺'} · ${detailPaper.year || '年份暂缺'} · ${detailPaper.venue || 'Venue 暂缺'}` }}</p>
-            <dl class="detail-identifiers">
-              <div><dt>来源</dt><dd>{{ detailPaper.source }}</dd></div>
-              <div v-if="detailPaper.doi"><dt>DOI</dt><dd><a v-if="detailDoiUrl" :href="detailDoiUrl" target="_blank" rel="noopener noreferrer">{{ detailPaper.doi }}</a><span v-else>{{ detailPaper.doi }}</span></dd></div>
-              <div v-if="detailPaper.arxiv_id"><dt>arXiv</dt><dd>{{ detailPaper.arxiv_id }}</dd></div>
-              <div v-if="detailPaper.openalex_id"><dt>OpenAlex</dt><dd>{{ detailPaper.openalex_id }}</dd></div>
-              <div v-if="detailPaper.semantic_scholar_id"><dt>Semantic Scholar</dt><dd>{{ detailPaper.semantic_scholar_id }}</dd></div>
-            </dl>
-            <section v-if="detailPaper.abstract" class="detail-section">
-              <h3>摘要</h3>
-              <p>{{ detailPaper.abstract }}</p>
-              <button type="button" class="detail-translate-button" :disabled="detailAbstractTranslationLoading" @click="translateDetailField('abstract')">{{ detailAbstractTranslationLoading ? '正在翻译…' : detailAbstractTranslation ? '已显示中文摘要' : '翻译摘要' }}</button>
-              <p v-if="detailAbstractTranslationError" class="detail-translation-error" role="alert">{{ detailAbstractTranslationError }}</p>
-              <section v-if="detailAbstractTranslation" class="detail-translated-abstract" lang="zh-CN" aria-label="中文摘要翻译">
-                <strong>中文摘要</strong>
-                <p>{{ detailAbstractTranslation.text_zh }}</p>
-                <small>{{ `由 ${detailAbstractTranslation.model_name} 翻译` }}</small>
-              </section>
-            </section>
-            <section v-if="detailPaper.keywords?.length" class="detail-section"><h3>关键词</h3><p>{{ detailPaper.keywords.join(' · ') }}</p></section>
-            <section v-if="detailPaper.constraint_evidence?.length" class="detail-section"><h3>约束证据</h3><ul><li v-for="evidence in detailPaper.constraint_evidence" :key="evidence">{{ evidence }}</li></ul></section>
-            <a v-if="detailDoiUrl" class="detail-link" :href="detailDoiUrl" target="_blank" rel="noopener noreferrer">打开 DOI 页面</a>
-            <a v-if="detailPublicPdfUrl" class="detail-pdf-link" :href="detailPublicPdfUrl" target="_blank" rel="noopener noreferrer">打开公开 PDF</a>
-          </template>
-        </aside>
-      </div>
+      <PaperDetailDrawer :paper="detailPaper" :loading="detailLoading" :error="detailError" @close="closePaperDetail" />
       <div v-if="comparisonResult || comparisonLoading" class="paper-detail-backdrop" @click.self="closePaperComparison">
         <aside class="paper-comparison-panel" role="dialog" aria-modal="true" aria-labelledby="paper-comparison-title">
           <button class="detail-close" type="button" aria-label="关闭论文比较" @click="closePaperComparison">×</button>

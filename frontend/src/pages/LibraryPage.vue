@@ -2,7 +2,9 @@
 import { onMounted, reactive, ref } from 'vue' // 管理筛选、编辑草稿和请求状态。
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 复用搜索页论文卡片保持两处阅读体验一致。
+import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 复用搜索页详情抽屉、翻译和 DOI 访问入口。
 import { deleteLibraryItem, LibraryApiError, listLibraryItems, normalizeKeywords, searchLibraryItemsSemantically, updateLibraryItem } from '../services/libraryApi.js' // 调用个人文献库稳定 API。
+import { getPaperDetail, SearchApiError } from '../services/searchApi.js' // 读取用户已收藏论文的本地详情快照。
 
 const items = ref([]) // 保存当前筛选条件下的收藏记录。
 const total = ref(0) // 保存后端返回的筛选结果总数。
@@ -16,6 +18,9 @@ const semanticQuery = ref('') // 保存用户输入的文献库自然语言检�
 const semanticMode = ref(false) // 标记当前列表是否来自语义检索而非普通筛选。
 const semanticScores = reactive({}) // 按收藏 ID 保存后端返回的语义相似度。
 const drafts = reactive({}) // 按 item_id 保存关键词、备注和阅读状态编辑草稿。
+const detailPaper = ref(null) // 保存当前文献库卡片请求的论文详情。
+const detailLoading = ref(false) // 标记详情快照读取状态。
+const detailError = ref('') // 保存详情读取的安全公共错误。
 
 const statusLabels = { unread: '未读', reading: '阅读中', read: '已读' } // 将后端稳定枚举映射为中文。
 
@@ -93,6 +98,25 @@ function formatSemanticScore(itemId) { // 将零到一分数转换为用户易�
   return typeof score === 'number' ? `${Math.round(score * 100)}%` : '—' // 防御部分响应或编辑后缺失分数。
 }
 
+async function openPaperDetail(paper) { // 按用户点击读取搜索或文献库中的本地论文快照。
+  detailPaper.value = null // 清除上一条详情，避免加载期间显示旧论文。
+  detailError.value = '' // 清除上一条详情读取错误。
+  detailLoading.value = true // 展示统一详情抽屉的加载状态。
+  try { // 只请求后端已保存快照，绝不从浏览器直接访问学术来源。
+    detailPaper.value = await getPaperDetail(paper.paper_id) // 后端会优先搜索快照并回退到文献库快照。
+  } catch (error) { // 将客户端公共错误显示在抽屉中。
+    detailError.value = error instanceof SearchApiError ? error.message : '读取论文详情时出现未知错误，请稍后重试' // 不展示网络或存储内部细节。
+  } finally { // 无论成功失败都结束当前读取状态。
+    detailLoading.value = false // 恢复详情抽屉可关闭状态。
+  }
+}
+
+function closePaperDetail() { // 关闭复用详情抽屉并释放当前论文副本。
+  detailPaper.value = null // 避免在文献库页面长期保留详情内容。
+  detailError.value = '' // 清除已关闭抽屉的旧错误。
+  detailLoading.value = false // 防御关闭时遗留的加载状态。
+}
+
 async function saveChanges(item) { // 提交单条收藏的用户属性修改。
   if (busyItemId.value) return // 防止并发修改或删除。
   const draft = drafts[item.item_id] // 读取对应编辑草稿。
@@ -163,8 +187,8 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
       <div v-else-if="!items.length" class="empty-library"><strong>文献库中暂无匹配论文</strong><p>可以回到“文献搜索”，将感兴趣的结果收藏到这里。</p></div>
       <div v-else class="library-list">
         <section v-for="(item, index) in items" :key="item.item_id" class="library-card">
-          <PaperResultCard :paper="item.paper" :rank="index + 1" :keywords="item.keywords" :show-score="false" :enable-translation="false" :show-search-actions="false">
-            <template #actions><span class="library-card-status">{{ statusLabels[item.reading_status] }}</span><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span></template>
+          <PaperResultCard :paper="item.paper" :rank="index + 1" :keywords="item.keywords" :show-score="false" :show-search-actions="false" @detail="openPaperDetail">
+            <template #actions><span class="library-card-status">{{ statusLabels[item.reading_status] }}</span><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button></template>
           </PaperResultCard>
           <form v-if="drafts[item.item_id]" class="item-editor" @submit.prevent="saveChanges(item)">
             <label>关键词<input v-model="drafts[item.item_id].keywords" type="text" placeholder="使用逗号分隔" :disabled="Boolean(busyItemId)"></label>
@@ -174,6 +198,7 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
           </form>
         </section>
       </div>
+      <PaperDetailDrawer :paper="detailPaper" :loading="detailLoading" :error="detailError" @close="closePaperDetail" />
     </main>
   </div>
 </template>
@@ -217,6 +242,7 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .library-card { display: grid; gap: 0.75rem; } /* 复用搜索结果论文卡片，并在其下方附加收藏属性编辑区。 */
 .library-card-status, .semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #456d84; background: #eaf3f8; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示收藏状态。 */
 .semantic-score { color: #5d4a8f; background: #eee9fb; } /* 使用独立色调突出本轮自然语言检索相似度。 */
+.library-detail-button { padding: 0.45rem 0.7rem; border: 1px solid #b8ccdc; border-radius: 0.55rem; color: #536f7f; background: #fff; cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 800; } /* 在文献库卡片保留与搜索页同等的详情入口。 */
 .item-editor { display: grid; grid-template-columns: minmax(0, 1fr) 8rem; gap: 0.65rem; padding: 0.95rem 1.2rem; border: 1px solid #dfe7ef; border-radius: 0.85rem; background: #fbfdfe; } /* 在论文卡片下方组织关键词、状态和备注编辑。 */
 .note-field, .item-actions { grid-column: 1 / -1; } /* 让备注与操作横跨编辑区。 */
 .item-actions { display: flex; justify-content: flex-end; gap: 0.5rem; } /* 将保存和删除操作靠右排列。 */

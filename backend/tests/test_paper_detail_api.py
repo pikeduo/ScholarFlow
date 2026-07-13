@@ -6,6 +6,7 @@ from unittest.mock import patch  # 拦截预期错误日志调用以保持测试
 import pytest  # 提供夹具声明能力。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 HTTP 响应。
 
+from backend.app.api.routes.papers import get_library_paper_repository  # 覆盖文献库详情回退，避免测试读取真实 SQLite。
 from backend.app.api.routes.search import get_search_run_state_store  # 覆盖详情接口复用的 SQLite 存储依赖。
 from backend.app.main import app  # 导入已装配版本化路由的 FastAPI 应用。
 from backend.app.models.paper import PaperRecord  # 构造无需外部来源的规范化论文详情。
@@ -27,6 +28,18 @@ class FakePaperDetailStore:
         return self._paper  # 返回固定详情或未知标识空值。
 
 
+class FakeLibraryPaperRepository:
+    """为详情接口提供不访问真实 SQLite 的文献库论文快照替身。"""
+
+    def __init__(self, paper: PaperRecord | None = None) -> None:
+        """保存可选的已收藏论文快照。"""
+        self._paper = paper  # 保存命中或空值。
+
+    def find_paper(self, paper_id: str) -> PaperRecord | None:
+        """仅在论文标识一致时返回已收藏论文。"""
+        return self._paper if self._paper is not None and self._paper.paper_id == paper_id else None  # 模拟生产仓储的精确匹配边界。
+
+
 @pytest.fixture
 def api_client() -> Iterator[TestClient]:
     """提供不触发生命周期的本地 HTTP 客户端，并在结束后清理依赖覆盖。"""
@@ -34,6 +47,7 @@ def api_client() -> Iterator[TestClient]:
     yield client  # 交给用例发起只读详情请求。
     client.close()  # 释放客户端资源。
     app.dependency_overrides.pop(get_search_run_state_store, None)  # 防止替身污染其他接口测试。
+    app.dependency_overrides.pop(get_library_paper_repository, None)  # 防止文献库替身污染其他论文路由测试。
 
 
 def _paper() -> PaperRecord:
@@ -44,6 +58,7 @@ def _paper() -> PaperRecord:
 def test_paper_detail_endpoint_returns_saved_paper_without_external_lookup(api_client: TestClient) -> None:
     """存在的论文标识应返回已保存 PaperRecord 的完整公开详情。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore(paper=_paper())  # 注入只读固定快照替身。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 禁止成功路径意外访问真实文献库。
 
     response = api_client.get("/api/v1/papers/detail?paper_id=paper-detail-1")  # 使用查询参数请求由搜索结果提供的内部论文标识。
 
@@ -57,6 +72,7 @@ def test_paper_detail_endpoint_accepts_source_identifier_with_slashes(api_client
     """来源 URL 型论文标识应通过查询参数完整进入 SQLite 详情读取边界。"""
     source_identifier_paper = _paper().model_copy(update={"paper_id": "https://openalex.org/W4387355843"})  # 构造会破坏旧路径分段的真实来源标识形态。
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore(paper=source_identifier_paper)  # 注入同一篇已保存来源论文。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 禁止成功路径意外访问真实文献库。
 
     response = api_client.get("/api/v1/papers/detail?paper_id=https%3A%2F%2Fopenalex.org%2FW4387355843")  # 使用编码查询参数保留完整 URL 型标识。
 
@@ -67,6 +83,7 @@ def test_paper_detail_endpoint_accepts_source_identifier_with_slashes(api_client
 def test_paper_detail_endpoint_returns_404_for_unknown_saved_paper(api_client: TestClient) -> None:
     """未知论文标识不能伪造详情，应返回稳定不存在错误。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore()  # 注入不命中的只读替身。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 保持未知论文测试不访问真实文献库。
 
     response = api_client.get("/api/v1/papers/detail?paper_id=missing-paper")  # 请求未在任何保存结果中出现的标识。
 
@@ -77,9 +94,21 @@ def test_paper_detail_endpoint_returns_404_for_unknown_saved_paper(api_client: T
 def test_paper_detail_endpoint_hides_storage_error(api_client: TestClient) -> None:
     """SQLite 或快照读取故障必须映射为不泄露内部信息的 503。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore(should_fail=True)  # 注入会抛出安全服务错误的替身。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository()  # 保持故障测试只覆盖搜索快照边界。
     with patch("backend.app.api.routes.papers.logger.exception") as log_exception:  # 拦截预期异常日志调用。
         response = api_client.get("/api/v1/papers/detail?paper_id=paper-detail-1")  # 触发详情读取错误边界。
 
     assert response.status_code == 503  # 验证故障转换为可重试服务不可用状态。
     assert response.json()["detail"] == "论文详情暂时不可用，请稍后重试"  # 验证客户端看不到 SQLite 或快照细节。
     log_exception.assert_called_once_with("论文详情读取接口失败：论文=%s", "paper-detail-1")  # 验证完整堆栈仍进入统一日志。
+
+
+def test_paper_detail_endpoint_falls_back_to_saved_library_paper(api_client: TestClient) -> None:
+    """搜索快照清理后，已收藏论文仍应可从文献库快照读取详情。"""
+    saved_paper = _paper()  # 构造用户已收藏的本地论文快照。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakePaperDetailStore()  # 模拟搜索运行快照已不再保留该论文。
+    app.dependency_overrides[get_library_paper_repository] = lambda: FakeLibraryPaperRepository(saved_paper)  # 注入可命中的文献库论文替身。
+
+    response = api_client.get("/api/v1/papers/detail?paper_id=paper-detail-1")  # 使用收藏论文标识读取详情。
+
+    assert response.status_code == 200 and response.json()["paper_id"] == "paper-detail-1"  # 验证回退仅使用本地收藏快照且成功返回。
