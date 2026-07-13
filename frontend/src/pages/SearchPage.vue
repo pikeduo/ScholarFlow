@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue' // 管理搜索表单、恢复入口和结果派生数据。
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue' // 管理搜索表单、恢复轮询生命周期和结果派生数据。
 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
@@ -35,6 +35,11 @@ const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防
 const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
+const RECOVERY_POLL_INTERVAL_MS = 3000 // 使用短周期只读轮询作为刷新后无法重连 POST SSE 的回退。
+const RECOVERY_POLL_MAX_ATTEMPTS = 20 // 最多轮询一分钟，避免异常状态无限占用浏览器和后端资源。
+let recoveryPollTimer = null // 保存当前待执行轮询定时器，便于新搜索和卸载时取消。
+let recoveryRunId = '' // 保存当前允许轮询的运行标识，防止旧响应覆盖新搜索。
+let recoveryPollAttempts = 0 // 记录当前恢复运行的已执行轮询次数。
 
 const routeSources = computed(() => result.value?.run_state?.selected_sources || result.value?.route_plan?.academic_sources || []) // 优先提取多轮实际参与的学术来源并兼容旧响应。
 const conditionChips = ref([]) // 保存最近一次成功提交的条件标签，避免后续编辑表单改变旧结果说明。
@@ -72,6 +77,65 @@ function syncRunIdToUrl(runId) { // 将可恢复运行标识写入当前地址�
   globalThis.history.replaceState(null, '', url) // 使用替换避免每条 SSE 事件污染浏览历史。
 }
 
+function stopRecoveryPolling() { // 停止当前恢复轮询，避免旧运行在新搜索或页面卸载后继续更新状态。
+  if (recoveryPollTimer !== null) globalThis.clearTimeout?.(recoveryPollTimer) // 清除尚未触发的只读轮询定时器。
+  recoveryPollTimer = null // 重置定时器标识。
+  recoveryRunId = '' // 取消当前运行标识授权。
+  recoveryPollAttempts = 0 // 清除旧运行重试计数。
+}
+
+function applyRecoveredRun(recovered) { // 将只读恢复响应统一映射为页面状态和中性提示。
+  const { state, result: recoveredResult } = recovered // 解构轻量状态与可选最终结果。
+  progressEvent.value = { run_id: state.run_id, current_round: state.current_round || 0, progress: state.status === 'completed' ? 1 : 0, message: `已恢复搜索运行：${state.status}` } // 使用安全状态字段更新过程提示。
+  submittedQuery.value = state.query_intent.original_query // 回显关联研究问题而不修改用户当前输入表单。
+  if (recoveredResult) { // 仅当结果接口真实返回时才替换论文集合。
+    result.value = recoveredResult // 使用同次持久化结果，绝不重新检索。
+    conditionChips.value = buildConditionChipsFromIntent(recoveredResult.query_intent) // 使用保存意图恢复结果条件标签。
+    recoveryMessage.value = '已从保存的搜索运行恢复结果' // 说明当前页面没有产生新的检索调用。
+    return true // 通知调用方停止轮询。
+  }
+  recoveryMessage.value = '已恢复搜索运行状态；正在等待最终结果' // 明确当前只恢复状态，不伪造论文集合。
+  return false // 通知调用方在需要时继续状态轮询。
+}
+
+function shouldPollRecoveredRun(state, hasResult) { // 仅为尚未拿到结果的运行保留有限轮询。
+  if (hasResult || state.status === 'failed') return false // 已获得结果或明确失败时不继续请求。
+  return ['queued', 'running', 'completed'].includes(state.status) // completed 但结果暂未写入时允许短暂等待持久化完成。
+}
+
+function scheduleRecoveryPoll(runId) { // 安排下一次只读状态轮询。
+  if (recoveryPollTimer !== null || recoveryRunId !== runId) return // 防止同一运行创建重复定时器或旧运行继续排队。
+  if (recoveryPollAttempts >= RECOVERY_POLL_MAX_ATTEMPTS) { // 达到一分钟上限时停止，避免页面无限占用资源。
+    recoveryMessage.value = '已恢复搜索运行状态；结果仍未就绪，请稍后刷新本页查看' // 给出可执行且不误导的用户提示。
+    stopRecoveryPolling() // 结束有限轮询回退。
+    return // 不再创建新定时器。
+  }
+  recoveryPollTimer = globalThis.setTimeout?.(() => { // 使用浏览器定时器等待下一次状态检查。
+    recoveryPollTimer = null // 回调开始时释放标识，允许后续安排下一轮。
+    void pollRecoveredRun(runId) // 不阻塞界面响应地执行只读恢复请求。
+  }, RECOVERY_POLL_INTERVAL_MS) ?? null // 非浏览器环境缺少定时器时安全禁用轮询。
+}
+
+async function pollRecoveredRun(runId) { // 查询已恢复运行的最新状态，并在终态读取同次结果。
+  if (recoveryRunId !== runId) return // 用户已提交新搜索或页面卸载时忽略旧运行回调。
+  recoveryPollAttempts += 1 // 记录本次只读轮询次数。
+  try { // 复用同一 REST 恢复边界，绝不调用 SSE 提交接口。
+    const recovered = await restoreSearchRun(runId) // 读取最新轻量状态，并在终态尝试读取同次结果。
+    const hasResult = applyRecoveredRun(recovered) // 将最新状态安全映射到页面。
+    if (shouldPollRecoveredRun(recovered.state, hasResult)) scheduleRecoveryPoll(runId) // 仅在结果尚未就绪时继续有限轮询。
+    else stopRecoveryPolling() // 完成、失败或非预期状态时释放轮询资源。
+  } catch (error) { // 临时网络或状态读取错误不应立即丢弃可恢复运行。
+    recoveryMessage.value = error instanceof SearchApiError ? `恢复状态轮询失败：${error.message}` : '恢复状态轮询暂时不可用，将稍后重试' // 展示已净化的非阻塞提示。
+    if (recoveryRunId === runId) scheduleRecoveryPoll(runId) // 在次数上限内保守重试只读请求。
+  }
+}
+
+function startRecoveryPolling(runId) { // 为首次恢复到的运行启动一条有限且可取消的轮询链。
+  stopRecoveryPolling() // 清除可能由热更新或旧 URL 留下的轮询。
+  recoveryRunId = runId // 授权仅此运行可以更新页面状态。
+  scheduleRecoveryPoll(runId) // 首次延迟后发起只读状态检查。
+}
+
 async function restoreRunFromUrl() { // 在页面首次挂载时恢复已有 run_id 对应的状态或最终结果。
   const runId = new URLSearchParams(globalThis.location?.search || '').get('run_id')?.trim() // 只读取 URL 查询参数中的稳定运行标识。
   if (!runId) return // 普通首次访问保持空白搜索页。
@@ -80,16 +144,8 @@ async function restoreRunFromUrl() { // 在页面首次挂载时恢复已有 run
   recoveryMessage.value = '' // 清除旧恢复提示。
   try { // 通过只读 REST 恢复状态，不重新调用 Query Agent 或学术来源。
     const recovered = await restoreSearchRun(runId) // 先读取轻量状态，终态再读取完整结果。
-    progressEvent.value = { run_id: recovered.state.run_id, current_round: recovered.state.current_round || 0, progress: recovered.state.status === 'completed' ? 1 : 0, message: `已恢复搜索运行：${recovered.state.status}` } // 为运行中状态提供安全、轻量的过程提示。
-    if (recovered.result) { // 只有完成结果存在时才替换页面论文列表。
-      result.value = recovered.result // 使用同次持久化结果，绝不重复检索。
-      submittedQuery.value = recovered.result.query_intent.original_query // 回显本次真正执行的原始研究问题。
-      conditionChips.value = buildConditionChipsFromIntent(recovered.result.query_intent) // 用保存的意图构造结果条件标签。
-      recoveryMessage.value = '已从保存的搜索运行恢复结果' // 向用户说明刷新没有产生新的检索调用。
-    } else { // 运行尚未形成最终结果时仅恢复状态。
-      submittedQuery.value = recovered.state.query_intent.original_query // 回显运行关联的原始研究问题。
-      recoveryMessage.value = '已恢复搜索运行状态；最终结果就绪后可刷新本页查看' // 明确当前没有伪造结果。
-    }
+    const hasResult = applyRecoveredRun(recovered) // 将恢复状态或最终结果映射到页面。
+    if (shouldPollRecoveredRun(recovered.state, hasResult)) startRecoveryPolling(runId) // 运行中或终态结果尚未落库时启用有限轮询回退。
   } catch (error) { // 将不存在运行或读取失败转换为安全页面提示。
     errorMessage.value = error instanceof SearchApiError ? error.message : '恢复已保存的搜索运行时出现未知错误，请稍后重试' // 不展示内部路径或响应正文。
   } finally { // 无论恢复成功或失败都恢复表单操作。
@@ -108,6 +164,7 @@ function buildConditionChips(formSnapshot) { // 将已提交表单快照转换�
 
 async function submitSearch() { // 执行完整多源检索并更新页面状态。
   if (loading.value) return // 防止重复点击产生并发外部请求。
+  stopRecoveryPolling() // 防止旧运行轮询在新搜索期间覆盖页面结果。
   loading.value = true // 立即禁用提交按钮并展示进度。
   errorMessage.value = '' // 清除上一轮错误。
   progressEvent.value = null // 清除上一轮检索残留的过程提示。
@@ -127,6 +184,7 @@ async function submitSearch() { // 执行完整多源检索并更新页面状态
 
 async function resubmitIntent(editedIntent) { // 使用编辑后的完整 QueryIntent 跳过 Query Agent 重搜。
   if (loading.value) return // 防止重复点击产生并发外部请求。
+  stopRecoveryPolling() // 防止旧运行轮询在编辑重搜期间覆盖页面结果。
   loading.value = true // 禁用搜索和编辑面板。
   errorMessage.value = '' // 清除上一轮错误。
   progressEvent.value = null // 清除编辑前旧运行的进度提示。
@@ -157,6 +215,10 @@ function handleProgressEvent(event) { // 接收客户端已校验的 SSE 事件�
 
 onMounted(() => { // Vue 页面首次显示后读取地址中的可恢复运行标识。
   void restoreRunFromUrl() // 恢复过程不阻塞首屏挂载或输入框渲染。
+})
+
+onBeforeUnmount(() => { // 页面切换到文献库或应用卸载时释放恢复轮询。
+  stopRecoveryPolling() // 防止已卸载组件继续发起状态读取或更新响应式状态。
 })
 
 async function savePaper(paper) { // 将单篇搜索结果去重保存到个人文献库。
