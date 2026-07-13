@@ -61,7 +61,21 @@ class MultiRoundSearchController:
         self._deep_max_rounds = deep_max_rounds  # 保存深度模式允许的额外缺口修复轮次。
 
     async def run(self, query: QueryIntent, *, budget_exhausted: bool = False, event_publisher: SearchRunEventPublisher | None = None) -> MultiRoundSearchResult:
-        """从首轮主查询开始执行多轮检索，直到达到目标或触发保护性停止。
+        """通过 LangGraph 执行多轮搜索，保持既有服务调用契约不变。
+
+        参数：
+            query：已完成自然语言规划或用户编辑的结构化搜索意图。
+            budget_exhausted：调用前已知的 API、Token、费用或耗时预算触顶状态。
+            event_publisher：可选的进度事件发布器，未传入时保持普通 REST 调用无额外事件。
+        返回：
+            MultiRoundSearchResult：包含跨轮去重候选、最终覆盖报告和运行状态。
+        """
+        from backend.app.agents.search_workflow import MultiRoundSearchWorkflow  # 延迟导入避免 Agent 与服务协议形成模块循环。
+
+        return await MultiRoundSearchWorkflow(self).run(query, budget_exhausted=budget_exhausted, event_publisher=event_publisher)  # 让生产入口真正经过 LangGraph 节点图。
+
+    async def run_direct(self, query: QueryIntent, *, budget_exhausted: bool = False, event_publisher: SearchRunEventPublisher | None = None) -> MultiRoundSearchResult:
+        """从首轮主查询开始执行实际多轮服务，供 LangGraph 执行节点调用。
 
         参数：
             query：已完成自然语言规划或用户编辑的结构化搜索意图。

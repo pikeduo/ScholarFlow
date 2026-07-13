@@ -9,6 +9,8 @@ pydantic-settings==2.14.2
 SQLAlchemy==2.0.51
 # 异步学术数据源 HTTP 客户端。
 httpx==0.28.1
+# 多轮检索实际节点编排。
+langgraph==1.0.8
 # BGE-M3 本地语义向量编码与粗排。
 FlagEmbedding==1.4.0
 # FAISS CPU 索引与 Python 数组转换。
