@@ -74,6 +74,30 @@ class MultiRoundSearchController:
 
         return await MultiRoundSearchWorkflow(self).run(query, budget_exhausted=budget_exhausted, event_publisher=event_publisher)  # 让生产入口真正经过 LangGraph 节点图。
 
+    def max_rounds_for(self, query: QueryIntent) -> int:
+        """按搜索模式返回已配置且已校验的硬轮次上限。"""
+        return self._deep_max_rounds if query.search_mode == "deep" else self._standard_max_rounds  # 将模式策略集中在服务层而非工作流节点。
+
+    async def recall_once(self, query: QueryIntent) -> MultiSourceRecallResult:
+        """委托已装配协调器执行一轮多源召回、排序和核验。"""
+        return await self._coordinator.recall(query)  # 保持来源调用、鉴权和排序细节位于服务与适配层。
+
+    def analyze_coverage(self, query: QueryIntent, papers: list[PaperRecord], *, new_valid_count: int, source_counts: dict[str, int], unavailable_sources: tuple[str, ...], current_round: int, max_rounds: int, budget_exhausted: bool, has_executable_query: bool) -> CoverageReport:
+        """委托纯本地覆盖分析服务生成继续或停止决策。"""
+        return self._coverage_gap_analyzer.analyze(query, papers, new_valid_count=new_valid_count, source_counts=source_counts, unavailable_sources=unavailable_sources, current_round=current_round, max_rounds=max_rounds, budget_exhausted=budget_exhausted, has_executable_query=has_executable_query)  # 不让 LangGraph 节点直接依赖具体分析实现。
+
+    def evolve_query(self, query: QueryIntent, coverage_report: CoverageReport, *, executed_subqueries: list[str]):
+        """委托查询演化服务生成遵循既有硬约束的补充子查询。"""
+        return self._query_evolution_service.evolve(query, coverage_report, executed_subqueries=executed_subqueries)  # 保持演化规则和去重逻辑位于可单测服务层。
+
+    def persist_state(self, state: SearchRunState) -> None:
+        """公开工作流所需的轻量状态持久化边界。"""
+        self._persist_state(state)  # 复用既有失败降级与安全日志行为。
+
+    def publish_event(self, publisher: SearchRunEventPublisher | None, state: SearchRunState, event_type: str, node: str, message: str, *, current_round: int | None = None, progress: float | None = None, metrics: dict[str, int | float | str | bool] | None = None) -> None:
+        """公开工作流所需的安全进度事件发布边界。"""
+        self._publish_event(publisher, state, event_type, node, message, current_round=current_round, progress=progress, metrics=metrics)  # 复用既有发布失败降级行为。
+
     async def run_direct(self, query: QueryIntent, *, budget_exhausted: bool = False, event_publisher: SearchRunEventPublisher | None = None) -> MultiRoundSearchResult:
         """从首轮主查询开始执行实际多轮服务，供 LangGraph 执行节点调用。
 

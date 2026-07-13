@@ -6,7 +6,6 @@ from backend.app.models.multi_source_recall import MultiSourceRecallResult  # �
 from backend.app.models.paper import PaperRecord  # 构造已核验的最终论文候选。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 构造主查询与待执行补充子查询。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计的来源计划。
-from backend.app.agents.search_workflow import MultiRoundSearchWorkflow  # 验证实际 LangGraph 节点编排边界。
 from backend.app.services.multi_round_search import MultiRoundSearchController  # 导入待测多轮搜索控制器。
 
 
@@ -40,20 +39,6 @@ class _RecordingStateStore:
     def get(self, _: str) -> None:
         """满足状态存储协议的读取方法，本用例不需要恢复读取。"""
         return None  # 控制器只在本轮执行中调用保存操作。
-
-
-class _DirectExecutor:
-    """记录 LangGraph 执行节点委托参数的离线多轮服务替身。"""
-
-    def __init__(self, result: object) -> None:
-        """保存工作流应原样返回的稳定多轮结果。"""
-        self._result = result  # 保存预设完成结果。
-        self.calls: list[tuple[QueryIntent, bool, object | None]] = []  # 记录工作流传递给直接服务的参数。
-
-    async def run_direct(self, query: QueryIntent, *, budget_exhausted: bool = False, event_publisher: object | None = None) -> object:
-        """记录调用且不访问真实来源、模型或存储。"""
-        self.calls.append((query, budget_exhausted, event_publisher))  # 保存节点委托边界供断言。
-        return self._result  # 返回预设的完整结果。
 
 
 def _query(*, target_paper_count: int = 2, search_mode: str = "standard", subqueries: list[QuerySubquery] | None = None) -> QueryIntent:
@@ -148,14 +133,11 @@ def test_controller_persists_initial_round_and_completed_snapshots() -> None:
     assert state_store.saved_states[-1].stop_reason == result.run_state.stop_reason  # 验证持久化终态与 API 返回保持一致。
 
 
-def test_langgraph_workflow_executes_direct_service_once_and_returns_its_result() -> None:
-    """LangGraph 应经过初始化、执行和结果整理节点，且只委托一次实际服务。"""
-    expected = asyncio.run(MultiRoundSearchController(_StubCoordinator([_round_result([_paper("paper-1")])])).run_direct(_query()))  # 先构造不经过图的稳定结果供工作流替身返回。
-    executor = _DirectExecutor(expected)  # 注入只记录调用的服务替身。
-    workflow = MultiRoundSearchWorkflow(executor)  # 编译包含三个实际节点的 LangGraph 工作流。
+def test_langgraph_conditional_nodes_do_not_recall_when_budget_is_exhausted() -> None:
+    """覆盖评估节点发现预算已耗尽时，条件边必须直接进入结果整理。"""
+    coordinator = _StubCoordinator([_round_result([_paper("paper-1")])])  # 仅提供首轮结果以检测图不会进入第二轮。
 
-    result = asyncio.run(workflow.run(_query(), budget_exhausted=True))  # 运行图并传递预算边界。
+    result = asyncio.run(MultiRoundSearchController(coordinator).run(_query(subqueries=[QuerySubquery(query="ETT time series forecasting", language="en", purpose="dataset")]), budget_exhausted=True))  # 让条件图在首轮覆盖评估后触发预算停止。
 
-    assert result is expected  # 验证工作流返回执行节点产生的同一稳定结果。
-    assert len(executor.calls) == 1  # 验证图不会重复调用多源检索服务。
-    assert executor.calls[0][1] is True  # 验证预算状态被完整透传至实际服务。
+    assert len(coordinator.queries) == 1  # 验证预算条件边没有进入查询演化后的第二轮召回。
+    assert result.run_state.stop_reason == "已达到 API、Token、费用或时间预算上限"  # 验证最终结果保留覆盖服务给出的稳定停止原因。
