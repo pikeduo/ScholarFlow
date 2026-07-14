@@ -9,6 +9,7 @@ import CitationTimelineGraph from '../components/CitationTimelineGraph.vue' // �
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
+import { resolveSearchPageJump } from '../utils/searchResults.js' // 严格校验用户输入的目标页码。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -60,6 +61,8 @@ const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE �
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
 const resultPage = ref(1) // 保存当前结果分页页码。
+const resultPageJumpInput = ref('1') // 保存用户尚未提交的目标页码输入。
+const resultPageJumpError = ref('') // 保存页码跳转的本地范围校验提示。
 const resultSort = ref('relevance') // 保存服务端支持的当前展示排序策略。
 const resultPageData = ref({ items: [], total: 0, page: 1, page_size: 5, total_pages: 1 }) // 保存服务端返回的当前结果页及分页元数据。
 const resultPageLoading = ref(false) // 标记已保存结果页是否正在读取。
@@ -105,10 +108,14 @@ const paperPagination = computed(() => resultPageData.value) // 仅消费服务�
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
 watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd, resultSort.value], () => { // 任意筛选或排序变化时回到第一页避免越界空页。
   resultPage.value = 1 // 保持筛选后的首屏结果可见。
+  resultPageJumpInput.value = '1' // 筛选变化时同步将待跳转页码恢复为首页。
+  resultPageJumpError.value = '' // 筛选变化后清除不再适用的旧范围提示。
   void loadSearchResultPage() // 由服务端基于已保存结果执行筛选、排序与分页。
 })
 
 watch(() => resultPage.value, () => { // 用户切换页码时只读取同次已保存结果，不重新检索。
+  resultPageJumpInput.value = String(resultPage.value) // 成功切页后同步输入框，避免显示过期页码。
+  resultPageJumpError.value = '' // 当前页已变化时清除旧的本地跳转提示。
   void loadSearchResultPage() // 将当前页码作为服务端分页参数。
 })
 
@@ -118,6 +125,8 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   resultFilters.yearStart = '' // 清除旧年份起点。
   resultFilters.yearEnd = '' // 清除旧年份终点。
   resultPage.value = 1 // 回到结果第一页。
+  resultPageJumpInput.value = '1' // 同步重置页码输入框。
+  resultPageJumpError.value = '' // 清除旧结果遗留的跳页校验提示。
   comparisonPaperIds.value = [] // 新运行结果不能复用旧运行的论文选择。
   comparisonResult.value = null // 清除旧结果可能对应的比较列。
   comparisonError.value = '' // 清除旧运行比较错误。
@@ -269,6 +278,17 @@ function changeResultPage(nextPage) { // 切换筛选后结果页，并限制在
   if (normalizedPage === resultPage.value) return // 首尾页点击无效时不产生额外请求或滚动。
   shouldScrollToResultList.value = true // 只在用户实际翻页时请求定位到新页首篇论文。
   resultPage.value = normalizedPage // 交由现有页码监听器读取对应的已保存结果。
+}
+
+function submitResultPageJump() { // 校验用户输入并复用既有翻页与滚动流程。
+  const targetPage = resolveSearchPageJump(resultPageJumpInput.value, paperPagination.value.total_pages) // 根据当前服务端分页摘要校验输入。
+  if (targetPage === null) { // 页码超出范围或不是整数时不发起请求。
+    resultPageJumpError.value = `请输入 1 至 ${paperPagination.value.total_pages} 的整数页码` // 提供不泄露后端细节的本地校验提示。
+    return // 保持当前页面和结果列表不变。
+  }
+  resultPageJumpError.value = '' // 有效输入时先清除旧提示。
+  resultPageJumpInput.value = String(targetPage) // 规范化可能包含前导空白的有效输入。
+  changeResultPage(targetPage) // 复用按钮翻页的服务端读取与定位行为。
 }
 
 function scrollToCurrentPageFirstPaper() { // 将新页第一篇论文定位到固定顶栏下方，隐藏前置的论文比较区。
@@ -804,6 +824,11 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <button type="button" :disabled="resultPageLoading || paperPagination.page === 1" @click="changeResultPage(paperPagination.page - 1)">上一页</button>
         <span>{{ `${paperPagination.page} / ${paperPagination.total_pages}` }}</span>
         <button type="button" :disabled="resultPageLoading || paperPagination.page === paperPagination.total_pages" @click="changeResultPage(paperPagination.page + 1)">下一页</button>
+        <form class="result-page-jump" @submit.prevent="submitResultPageJump">
+          <label>跳至 <input v-model="resultPageJumpInput" type="number" inputmode="numeric" min="1" :max="paperPagination.total_pages" step="1" :disabled="resultPageLoading" aria-label="输入目标页码"> 页</label>
+          <button type="submit" :disabled="resultPageLoading">跳转</button>
+        </form>
+        <small v-if="resultPageJumpError" class="result-page-jump-error" role="alert">{{ resultPageJumpError }}</small>
       </nav>
       <PaperDetailDrawer :paper="detailPaper" :loading="detailLoading" :error="detailError" @close="closePaperDetail" />
       <PaperComparisonDialog :result="comparisonResult" :loading="comparisonLoading" :error="comparisonError" @close="closePaperComparison" />
@@ -1757,6 +1782,38 @@ textarea::placeholder { /* 设置查询示例占位。 */
   color: #607487; /* 使用辅助文字色。 */
   font-size: 0.68rem; /* 保持分页信息紧凑。 */
   font-weight: 800; /* 提升页码可扫读性。 */
+}
+
+.result-page-jump { /* 将页码输入与提交操作收敛为紧凑表单。 */
+  display: inline-flex; /* 保持输入与按钮横向紧邻。 */
+  align-items: center; /* 垂直对齐页码控件。 */
+  gap: 0.35rem; /* 分隔输入框和跳转按钮。 */
+}
+
+.result-page-jump label { /* 保持跳转语句与输入框自然连读。 */
+  display: inline-flex; /* 让标签文本与输入框同行展示。 */
+  align-items: center; /* 垂直居中小型输入框。 */
+  gap: 0.28rem; /* 保留中文文字与数值之间的呼吸空间。 */
+  color: #607487; /* 使用分页摘要一致的辅助颜色。 */
+  font-size: 0.68rem; /* 不抢占论文列表的视觉层级。 */
+  font-weight: 700; /* 保证小字号的可读性。 */
+}
+
+.result-page-jump input { /* 限制页码输入宽度并保持与按钮一致的控件风格。 */
+  width: 3.2rem; /* 容纳常见页码且避免分页栏过宽。 */
+  padding: 0.45rem; /* 与分页按钮保持相近点击高度。 */
+  border: 1px solid #b8ccdc; /* 使用品牌蓝灰边界。 */
+  border-radius: 0.55rem; /* 保持分页控件圆角一致。 */
+  color: #2e6f95; /* 使用可读的交互文字色。 */
+  background: #ffffff; /* 让可编辑页码在浅背景中清晰可见。 */
+  font: inherit; /* 继承页面统一字体。 */
+  text-align: center; /* 让数值页码易于扫读。 */
+}
+
+.result-page-jump-error { /* 在分页栏附近展示局部校验错误。 */
+  flex-basis: 100%; /* 窄屏时让提示独占一行避免挤压控件。 */
+  color: #a3473e; /* 使用克制错误色提示输入范围。 */
+  font-size: 0.66rem; /* 保持错误提示为辅助信息。 */
 }
 
 .library-message { /* 展示收藏操作结果。 */

@@ -25,3 +25,13 @@ export function paginateSearchPapers(papers, page = 1, pageSize = 5) { // 接收
   const start = (safePage - 1) * safePageSize // 计算当前页第一条论文偏移。
   return { items: items.slice(start, start + safePageSize), total, page: safePage, pageSize: safePageSize, totalPages } // 返回渲染和分页控件所需稳定快照。
 }
+
+/** 将用户输入的页码严格校验为当前分页范围内的目标页。 */
+export function resolveSearchPageJump(value, totalPages) { // 接收页码输入文本和当前服务端返回的总页数。
+  const normalizedValue = String(value ?? '').trim() // 规范化输入框中的空白和数值文本。
+  const normalizedTotalPages = Number.isInteger(totalPages) && totalPages > 0 ? totalPages : 1 // 防御页面摘要尚未加载时的异常页数。
+  if (!/^\d+$/.test(normalizedValue)) return null // 拒绝小数、负数、科学计数法和非数字输入。
+  const page = Number(normalizedValue) // 在通过整数文本校验后转换为数值。
+  if (!Number.isSafeInteger(page) || page < 1 || page > normalizedTotalPages) return null // 拒绝超出当前结果范围的页码。
+  return page // 返回可直接交给既有服务端分页流程的目标页。
+}

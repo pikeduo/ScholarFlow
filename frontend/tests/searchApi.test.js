@@ -2,7 +2,7 @@ import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证�
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
 import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、翻译、详情、综合报告、比较、图谱、分页、历史、用量与运行恢复入口。
-import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
+import { filterSearchPapers, paginateSearchPapers, resolveSearchPageJump } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
   queryText: '检索 Transformer forecasting 论文', // 提供中英混合查询。
@@ -351,6 +351,14 @@ test('paginateSearchPapers 校正越界页码并保留稳定页面摘要', () =>
   assert.equal(page.page, 2) // 验证页码被校正为最后一页。
   assert.equal(page.totalPages, 2) // 验证总页数按固定页大小计算。
   assert.deepEqual(page.items.map((paper) => paper.paper_id), ['paper-3']) // 验证最后一页保留剩余论文。
+})
+
+test('resolveSearchPageJump 只接受当前结果范围内的整数页码', () => { // 验证页码跳转不会提交越界或非整数请求。
+  assert.equal(resolveSearchPageJump('3', 5), 3) // 验证范围内页码可直接用于跳转。
+  assert.equal(resolveSearchPageJump(' 5 ', 5), 5) // 验证首尾空白不会影响有效整数输入。
+  assert.equal(resolveSearchPageJump('0', 5), null) // 验证第一页之前的页码被拒绝。
+  assert.equal(resolveSearchPageJump('6', 5), null) // 验证超过总页数的输入被拒绝。
+  assert.equal(resolveSearchPageJump('1.5', 5), null) // 验证小数不会被错误截断为页码。
 })
 
 test('validateQueryIntent 拒绝倒置年份、候选不足和条件冲突', () => { // 验证编辑重搜的关键错误边界。
