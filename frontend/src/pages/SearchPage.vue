@@ -263,7 +263,7 @@ async function restoreRunFromUrl() { // 在页面首次挂载时恢复已有 run
 }
 
 function buildConditionChips(formSnapshot) { // 将已提交表单快照转换为结果区可回顾标签。
-  const chips = [{ label: '标准检索', tone: 'neutral' }] // 搜索页统一使用两轮标准检索策略。
+const chips = [{ label: '标准检索', tone: 'neutral' }] // 搜索页统一使用最多三轮的标准检索策略。
   if (formSnapshot.enableSemanticRanking) chips.push({ label: 'BGE-M3 粗排', tone: 'neutral' }) // 标识本次实际启用的本地语义模型。
   if (formSnapshot.enableCrossEncoderRanking) chips.push({ label: 'Cross Encoder 重排', tone: 'neutral' }) // 标识本次实际启用的本地精排模型。
   if (formSnapshot.startYear && formSnapshot.endYear) chips.push({ label: `${formSnapshot.startYear}–${formSnapshot.endYear}`, tone: 'neutral' }) // 展示年份范围。
@@ -626,7 +626,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
     <section class="search-hero" aria-labelledby="search-title">
       <div class="hero-copy">
         <p class="eyebrow">MULTI-SOURCE ACADEMIC DISCOVERY</p>
-        <h1 id="search-title">把复杂研究问题，<br><em>编织</em>成论文脉络。</h1>
+          <h1 id="search-title">从研究问题出发，<br><em>检索</em>相关论文。</h1>
         <p>描述你的研究目标、方法、数据集与限制条件。研索将跨来源召回论文，并逐层过滤、排序和核验证据。</p>
       </div>
       <form class="search-panel" aria-label="复杂文献搜索" @submit.prevent="submitSearch">
@@ -645,7 +645,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           <div class="ranking-options" role="group" aria-label="本地排序选项">
             <label><input v-model="form.enableSemanticRanking" type="checkbox" :disabled="loading">启用 BGE-M3 语义粗排</label>
             <label><input v-model="form.enableCrossEncoderRanking" type="checkbox" :disabled="loading">启用 Cross Encoder 重排</label>
-            <p>标准检索最多执行 2 轮。两项均默认关闭；开启任一项会加载本地模型，搜索时长可能变得极长。</p>
+          <p>标准检索最多执行 3 轮。两项均默认关闭；开启任一项会加载本地模型，搜索时长可能变长。</p>
           </div>
           <button class="advanced-toggle" type="button" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced">
             {{ showAdvanced ? '收起约束条件' : '添加约束条件' }}
