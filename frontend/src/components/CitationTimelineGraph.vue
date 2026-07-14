@@ -116,6 +116,8 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .attr('fill', 'none') // 边不填充任何区域。
     .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : '#2f7598') // 清楚区分版本族虚线和真实引用边，并增强真实引用的颜色对比。
     .attr('stroke-width', (edge) => isEdgeRelated(edge, activeNodeId) ? 2.8 : 1.4) // 默认保持真实引用可见，悬浮关联边再明显加粗。
+    .attr('stroke-linecap', 'round') // 让曲线路径和箭头连接处更柔和。
+    .attr('stroke-linejoin', 'round') // 保持辅助虚线转折处的视觉连续性。
     .attr('stroke-opacity', (edge) => isEdgeRelated(edge, activeNodeId) ? 0.9 : 0.16) // 未激活时保留足够对比度，交互时仅淡出非关联边。
     .attr('stroke-dasharray', (edge) => edge.edgeType === 'same_work' ? '5 4' : null) // 版本族只在用户显式开启时显示为黄色虚线。
     .attr('marker-end', (edge) => edge.edgeType === 'cites' ? 'url(#citation-timeline-arrow)' : null) // 仅真实引用关系带方向箭头。

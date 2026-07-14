@@ -60,7 +60,7 @@ test('一阶邻域只保留选中论文的直接引用关系', () => { // 验证
   assert.equal(result.edges.length, 2) // 验证边也同步收缩为直接关系。
 })
 
-test('同一年份引用边离开时间列形成横向弧线', () => { // 验证同列节点之间的箭头不会退化为难以识别的竖线。
+test('同年真实引用边从节点上下方离开并进入', () => { // 验证同年引用关系为右侧标题留出空白区域。
   const sameYearGraph: CitationGraphData = { // 构造两个同年且存在真实引用关系的最小图。
     nodes: [ // 两个节点会被布局到同一条年份时间列。
       { paper_id: 'same-year-a', title: 'Same year source', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明引用边起点。
@@ -76,6 +76,22 @@ test('同一年份引用边离开时间列形成横向弧线', () => { // 验证
   const pathNumbers = edge?.path.match(/-?\d+\.\d+/g)?.map(Number) || [] // 按路径格式提取起点、控制点和终点坐标。
 
   assert.ok(source && edge) // 确认同年节点和真实引用边均进入当前主图。
-  assert.equal(pathNumbers.length, 6) // 验证路径仍是一个由六个数值组成的二次贝塞尔曲线。
-  assert.notEqual(pathNumbers[2], source.x) // 验证控制点横坐标离开同一年份的时间列，箭头获得可见弧度。
+  assert.equal(pathNumbers.length, 8) // 验证真实引用边使用八个数值组成的三次贝塞尔曲线。
+  assert.equal(pathNumbers[0], source.x) // 验证路径从节点正上方或正下方离开。
+  assert.notEqual(pathNumbers[1], source.y) // 验证路径起点不再位于节点圆心。
+  assert.equal(pathNumbers[2], source.x) // 验证起点切线保持垂直，避免扫向右侧标题。
+  assert.notEqual(pathNumbers[3], pathNumbers[1]) // 验证曲线在离开节点后继续形成可见弧度。
+})
+
+test('真实引用箭头从目标圆圈上下方垂直进入，避开右侧标题区域', () => { // 验证箭头路径不再经过每个节点右侧的论文标题。
+  const result = layout() // 计算包含跨年份真实引用边的默认布局。
+  const edge = result.edges.find((item) => item.id === 'cites:paper:method:family:family-a') // 定位从方法论文指向版本族节点的真实引用边。
+  const target = result.nodes.find((node) => node.id === 'family:family-a') // 读取被引目标节点的圆心位置。
+  const pathNumbers = edge?.path.match(/-?\d+\.\d+/g)?.map(Number) || [] // 提取二次贝塞尔的起点、控制点和终点坐标。
+
+  assert.ok(edge && target) // 确认真实引用边和目标节点均存在。
+  assert.equal(pathNumbers.length, 8) // 验证真实引用边使用三次贝塞尔曲线。
+  assert.equal(pathNumbers[4], target.x) // 验证终点控制点保持在目标圆心所在时间列。
+  assert.equal(pathNumbers[6], target.x) // 验证箭头从目标圆圈正上方或正下方进入。
+  assert.notEqual(pathNumbers[7], target.y) // 验证箭头尖端不落在圆心，从而不接触右侧标题。
 })

@@ -169,24 +169,41 @@ function findWeakComponents(nodes: VisualSeed[], edges: VisualEdge[]): Map<strin
   return components // 返回完整、稳定的弱连通分量映射。
 }
 
-/** 将关系端点向圆形节点边缘收缩，并为同年论文生成横向可辨识弧线。 */
-function buildEdgePath(source: CitationLayoutNode, target: CitationLayoutNode, edgeType: CitationEdgeType): string { // 根据两个已定位节点生成 SVG 二次贝塞尔路径。
+/** 生成关系边路径，并为右侧论文标题留出连续的安全区域。 */
+function buildEdgePath(source: CitationLayoutNode, target: CitationLayoutNode, edgeType: CitationEdgeType): string { // 根据两个已定位节点生成 SVG 贝塞尔路径。
   const dx = target.x - source.x // 计算从引用方到被引方的横向差值。
   const dy = target.y - source.y // 计算从引用方到被引方的纵向差值。
   const distance = Math.hypot(dx, dy) || 1 // 避免重叠节点导致除以零。
+
+  if (edgeType === 'cites') { // 真实引用边需要主动绕开节点右侧标题。
+    // 目标在下方时，从源节点下方离开、从目标上方进入；反之亦然。
+    // 同年节点按稳定标识选定方向，避免布局刷新时箭头翻转。
+    const verticalDirection = Math.abs(dy) < 1 ? (source.id.localeCompare(target.id, 'en') <= 0 ? -1 : 1) : (dy > 0 ? 1 : -1) // 确定上下绕行方向。
+    const startOffset = source.radius + 3 // 让路径从源节点圆边缘外开始。
+    const endOffset = target.radius + 10 // 为箭头尖端和目标圆边缘预留间距。
+    const startX = source.x // 垂直离开不会进入源节点右侧标题区。
+    const startY = source.y + verticalDirection * startOffset // 从源节点上方或下方离开。
+    const endX = target.x // 垂直进入不会穿过目标节点右侧标题。
+    const endY = target.y - verticalDirection * endOffset // 从目标节点相反一侧进入。
+    const curveDepth = Math.min(64, Math.max(30, Math.abs(dy) * 0.22 + 18)) // 根据纵向间距控制曲线弧度。
+    const sourceControlY = startY + verticalDirection * curveDepth // 保持起点切线垂直。
+    const targetControlY = endY - verticalDirection * curveDepth // 保持终点切线垂直。
+    return `M ${startX.toFixed(1)} ${startY.toFixed(1)} C ${startX.toFixed(1)} ${sourceControlY.toFixed(1)} ${endX.toFixed(1)} ${targetControlY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}` // 返回不接触右侧标题的平滑三次曲线。
+  }
+
   const isSameYearColumn = Math.abs(dx) < 1 // 同一年份节点位于同一时间列，不能继续使用同列控制点。
-  const startOffset = source.radius + 2 // 让边从引用方圆边缘而非圆心开始。
-  const endOffset = target.radius + (edgeType === 'cites' ? 9 : 3) // 为箭头或版本族虚线在目标边缘保留不同空间。
-  const startX = source.x + (dx / distance) * startOffset // 计算起点收缩后的横坐标。
-  const startY = source.y + (dy / distance) * startOffset // 计算起点收缩后的纵坐标。
-  const endX = target.x - (dx / distance) * endOffset // 计算终点收缩后的横坐标。
-  const endY = target.y - (dy / distance) * endOffset // 计算终点收缩后的纵坐标。
-  const verticalBend = isSameYearColumn ? 0 : Math.min(42, Math.max(16, Math.abs(dy) * 0.28 + 12)) * (source.y <= target.y ? 1 : -1) // 跨年份边维持纵向弯曲以避开相邻节点。
-  const horizontalDirection = source.id.localeCompare(target.id, 'en') <= 0 ? 1 : -1 // 使用稳定标识决定同年边向左或向右弯曲，避免刷新后跳变。
-  const horizontalBend = isSameYearColumn ? 42 * horizontalDirection : 0 // 同年边必须离开时间列，才能显式呈现路径和终点箭头。
-  const controlX = (startX + endX) / 2 + horizontalBend // 同年边将控制点移出节点和年份参考线所在竖列。
-  const controlY = (startY + endY) / 2 + verticalBend // 跨年份边继续沿纵向偏移，同年边保持两个端点的中点高度。
-  return `M ${startX.toFixed(1)} ${startY.toFixed(1)} Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}` // 返回可直接写入 SVG path 的稳定路径。
+  const startOffset = source.radius + 2 // 让辅助关系从源节点圆边缘而非圆心开始。
+  const endOffset = target.radius + 3 // 让辅助关系在目标节点圆边缘前结束。
+  const startX = source.x + (dx / distance) * startOffset // 沿关系方向离开源节点。
+  const startY = source.y + (dy / distance) * startOffset // 沿关系方向离开源节点。
+  const endX = target.x - (dx / distance) * endOffset // 沿反向关系方向进入目标节点。
+  const endY = target.y - (dy / distance) * endOffset // 沿反向关系方向进入目标节点。
+  const verticalBend = isSameYearColumn ? 0 : Math.min(42, Math.max(16, Math.abs(dy) * 0.28 + 12)) * (source.y <= target.y ? 1 : -1) // 跨年份辅助边维持纵向弯曲。
+  const horizontalDirection = source.id.localeCompare(target.id, 'en') <= 0 ? 1 : -1 // 保持同年辅助边方向稳定。
+  const horizontalBend = isSameYearColumn ? 42 * horizontalDirection : 0 // 同年辅助边离开时间列以便阅读。
+  const controlX = (startX + endX) / 2 + horizontalBend // 计算二次曲线控制点横坐标。
+  const controlY = (startY + endY) / 2 + verticalBend // 计算二次曲线控制点纵坐标。
+  return `M ${startX.toFixed(1)} ${startY.toFixed(1)} Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}` // 返回版本族辅助关系的稳定路径。
 }
 
 /** 构造默认时间分层、分支分离且孤立节点折叠的完整引用图布局。 */
