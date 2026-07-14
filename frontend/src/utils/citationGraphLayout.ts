@@ -89,7 +89,7 @@ interface VisualEdge { // 表示映射到视觉节点后的内部关系边。
 const HORIZONTAL_MARGIN = 92 // 为年份标签和边界保留左右空间。
 const TOP_MARGIN = 58 // 为年份刻度和图例保留顶部空间。
 const COMPONENT_GAP = 84 // 让不同引用分支形成明确的垂直留白。
-const NODE_ROW_GAP = 72 // 为同一年多个节点保留不重叠行距。
+const NODE_ROW_GAP = 72 // 为同一年多个节点和同年弧线保留不重叠行距。
 const ISOLATE_GRID_GAP = 112 // 为底部孤立论文网格保留稳定单元间距。
 
 /** 将空值和异常年份统一为未知，防止时间轴出现不可信列。 */

@@ -53,6 +53,10 @@ function shortenTitle(title: string, maxLength = 24): string { // 生成少量�
   return title.length > maxLength ? `${title.slice(0, maxLength).trim()}…` : title // 保持长标题仅在悬浮和侧栏完整展示。
 }
 
+function labelWidth(title: string): number { // 为右侧标题计算足以遮挡路径的稳定标签底板宽度。
+  return Math.min(184, Math.max(76, shortenTitle(title).length * 6.5 + 16)) // 按小字号英文平均宽度估算，并限制极短或极长标题的占用。
+}
+
 function communityColor(community: number, isIsolate: boolean): string { // 为引用分支提供稳定的可区分颜色。
   if (isIsolate) return '#d7e2ea' // 孤立论文使用中性颜色，避免被误解为一个引用社区。
   return d3.schemeTableau10[Math.abs(community) % d3.schemeTableau10.length] || '#4f82a0' // 对社区编号循环取色以保证稳定性。
@@ -136,19 +140,25 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .attr('stroke', (node) => node.id === selectedNodeId.value ? '#1b4965' : '#3d7895') // 为选中节点提供稳定边框反馈。
     .attr('stroke-width', (node) => node.id === selectedNodeId.value ? 2.7 : 1.5) // 选中节点使用稍粗描边。
   nodeGroups.append('title').text((node) => `${node.title}\n年份：${node.year || '未知'}\n入度：${node.inDegree}，出度：${node.outDegree}${node.memberCount > 1 ? `\n合并版本：${node.memberCount} 篇` : ''}`) // 悬浮时展示完整信息而非永久铺满标题。
-  nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点绘制标签。
-    .append('text') // 创建短标签文本。
-    .attr('x', 0) // 标签与节点中心对齐，避免占用同一行引用边经过的右侧区域。
-    .attr('y', (node) => node.radius + 15) // 标签固定置于圆圈下方，与箭头和时间列保持间隔。
-    .attr('text-anchor', 'middle') // 让文字从圆心向两侧展开，保持节点和标签对应关系清晰。
+  const labelGroups = nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点创建右侧标签组。
+    .append('g') // 使用独立容器同时承载路径遮挡底板和文字。
+    .attr('transform', (node) => `translate(${node.radius + 8},-9)`) // 将整组固定放在圆圈右侧，并与圆心垂直居中。
+    .attr('pointer-events', 'none') // 标签组不抢占节点的悬浮与点击事件。
+  labelGroups.append('rect') // 先绘制与画布同色的右侧标签底板，阻断下层引用路径穿过文字。
+    .attr('x', 0) // 让底板从节点右侧间隔处开始，不回压圆圈。
+    .attr('y', 0) // 让底板围绕节点圆心所在行垂直居中。
+    .attr('width', (node) => labelWidth(node.title)) // 按截断后的标题长度提供可读宽度。
+    .attr('height', 18) // 为十一像素文字保留上下内边距。
+    .attr('rx', 4) // 使用小圆角避免形成生硬矩形。
+    .attr('fill', '#fbfdfe') // 与图画布浅色底保持一致，遮住边线但不显得像额外卡片。
+    .attr('fill-opacity', 0.98) // 保持几乎不透明，防止深色箭头透出文字区域。
+  labelGroups.append('text') // 在遮挡底板上绘制右侧短标签文本。
+    .attr('x', 8) // 为文字和底板左边缘留出稳定内边距。
+    .attr('y', 13) // 让文字基线位于底板内垂直居中位置。
+    .attr('text-anchor', 'start') // 从圆圈右侧向外展开，明确表达论文标题的归属。
     .attr('fill', '#31576e') // 使用足够深的阅读颜色。
     .attr('font-size', 11) // 降低标签视觉权重。
     .attr('font-weight', 650) // 仍确保小字号可阅读。
-    .attr('paint-order', 'stroke') // 先绘制白色描边，避免路径穿过文字时降低可读性。
-    .attr('stroke', '#fbfdfe') // 使用画布近似底色隔开标签和下方可能经过的引用边。
-    .attr('stroke-width', 3) // 保留轻量文字留白，不额外绘制背景矩形。
-    .attr('stroke-linejoin', 'round') // 让文字描边边缘平滑，避免小字号产生锯齿感。
-    .attr('pointer-events', 'none') // 文本不抢占节点的悬浮与点击事件。
     .text((node) => shortenTitle(node.title)) // 限制永久标题长度。
 }
 
