@@ -688,7 +688,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <p v-else-if="searchHistoryError" class="history-message is-error" role="alert">{{ searchHistoryError }}</p>
         <ul v-else-if="searchHistory.length">
           <li v-for="item in searchHistory" :key="item.run_id">
-            <div><p class="history-query" :title="item.query_text">{{ item.query_text }}</p><strong>{{ item.status }}</strong><span>{{ `${item.current_round} / ${item.max_rounds} 轮 · ${formatHistoryTime(item.updated_at)}` }}</span><small>{{ item.stop_reason || (item.result_ready ? '结果已保存' : '结果尚未就绪') }}</small></div>
+            <div><div class="history-title-row"><strong>{{ item.status }}</strong><p class="history-query" :title="item.query_text">{{ item.query_text }}</p></div><span>{{ `${item.current_round} / ${item.max_rounds} 轮 · ${formatHistoryTime(item.updated_at)}` }}</span><small>{{ item.stop_reason || (item.result_ready ? '结果已保存' : '结果尚未就绪') }}</small></div>
             <div class="history-actions"><button type="button" :disabled="loading" @click="restoreSearchHistoryRun(item.run_id)">{{ item.result_ready ? '恢复结果' : '查看状态' }}</button><button type="button" class="history-delete" :disabled="deletingRunId === item.run_id || !['completed', 'failed', 'cancelled'].includes(item.status)" @click="removeSearchHistoryRun(item)">{{ deletingRunId === item.run_id ? '正在清理…' : '清理' }}</button></div>
           </li>
         </ul>
@@ -985,8 +985,20 @@ h1 em { /* 突出“编织”产品隐喻。 */
   min-width: 0; /* 允许较长停止原因在窄屏换行。 */
 }
 
-.history-query { /* 将用户搜索问题限制为历史条目中的单行摘要。 */
-  width: min(100%, 42rem); /* 为右侧操作按钮和窄屏布局保留可用空间。 */
+.history-title-row { /* 将运行状态与搜索问题放在同一行。 */
+  display: flex; /* 让 completed 等状态紧邻问题显示。 */
+  align-items: baseline; /* 保持中英文状态和问题文本的基线对齐。 */
+  min-width: 0; /* 允许右侧问题文本在窄屏安全截断。 */
+  gap: 0.55rem; /* 在状态与搜索问题之间保留适当距离。 */
+}
+
+.history-title-row strong { /* 防止状态文字被长问题压缩。 */
+  flex: 0 0 auto; /* 始终完整展示 completed 等运行状态。 */
+}
+
+.history-query { /* 将用户搜索问题限制为状态右侧的单行摘要。 */
+  flex: 1 1 auto; /* 占用状态右侧的剩余可用空间。 */
+  min-width: 0; /* 允许 flex 子项触发省略号截断。 */
   margin: 0; /* 清除段落默认外边距以保持条目紧凑。 */
   overflow: hidden; /* 隐藏超出历史条目宽度的文本。 */
   color: #31566e; /* 使用比状态信息更醒目的文字层级。 */
