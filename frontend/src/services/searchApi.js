@@ -393,7 +393,7 @@ export async function translateDiscoveryToChinese(runId, url, field, fetchImpl =
   if (!response.ok) throw await parseSearchError(response) // 复用统一公共错误解析并保留后端安全摘要。
   try { // 校验卡片渲染中文标题和摘要片段所需的最小响应契约。
     const translation = await response.json() // 解析后端返回的按需翻译响应。
-    if (!translation || translation.field !== field || typeof translation.discovery_id !== 'string' || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('网页发现翻译数据不完整') // 防止损坏响应覆盖原始网页发现文本。
+    if (!translation || translation.field !== field || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('网页发现翻译数据不完整') // 防止损坏响应覆盖原始网页发现文本。
     return translation // 返回经过最小校验的中文翻译。
   } catch (error) { // 将 JSON 解析或字段错误映射为稳定前端错误。
     if (error instanceof SearchApiError) throw error // 保留明确的响应契约错误。

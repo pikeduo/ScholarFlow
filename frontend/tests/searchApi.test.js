@@ -181,7 +181,7 @@ test('translateDiscoveryToChinese 只提交已保存运行、网页地址和字�
     capturedUrl = url // 记录后端翻译资源路径。
     assert.equal(options.method, 'POST') // 验证翻译由显式用户操作触发。
     assert.equal(options.body, undefined) // 验证前端不提交或伪造网页标题和摘要片段正文。
-    return { ok: true, status: 200, json: async () => ({ discovery_id: 'discovery:1', field: 'snippet', text_zh: '中文网页摘要', model_name: 'deepseek-v4-flash' }) } // 返回最小完整单字段翻译响应。
+    return { ok: true, status: 200, json: async () => ({ field: 'snippet', text_zh: '中文网页摘要', model_name: 'deepseek-v4-flash' }) } // 返回最小完整单字段翻译响应。
   }
 
   const translation = await translateDiscoveryToChinese('run-1', 'https://example.com/a?x=1', 'snippet', fetchStub, 'http://test.local') // 请求已保存网页发现的摘要片段翻译。
