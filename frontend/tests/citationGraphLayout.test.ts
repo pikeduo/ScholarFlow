@@ -59,3 +59,23 @@ test('一阶邻域只保留选中论文的直接引用关系', () => { // 验证
   assert.deepEqual(ids, new Set(['family:family-a', 'paper:method', 'paper:application'])) // 验证只保留中心、引用它和被它引用的论文。
   assert.equal(result.edges.length, 2) // 验证边也同步收缩为直接关系。
 })
+
+test('同一年份引用边离开时间列形成横向弧线', () => { // 验证同列节点之间的箭头不会退化为难以识别的竖线。
+  const sameYearGraph: CitationGraphData = { // 构造两个同年且存在真实引用关系的最小图。
+    nodes: [ // 两个节点会被布局到同一条年份时间列。
+      { paper_id: 'same-year-a', title: 'Same year source', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明引用边起点。
+      { paper_id: 'same-year-b', title: 'Same year target', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明引用边终点。
+    ],
+    edges: [{ source_paper_id: 'same-year-a', target_paper_id: 'same-year-b', edge_type: 'cites' }], // 仅保留一条可审计的同年真实引用边。
+    truncated: false, // 声明未发生后端节点裁剪。
+    max_nodes: 30, // 保持与生产默认上限一致。
+  }
+  const result = buildCitationGraphLayout(sameYearGraph, { width: 960, collapseFamilies: true, includeVersionLinks: false, includeIsolates: false }) // 计算不依赖浏览器的稳定布局。
+  const edge = result.edges[0] // 读取唯一边的 SVG 二次曲线路径。
+  const source = result.nodes.find((node) => node.id === 'paper:same-year-a') // 读取路径起点节点坐标。
+  const pathNumbers = edge?.path.match(/-?\d+\.\d+/g)?.map(Number) || [] // 按路径格式提取起点、控制点和终点坐标。
+
+  assert.ok(source && edge) // 确认同年节点和真实引用边均进入当前主图。
+  assert.equal(pathNumbers.length, 6) // 验证路径仍是一个由六个数值组成的二次贝塞尔曲线。
+  assert.notEqual(pathNumbers[2], source.x) // 验证控制点横坐标离开同一年份的时间列，箭头获得可见弧度。
+})

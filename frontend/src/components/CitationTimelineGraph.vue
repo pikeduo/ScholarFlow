@@ -78,18 +78,19 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   svg.attr('viewBox', `0 0 ${currentLayout.width} ${currentLayout.height}`) // 让画布随布局高度扩展并支持响应式缩放。
   svg.attr('aria-label', '本次搜索结果的时间分层引用网络') // 为辅助技术提供图形语义。
 
-  const definitions = svg.append('defs') // 定义仅用于真实引用方向的细箭头。
+  const definitions = svg.append('defs') // 定义仅用于真实引用方向的高对比箭头。
   definitions.append('marker') // 创建箭头 marker。
     .attr('id', 'citation-timeline-arrow') // 使用固定标识供当前组件内引用。
-    .attr('viewBox', '0 -4 8 8') // 设置紧凑箭头坐标系。
-    .attr('refX', 7) // 将箭头尖端对齐到路径终点。
+    .attr('viewBox', '0 -5 10 10') // 扩大箭头坐标系以提升同年边终点的可辨识度。
+    .attr('refX', 9) // 将箭头尖端对齐到已避开目标圆形的路径终点。
     .attr('refY', 0) // 保持箭头垂直居中。
-    .attr('markerWidth', 5) // 使用较小箭头，避免遮挡目标节点。
-    .attr('markerHeight', 5) // 使用较小箭头，避免遮挡目标节点。
+    .attr('markerWidth', 8) // 使用固定像素的较大箭头，避免在细边上难以辨认。
+    .attr('markerHeight', 8) // 保持箭头长宽一致，避免方向变化时变形。
+    .attr('markerUnits', 'userSpaceOnUse') // 不随边宽缩小，确保普通状态下箭头仍清晰可见。
     .attr('orient', 'auto') // 让箭头自动沿引用方向旋转。
     .append('path') // 绘制箭头三角形。
-    .attr('d', 'M0,-3 L7,0 L0,3 Z') // 生成简洁的箭头形状。
-    .attr('fill', '#6c9fba') // 使用浅蓝色以降低边的视觉重量。
+    .attr('d', 'M0,-4 L9,0 L0,4 Z') // 生成尖端清晰且不遮挡目标节点的箭头形状。
+    .attr('fill', '#2f7598') // 与真实引用边保持一致的深蓝色，提高方向提示对比度。
 
   const yearX = new Map<number, number>() // 汇总每个年份的固定横轴位置。
   for (const node of currentLayout.nodes) { // 遍历主图节点寻找可用年份列。
@@ -109,9 +110,9 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .join('path') // 创建当前状态所需路径。
     .attr('d', (edge) => edge.path) // 使用布局模块计算的避让节点的曲线路径。
     .attr('fill', 'none') // 边不填充任何区域。
-    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : '#6c9fba') // 清楚区分版本族虚线和真实引用边。
-    .attr('stroke-width', (edge) => isEdgeRelated(edge, activeNodeId) ? 2.1 : 1) // 悬浮关联边才加粗。
-    .attr('stroke-opacity', (edge) => isEdgeRelated(edge, activeNodeId) ? 0.82 : 0.12) // 非关联边在交互时淡出。
+    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : '#2f7598') // 清楚区分版本族虚线和真实引用边，并增强真实引用的颜色对比。
+    .attr('stroke-width', (edge) => isEdgeRelated(edge, activeNodeId) ? 2.8 : 1.4) // 默认保持真实引用可见，悬浮关联边再明显加粗。
+    .attr('stroke-opacity', (edge) => isEdgeRelated(edge, activeNodeId) ? 0.9 : 0.16) // 未激活时保留足够对比度，交互时仅淡出非关联边。
     .attr('stroke-dasharray', (edge) => edge.edgeType === 'same_work' ? '5 4' : null) // 版本族只在用户显式开启时显示为黄色虚线。
     .attr('marker-end', (edge) => edge.edgeType === 'cites' ? 'url(#citation-timeline-arrow)' : null) // 仅真实引用关系带方向箭头。
 
@@ -137,11 +138,16 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   nodeGroups.append('title').text((node) => `${node.title}\n年份：${node.year || '未知'}\n入度：${node.inDegree}，出度：${node.outDegree}${node.memberCount > 1 ? `\n合并版本：${node.memberCount} 篇` : ''}`) // 悬浮时展示完整信息而非永久铺满标题。
   nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点绘制标签。
     .append('text') // 创建短标签文本。
-    .attr('x', (node) => node.radius + 6) // 放在节点右侧以减少与边重叠。
-    .attr('y', 4) // 让文本与节点中心垂直对齐。
+    .attr('x', 0) // 标签与节点中心对齐，避免占用同一行引用边经过的右侧区域。
+    .attr('y', (node) => node.radius + 15) // 标签固定置于圆圈下方，与箭头和时间列保持间隔。
+    .attr('text-anchor', 'middle') // 让文字从圆心向两侧展开，保持节点和标签对应关系清晰。
     .attr('fill', '#31576e') // 使用足够深的阅读颜色。
     .attr('font-size', 11) // 降低标签视觉权重。
     .attr('font-weight', 650) // 仍确保小字号可阅读。
+    .attr('paint-order', 'stroke') // 先绘制白色描边，避免路径穿过文字时降低可读性。
+    .attr('stroke', '#fbfdfe') // 使用画布近似底色隔开标签和下方可能经过的引用边。
+    .attr('stroke-width', 3) // 保留轻量文字留白，不额外绘制背景矩形。
+    .attr('stroke-linejoin', 'round') // 让文字描边边缘平滑，避免小字号产生锯齿感。
     .attr('pointer-events', 'none') // 文本不抢占节点的悬浮与点击事件。
     .text((node) => shortenTitle(node.title)) // 限制永久标题长度。
 }
