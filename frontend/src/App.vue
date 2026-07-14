@@ -25,12 +25,8 @@ function scrollToBottom() { // 平滑滚动到页面文档底部。
   <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
   <div class="app-frame">
     <header class="topbar">
-      <a class="brand" href="http://localhost:5173/" aria-label="前往 ScholarFlow 首页">
+      <a class="brand" href="http://localhost:5173/" aria-label="前往首页">
         <span class="brand-mark" aria-hidden="true">研</span>
-        <span class="brand-copy">
-          <strong>ScholarFlow</strong>
-          <small>研索</small>
-        </span>
       </a>
       <nav class="primary-nav" aria-label="主要功能">
         <button :class="['nav-link', { 'is-active': activePage === 'search' }]" type="button" :aria-current="activePage === 'search' ? 'page' : undefined" @click="showPage('search')">文献搜索</button>
@@ -91,24 +87,6 @@ function scrollToBottom() { // 平滑滚动到页面文档底部。
   box-shadow: 0 8px 18px rgba(23, 63, 122, 0.2); /* 增加轻微浮层感。 */
   font-family: "STKaiti", "KaiTi", serif; /* 使用书卷感字体强化中文品牌。 */
   font-size: 1.2rem; /* 保证图章内字符清晰。 */
-}
-
-.brand-copy { /* 纵向排列英文品牌与中文名。 */
-  display: grid; /* 使用网格形成紧凑双行。 */
-  line-height: 1.05; /* 减少双行之间空隙。 */
-}
-
-.brand-copy strong { /* 突出英文产品名。 */
-  color: #102a43; /* 使用高对比海军蓝。 */
-  font-family: Georgia, "Times New Roman", serif; /* 使用学术出版风格衬线字体。 */
-  font-size: 1.05rem; /* 控制品牌不挤占导航空间。 */
-}
-
-.brand-copy small { /* 标注中文产品名。 */
-  margin-top: 0.25rem; /* 与英文名称建立清晰间距。 */
-  color: #718096; /* 降低辅助名称权重。 */
-  font-size: 0.72rem; /* 保持双语层级。 */
-  letter-spacing: 0.22em; /* 增加中文短词的视觉呼吸。 */
 }
 
 .primary-nav { /* 承载两个首版一级模块。 */
@@ -210,7 +188,6 @@ function scrollToBottom() { // 平滑滚动到页面文档底部。
     gap: 0.75rem; /* 缩小品牌与导航间距。 */
   }
 
-  .brand-copy,
   .system-status { /* 隐藏窄屏非核心信息。 */
     display: none; /* 为查询和结果内容保留空间。 */
   }
