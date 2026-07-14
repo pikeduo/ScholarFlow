@@ -323,20 +323,18 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .empty-library p { margin: 0.45rem 0 0; font-size: 0.75rem; } /* 提供返回搜索页的操作提示。 */
 .library-list { display: grid; gap: 0.9rem; } /* 纵向排列收藏卡片。 */
 .library-pagination { display: flex; justify-content: center; align-items: center; gap: 0.75rem; padding: 0.5rem 0; color: #536b7f; font-size: 0.74rem; } /* 在完整论文卡片列表后提供简洁的服务端翻页入口。 */
-.library-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); gap: 0.85rem; align-items: stretch; } /* 将论文阅读区置左，把关键词、阅读状态和备注固定在右侧管理区。 */
-.semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #456d84; background: #eaf3f8; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示本轮自然语言检索相似度。 */
-.semantic-score { color: #5d4a8f; background: #eee9fb; } /* 使用独立色调突出本轮自然语言检索相似度。 */
+.library-card { display: grid; grid-template-columns: minmax(0, 1fr) clamp(16rem, 23vw, 20rem); gap: 0.85rem; align-items: start; } /* 将论文阅读区置左，右侧管理区按自身内容高度收缩，避免被长论文卡片拉出空白。 */
+.semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #5d4a8f; background: #eee9fb; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示本轮自然语言检索相似度，并使用独立色调突出。 */
 .library-detail-button { padding: 0.45rem 0.7rem; border: 1px solid #b8ccdc; border-radius: 0.55rem; color: #536f7f; background: #fff; cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 800; } /* 在文献库卡片保留与搜索页同等的详情入口。 */
 .library-detail-button.is-selected { border-color: #b7d0bc; color: #28745a; background: #e8f7f0; } /* 标记已加入当前文献库比较集合的论文。 */
-.item-editor { display: grid; align-content: start; gap: 0.7rem; padding: 1rem; border: 1px solid #dfe7ef; border-radius: 0.85rem; background: #fbfdfe; } /* 在论文卡片右侧集中组织关键词、状态和备注编辑。 */
+.item-editor { display: grid; min-width: 0; align-content: start; gap: 0.7rem; padding: 0.9rem; border: 1px solid #dfe7ef; border-radius: 0.85rem; background: #fbfdfe; } /* 在论文卡片右侧集中组织关键词、状态和备注编辑，并随内容自适应高度。 */
 .item-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 0.65rem; padding-bottom: 0.1rem; color: #456d84; font-size: 0.72rem; } /* 为右侧个人管理信息提供清晰标题和当前阅读状态。 */
 .item-editor-header strong { color: #29465d; } /* 突出收藏管理区标题而不压过论文标题。 */
 .item-editor-header span { padding: 0.25rem 0.45rem; border-radius: 999px; color: #456d84; background: #eaf3f8; font-size: 0.64rem; font-weight: 800; } /* 将当前阅读状态显示为紧凑提示。 */
-.item-actions { display: flex; justify-content: flex-end; gap: 0.5rem; } /* 将保存和删除操作靠右排列。 */
-.item-actions { display: flex; justify-content: flex-end; gap: 0.5rem; } /* 将保存和删除操作靠右排列。 */
+.item-actions { display: flex; width: fit-content; margin-top: 0.1rem; margin-left: auto; gap: 0.5rem; } /* 将保存和删除操作收紧并推至右侧管理区的右下角。 */
 .delete-button { border: 1px solid #e2c7c4; color: #9b4b45; background: #fff5f4; } /* 使用克制危险色标记删除操作。 */
 @media (max-width: 1040px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } } /* 中等宽度优先保持每项输入可读。 */
 @media (max-width: 900px) { .library-card { grid-template-columns: 1fr; } .item-editor { grid-template-columns: minmax(0, 1fr) 8rem; } .item-editor-header, .note-field, .item-actions { grid-column: 1 / -1; } } /* 平板将右侧管理区移至论文下方并保留紧凑双列编辑。 */
 @media (max-width: 820px) { .filter-panel { grid-template-columns: 1fr 1fr; } .semantic-panel { grid-template-columns: 1fr 1fr; } } /* 平板将筛选器收敛为两列布局。 */
-@media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .item-editor-header, .note-field, .item-actions { grid-column: auto; } .item-actions { align-items: stretch; flex-direction: column; } } /* 手机使用单列控件和全宽操作。 */
+@media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .item-editor-header, .note-field, .item-actions { grid-column: auto; } .item-actions { width: 100%; margin-left: 0; align-items: stretch; flex-direction: column; } } /* 手机使用单列控件和全宽操作。 */
 </style>
