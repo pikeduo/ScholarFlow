@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、翻译、详情、比较、图谱、分页、历史、用量与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、翻译、详情、综合报告、比较、图谱、分页、历史、用量与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -269,6 +269,22 @@ test('getSearchRunUsage 读取同次运行快照并拒绝缺失运行标识', as
   assert.equal(capturedUrl, 'http://test.local/api/v1/usage/run-1') // 验证路径只编码并传递稳定运行标识。
   assert.equal(usage, expectedUsage) // 验证完整快照原样交给页面展示。
   await assert.rejects(() => getSearchRunUsage(''), /缺少需要读取用量/) // 验证空标识在网络请求前被拒绝。
+})
+
+test('getSearchRunSynthesis 只按运行标识读取事实型综合报告', async () => { // 验证报告入口不提交论文正文、分数或模型输入。
+  let capturedUrl = '' // 保存请求地址供稳定资源断言。
+  const expectedSynthesis = { run_id: 'run-1', final_paper_count: 3, sources: [], top_keywords: [], coverage_gaps: [], findings: ['已保存结论'], follow_up_suggestions: [] } // 构造页面依赖的最小完整事实报告。
+  const fetchStub = async (url, options) => { // 提供不访问网络的只读响应替身。
+    capturedUrl = url // 记录编码后的只读资源路径。
+    assert.equal(options.method, 'GET') // 验证报告读取不会写入或触发搜索。
+    return { ok: true, status: 200, json: async () => expectedSynthesis } // 返回固定已保存报告。
+  }
+
+  const synthesis = await getSearchRunSynthesis('run-1', fetchStub, 'http://test.local') // 读取指定运行的事实型报告。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/search/runs/run-1/synthesis') // 验证只传递稳定运行标识。
+  assert.equal(synthesis, expectedSynthesis) // 验证通过最小契约的报告原样返回页面。
+  await assert.rejects(() => getSearchRunSynthesis('', fetchStub), /缺少需要读取综合报告/) // 验证空标识不会进入网络层。
 })
 
 test('getSearchRunPapers 提交服务端筛选排序和分页参数', async () => { // 验证页面不再依赖前端本地切片作为唯一事实源。

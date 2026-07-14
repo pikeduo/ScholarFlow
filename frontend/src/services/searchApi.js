@@ -441,6 +441,27 @@ export async function getTechnicalRoutes(paperIds, fetchImpl = globalThis.fetch,
 }
 
 /** 按运行标识读取已保存的实际用量，不触发新的检索或计费。 */
+export async function getSearchRunSynthesis(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页按运行标识读取事实型综合报告。
+  const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
+  if (!normalizedRunId) throw new SearchApiError('缺少需要读取综合报告的搜索运行标识') // 阻止无效标识进入只读网络层。
+  let response // 保存 HTTP 响应供统一公共错误解析。
+  try { // 将浏览器网络或代理错误映射为页面可展示提示。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/synthesis`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取同次 SQLite 最终结果的已汇总事实。
+  } catch { // 不向页面泄露浏览器网络层细节。
+    throw new SearchApiError('无法读取搜索综合报告，请确认后端已启动') // 提供可操作的安全错误。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用后端稳定错误摘要。
+  try { // 校验报告面板实际依赖的最小响应契约。
+    const synthesis = await response.json() // 解析由后端模型序列化的事实型报告。
+    if (!synthesis || typeof synthesis.run_id !== 'string' || typeof synthesis.final_paper_count !== 'number' || !Array.isArray(synthesis.sources) || !Array.isArray(synthesis.top_keywords) || !Array.isArray(synthesis.coverage_gaps) || !Array.isArray(synthesis.findings) || !Array.isArray(synthesis.follow_up_suggestions)) throw new SearchApiError('搜索综合报告数据不完整') // 阻止页面渲染不可靠或跨运行响应。
+    return synthesis // 返回已通过最小契约校验的同次报告。
+  } catch (error) { // 将 JSON 或字段错误转为统一公共提示。
+    if (error instanceof SearchApiError) throw error // 保留可操作的契约错误。
+    throw new SearchApiError('搜索综合报告无法解析') // 不显示服务端原始响应正文。
+  }
+}
+
+/** 按运行标识读取已保存的实际用量，不触发新的检索或计费。 */
 export async function getSearchRunUsage(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读用量请求。
   const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要读取用量的搜索运行标识') // 阻止向后端发起无效资源请求。

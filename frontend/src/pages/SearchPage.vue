@@ -7,7 +7,7 @@ import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // �
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、比较、图谱、服务端分页、历史、用量与路线。
+import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
@@ -53,6 +53,9 @@ const technicalRoutesError = ref('') // 保留技术路线公共错误状态，�
 const searchUsage = ref(null) // 保存当前搜索运行从 SQLite 读取的实际用量快照。
 const searchUsageLoading = ref(false) // 标记用量快照是否正在读取。
 const searchUsageError = ref('') // 保存不泄露内部细节的用量读取错误。
+const searchSynthesis = ref(null) // 保存当前搜索运行从 SQLite 读取的事实型综合报告。
+const searchSynthesisLoading = ref(false) // 标记综合报告只读请求是否正在进行。
+const searchSynthesisError = ref('') // 保存综合报告读取的安全公共错误。
 const progressEvent = ref(null) // 保存最近一条不含查询正文的 SSE 进度事件。
 const recoveryMessage = ref('') // 保存刷新页面后恢复运行状态的中性提示。
 const resultFilters = reactive({ source: 'all', relevance: 'all', yearStart: '', yearEnd: '' }) // 保存仅作用于当前结果集合的本地筛选条件。
@@ -126,10 +129,14 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   searchUsage.value = null // 防止旧运行统计混入新搜索结果。
   searchUsageLoading.value = false // 新运行开始前取消旧请求遗留的加载提示。
   searchUsageError.value = '' // 清除旧运行用量读取错误。
+  searchSynthesis.value = null // 防止旧运行综合报告混入当前结果。
+  searchSynthesisLoading.value = false // 清除旧运行遗留的综合报告加载状态。
+  searchSynthesisError.value = '' // 清除旧运行综合报告读取错误。
   resultPageData.value = { items: [], total: 0, page: 1, page_size: RESULT_PAGE_SIZE, total_pages: 1 } // 清除旧运行页面，避免论文卡片短暂错配。
   resultPageError.value = '' // 清除旧运行分页读取错误。
   shouldScrollToResultList.value = false // 新搜索或恢复运行不能继承旧分页操作的滚动请求。
   if (result.value?.run_state?.run_id) void loadSearchResultPage(result.value.run_state.run_id) // 新运行结果到达后立即读取服务端首个结果页。
+  if (result.value?.run_state?.run_id) void loadSearchSynthesis(result.value.run_state.run_id) // 同时只读加载当前运行的事实型综合报告。
 })
 
 function useExample(example) { // 将示例查询填入输入框但不自动发起外部调用。
@@ -388,6 +395,21 @@ async function loadSearchUsage(runId) { // 读取当前结果对应的持久化�
     if (runState.value?.run_id === normalizedRunId) searchUsageError.value = error instanceof SearchApiError ? error.message : '读取搜索用量时出现未知错误，请稍后重试' // 只展示安全公共消息。
   } finally { // 无论成功或失败均释放当前运行的加载状态。
     if (runState.value?.run_id === normalizedRunId) searchUsageLoading.value = false // 防止旧请求覆盖新运行的加载提示。
+  }
+}
+
+async function loadSearchSynthesis(runId) { // 读取当前结果对应的事实型综合报告，不发起模型、来源或 PDF 调用。
+  const normalizedRunId = String(runId || '').trim() // 规范化结果或恢复状态提供的稳定运行标识。
+  if (!normalizedRunId) return // 尚未收到完成结果或运行标识时不请求资源。
+  searchSynthesisLoading.value = true // 让页面区分报告尚未就绪与真实空字段。
+  searchSynthesisError.value = '' // 清除同一运行的旧报告读取错误。
+  try { // 只读取后端从同次 SQLite 快照汇总的事实。
+    const synthesis = await getSearchRunSynthesis(normalizedRunId) // 不提交论文正文、前端分数或任意模型输入。
+    if (runState.value?.run_id === normalizedRunId) searchSynthesis.value = synthesis // 忽略切换运行后迟到的旧报告响应。
+  } catch (error) { // 将客户端已净化错误映射为页面紧凑提示。
+    if (runState.value?.run_id === normalizedRunId) searchSynthesisError.value = error instanceof SearchApiError ? error.message : '读取搜索综合报告时出现未知错误，请稍后重试' // 不展示网络或存储内部细节。
+  } finally { // 无论成功失败均结束当前运行的加载状态。
+    if (runState.value?.run_id === normalizedRunId) searchSynthesisLoading.value = false // 防止旧请求覆盖新运行状态。
   }
 }
 
@@ -696,6 +718,26 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
             <div><dt>缓存命中</dt><dd>{{ `${searchUsage.cache_hits} 次` }}</dd></div>
           </dl>
         </div>
+      </section>
+      <section class="search-synthesis" aria-labelledby="synthesis-title">
+        <div>
+          <p class="eyebrow">FACTUAL SYNTHESIS</p>
+          <h2 id="synthesis-title">检索综合报告</h2>
+          <p>仅汇总本次已保存结果、覆盖分析和停止原因；不会再次调用模型、学术来源或读取 PDF。</p>
+        </div>
+        <p v-if="searchSynthesisLoading" class="synthesis-message">正在汇总已保存结果…</p>
+        <p v-else-if="searchSynthesisError" class="synthesis-message is-error" role="alert">{{ searchSynthesisError }}</p>
+        <template v-else-if="searchSynthesis">
+          <dl class="synthesis-stats">
+            <div><dt>最终保留</dt><dd>{{ `${searchSynthesis.final_paper_count} 篇` }}</dd></div>
+            <div><dt>高相关</dt><dd>{{ `${searchSynthesis.high_relevance_count} 篇` }}</dd></div>
+            <div><dt>待确认</dt><dd>{{ `${searchSynthesis.partial_relevance_count} 篇` }}</dd></div>
+            <div><dt>年份覆盖</dt><dd>{{ searchSynthesis.year_start ? `${searchSynthesis.year_start}–${searchSynthesis.year_end}` : '未提供' }}</dd></div>
+          </dl>
+          <ul v-if="searchSynthesis.findings.length" class="synthesis-list" aria-label="检索结论"><li v-for="finding in searchSynthesis.findings" :key="finding">{{ finding }}</li></ul>
+          <div v-if="searchSynthesis.top_keywords.length" class="synthesis-keywords" aria-label="结果关键词"><strong>结果关键词</strong><span v-for="keyword in searchSynthesis.top_keywords" :key="keyword.keyword">{{ `${keyword.keyword} · ${keyword.paper_count}` }}</span></div>
+          <ul v-if="searchSynthesis.follow_up_suggestions.length" class="synthesis-list is-suggestions" aria-label="后续建议"><li v-for="suggestion in searchSynthesis.follow_up_suggestions" :key="suggestion">{{ suggestion }}</li></ul>
+        </template>
       </section>
       <QueryIntentPanel v-if="result.query_intent" :intent="result.query_intent" :planning-meta="planningMeta" :disabled="loading" @resubmit="resubmitIntent" />
       <header class="results-header">
@@ -1351,6 +1393,100 @@ textarea::placeholder { /* 设置查询示例占位。 */
   color: #31566e; /* 使用较深文字突出实际数值。 */
   font-size: 0.7rem; /* 保持与页面辅助统计一致。 */
   font-weight: 800; /* 让数值便于扫读。 */
+}
+
+.search-synthesis { /* 展示不调用模型的事实型检索结论与后续建议。 */
+  display: grid; /* 纵向组织说明、统计、结论和关键词。 */
+  gap: 0.75rem; /* 区分报告中的不同事实层级。 */
+  padding: 1.15rem 1.35rem; /* 与多轮状态面板保持相近留白。 */
+  border: 1px solid #d7e6dc; /* 使用低饱和绿色边界区分结果汇总。 */
+  border-radius: 1rem; /* 与搜索页其他信息面板保持一致。 */
+  background: #f8fcf9; /* 提供轻量结果收束背景。 */
+}
+
+.search-synthesis h2 { /* 设置综合报告标题层级。 */
+  margin: 0; /* 移除默认标题外边距。 */
+  color: #2f5e4d; /* 使用可信且不抢眼的深绿色。 */
+  font-family: Georgia, "Noto Serif SC", serif; /* 延续页面的学术阅读排版。 */
+  font-size: 1.08rem; /* 保持低于最终推荐标题。 */
+}
+
+.search-synthesis > div:first-child > p:last-child { /* 说明报告严格使用的事实边界。 */
+  margin: 0.35rem 0 0; /* 与标题保持紧凑距离。 */
+  color: #698078; /* 使用辅助说明颜色。 */
+  font-size: 0.72rem; /* 避免说明压过检索结论。 */
+  line-height: 1.55; /* 提升长说明的可读性。 */
+}
+
+.synthesis-message { /* 展示报告读取中或安全错误状态。 */
+  margin: 0; /* 清除默认段落间距。 */
+  color: #698078; /* 使用辅助状态颜色。 */
+  font-size: 0.7rem; /* 保持状态为次级信息。 */
+}
+
+.synthesis-message.is-error { /* 区分报告读取失败与等待状态。 */
+  color: #9b4b45; /* 使用安全错误色。 */
+}
+
+.synthesis-stats { /* 将报告核心数字组织为响应式统计网格。 */
+  display: grid; /* 使用网格保证窄屏可自动换行。 */
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr)); /* 在不同宽度下保持信息块可读。 */
+  gap: 0.45rem; /* 分隔相邻统计块。 */
+  margin: 0; /* 清除定义列表默认边距。 */
+}
+
+.synthesis-stats div { /* 设置单项报告统计外观。 */
+  padding: 0.45rem 0.55rem; /* 提供紧凑且可扫读的留白。 */
+  border-radius: 0.55rem; /* 与其他统计块协调。 */
+  background: #eaf5ee; /* 使用浅绿底色突出结果事实。 */
+}
+
+.synthesis-stats dt { /* 显示统计维度名称。 */
+  color: #698078; /* 弱化标签以突出数据值。 */
+  font-size: 0.6rem; /* 保持统计块紧凑。 */
+  font-weight: 800; /* 小字号仍需清晰可辨。 */
+}
+
+.synthesis-stats dd { /* 显示统计维度的事实值。 */
+  margin: 0.15rem 0 0; /* 与标签形成紧凑层级。 */
+  color: #2f5e4d; /* 强调稳定且可信的结果值。 */
+  font-size: 0.72rem; /* 与页面统计层级一致。 */
+  font-weight: 800; /* 增强数字扫读性。 */
+}
+
+.synthesis-list { /* 展示模板化结论或基于缺口的后续建议。 */
+  display: grid; /* 纵向排列每条短结论。 */
+  gap: 0.35rem; /* 避免多条建议相互拥挤。 */
+  margin: 0; /* 清除列表默认外边距。 */
+  padding-left: 1.1rem; /* 保留可扫读的项目符号。 */
+  color: #526d62; /* 使用舒适正文颜色。 */
+  font-size: 0.71rem; /* 控制报告文本的信息密度。 */
+  line-height: 1.55; /* 提升长建议的可读性。 */
+}
+
+.synthesis-list.is-suggestions { /* 将后续操作与观察性结论轻微区分。 */
+  color: #3e6c58; /* 使用略深颜色提示可执行建议。 */
+}
+
+.synthesis-keywords { /* 以紧凑标签展示来源论文关键词统计。 */
+  display: flex; /* 横向组织标题和关键词胶囊。 */
+  flex-wrap: wrap; /* 窄屏时允许关键词自然换行。 */
+  align-items: center; /* 对齐标题与关键词标签。 */
+  gap: 0.4rem; /* 分隔相邻元素。 */
+}
+
+.synthesis-keywords strong { /* 标记关键词统计的事实来源。 */
+  color: #4d6b5c; /* 保持为辅助标题层级。 */
+  font-size: 0.68rem; /* 不抢占报告主标题。 */
+}
+
+.synthesis-keywords span { /* 设置单个关键词频次胶囊。 */
+  padding: 0.25rem 0.45rem; /* 提供小而清晰的点击无关标签留白。 */
+  border-radius: 999px; /* 使用胶囊便于扫描。 */
+  color: #3e6c58; /* 使用与建议一致的文字色。 */
+  background: #e3f1e8; /* 与报告面板形成轻量对比。 */
+  font-size: 0.64rem; /* 控制关键词密度。 */
+  font-weight: 700; /* 提升关键词可读性。 */
 }
 
 .results-header h2,

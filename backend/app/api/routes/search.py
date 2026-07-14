@@ -24,6 +24,7 @@ from backend.app.models.query_intent import QueryIntent  # 接收已规划完成
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
 from backend.app.models.search_run import SearchRunState  # 声明可按运行标识读取的持久化状态响应。
 from backend.app.models.search_result_page import SearchResultRelevance, SearchResultSort, SearchRunPaperPage  # 声明已保存结果分页读取契约。
+from backend.app.models.search_synthesis import SearchSynthesisReport  # 声明已保存结果的事实型综合报告契约。
 from backend.app.models.search_run_history import SearchRunHistoryPage  # 声明不含查询正文的运行历史响应。
 from backend.app.models.paper import PaperSource  # 限制结果来源筛选只能使用已知学术来源。
 from backend.app.models.search_event import SearchProgressEvent  # 传递不含敏感查询和论文摘要的 SSE 事件。
@@ -32,6 +33,7 @@ from backend.app.services.multi_round_search import MultiRoundSearchController  
 from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore, SearchRunStoreError  # 装配 SQLite 状态持久化并映射安全读取错误。
 from backend.app.services.search_events import InMemorySearchRunEventPublisher  # 在单次流式请求内连接控制器和事件响应。
 from backend.app.services.search_result_page import SearchResultPageService  # 在已保存结果上执行确定性筛选、排序和分页。
+from backend.app.services.search_synthesis import SearchSynthesisService  # 在已保存结果上构建不调用模型的综合报告。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
 from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
 from backend.app.services.llm_query_evolution import LlmQueryEvolutionService  # 在存在覆盖缺口时提供一次受限的 LLM 策略提案。
@@ -49,6 +51,15 @@ def get_search_result_page_service() -> SearchResultPageService:
         SearchResultPageService：只处理已保存最终结果的纯业务服务。
     """
     return SearchResultPageService()  # 服务无外部依赖，不会在构造时读取数据库或调用来源。
+
+
+def get_search_synthesis_service() -> SearchSynthesisService:
+    """构造只读事实型搜索综合报告服务。
+
+    返回：
+        SearchSynthesisService：只汇总已保存快照，不访问模型或外部来源。
+    """
+    return SearchSynthesisService()  # 服务无状态且不在构造时执行计算或 I/O。
 
 
 def get_openalex_search_service() -> OpenAlexSearchService:
@@ -308,6 +319,33 @@ def get_search_run_result(
     if result is None:  # 运行尚未完成或不存在时不能伪造空论文结果。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索最终结果尚未就绪")  # 让前端继续等待或显示明确提示。
     return result  # 返回同一次多轮搜索得到的真实最终结果。
+
+
+@router.get("/runs/{run_id}/synthesis", response_model=SearchSynthesisReport, status_code=status.HTTP_200_OK, summary="读取已保存搜索结果的事实型综合报告")
+def get_search_run_synthesis(
+    run_id: str,
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
+    synthesis_service: Annotated[SearchSynthesisService, Depends(get_search_synthesis_service)],
+) -> SearchSynthesisReport:
+    """从同次完成结果快照汇总可审计的检索结论，不重新调用模型或学术来源。
+
+    参数：
+        run_id：SSE 或恢复流程提供的稳定搜索运行标识。
+        state_store：可替换的已完成结果快照读取边界。
+        synthesis_service：无副作用的事实型综合报告服务。
+    返回：
+        SearchSynthesisReport：由已保存论文、覆盖和停止状态汇总的报告。
+    异常：
+        HTTPException：结果尚未就绪时返回 404，存储不可用时返回安全 503。
+    """
+    try:  # 只读取与本次运行绑定的最终结果快照。
+        result = state_store.get_result(run_id)  # 禁止该报告路径重新检索、重排或调用 LLM。
+    except SearchRunStoreError:  # 不向前端泄露 SQLite 路径、JSON 或实现细节。
+        logger.exception("搜索综合报告读取接口失败：运行=%s", run_id)  # 仅记录稳定运行标识和受控堆栈。
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="搜索综合报告暂时不可用，请稍后重试") from None  # 返回可展示的公共错误。
+    if result is None:  # 运行尚未完成或结果已被清理时不能伪造报告。
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="搜索最终结果尚未就绪")  # 与结果读取接口保持相同资源语义。
+    return synthesis_service.build(result)  # 仅汇总快照事实，不写回或修改原始结果。
 
 
 @router.get("/runs/{run_id}/papers", response_model=SearchRunPaperPage, status_code=status.HTTP_200_OK, summary="筛选、排序并分页读取已保存搜索结果")
