@@ -30,7 +30,7 @@ const comparisonResult = ref(null) // 保存后端按用户选择顺序返回的
 const comparisonLoading = ref(false) // 标记比较接口读取状态。
 const comparisonError = ref('') // 保存比较操作的安全公共错误。
 
-const statusLabels = { unread: '未读', reading: '阅读中', read: '已读' } // 将后端稳定枚举映射为中文。
+const statusLabels = { unread: '未读', reading: '阅读中', read: '已读' } // 将后端稳定枚举映射为右侧收藏管理区的中文状态。
 
 onMounted(loadItems) // 页面首次打开时加载全部收藏。
 
@@ -262,9 +262,10 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
       <div v-else class="library-list">
         <section v-for="(item, index) in items" :key="item.item_id" class="library-card">
           <PaperResultCard :paper="item.paper" :rank="index + 1" :keywords="item.keywords" :show-score="false" :show-search-actions="false" @detail="openPaperDetail">
-            <template #actions><span class="library-card-status">{{ statusLabels[item.reading_status] }}</span><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" :class="['library-detail-button', { 'is-selected': comparisonPaperIds.includes(item.paper.paper_id) }]" :disabled="comparisonPaperIds.length >= 5 && !comparisonPaperIds.includes(item.paper.paper_id)" @click="togglePaperComparison(item.paper)">{{ comparisonPaperIds.includes(item.paper.paper_id) ? '已加入比较' : '加入比较' }}</button><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button></template>
+            <template #actions><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" :class="['library-detail-button', { 'is-selected': comparisonPaperIds.includes(item.paper.paper_id) }]" :disabled="comparisonPaperIds.length >= 5 && !comparisonPaperIds.includes(item.paper.paper_id)" @click="togglePaperComparison(item.paper)">{{ comparisonPaperIds.includes(item.paper.paper_id) ? '已加入比较' : '加入比较' }}</button><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button></template>
           </PaperResultCard>
           <form v-if="drafts[item.item_id]" class="item-editor" @submit.prevent="saveChanges(item)">
+            <header class="item-editor-header"><strong>收藏信息</strong><span>{{ statusLabels[drafts[item.item_id].readingStatus] }}</span></header>
             <label>关键词<input v-model="drafts[item.item_id].keywords" type="text" placeholder="使用逗号分隔" :disabled="Boolean(busyItemId)"></label>
             <label>阅读状态<select v-model="drafts[item.item_id].readingStatus" :disabled="Boolean(busyItemId)"><option value="unread">未读</option><option value="reading">阅读中</option><option value="read">已读</option></select></label>
             <label class="note-field">个人备注<textarea v-model="drafts[item.item_id].note" rows="3" maxlength="5000" placeholder="记录阅读重点、疑问或后续行动" :disabled="Boolean(busyItemId)"></textarea></label>
@@ -322,16 +323,20 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .empty-library p { margin: 0.45rem 0 0; font-size: 0.75rem; } /* 提供返回搜索页的操作提示。 */
 .library-list { display: grid; gap: 0.9rem; } /* 纵向排列收藏卡片。 */
 .library-pagination { display: flex; justify-content: center; align-items: center; gap: 0.75rem; padding: 0.5rem 0; color: #536b7f; font-size: 0.74rem; } /* 在完整论文卡片列表后提供简洁的服务端翻页入口。 */
-.library-card { display: grid; gap: 0.75rem; } /* 复用搜索结果论文卡片，并在其下方附加收藏属性编辑区。 */
-.library-card-status, .semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #456d84; background: #eaf3f8; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示收藏状态。 */
+.library-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); gap: 0.85rem; align-items: stretch; } /* 将论文阅读区置左，把关键词、阅读状态和备注固定在右侧管理区。 */
+.semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #456d84; background: #eaf3f8; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示本轮自然语言检索相似度。 */
 .semantic-score { color: #5d4a8f; background: #eee9fb; } /* 使用独立色调突出本轮自然语言检索相似度。 */
 .library-detail-button { padding: 0.45rem 0.7rem; border: 1px solid #b8ccdc; border-radius: 0.55rem; color: #536f7f; background: #fff; cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 800; } /* 在文献库卡片保留与搜索页同等的详情入口。 */
 .library-detail-button.is-selected { border-color: #b7d0bc; color: #28745a; background: #e8f7f0; } /* 标记已加入当前文献库比较集合的论文。 */
-.item-editor { display: grid; grid-template-columns: minmax(0, 1fr) 8rem; gap: 0.65rem; padding: 0.95rem 1.2rem; border: 1px solid #dfe7ef; border-radius: 0.85rem; background: #fbfdfe; } /* 在论文卡片下方组织关键词、状态和备注编辑。 */
-.note-field, .item-actions { grid-column: 1 / -1; } /* 让备注与操作横跨编辑区。 */
+.item-editor { display: grid; align-content: start; gap: 0.7rem; padding: 1rem; border: 1px solid #dfe7ef; border-radius: 0.85rem; background: #fbfdfe; } /* 在论文卡片右侧集中组织关键词、状态和备注编辑。 */
+.item-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 0.65rem; padding-bottom: 0.1rem; color: #456d84; font-size: 0.72rem; } /* 为右侧个人管理信息提供清晰标题和当前阅读状态。 */
+.item-editor-header strong { color: #29465d; } /* 突出收藏管理区标题而不压过论文标题。 */
+.item-editor-header span { padding: 0.25rem 0.45rem; border-radius: 999px; color: #456d84; background: #eaf3f8; font-size: 0.64rem; font-weight: 800; } /* 将当前阅读状态显示为紧凑提示。 */
+.item-actions { display: flex; justify-content: flex-end; gap: 0.5rem; } /* 将保存和删除操作靠右排列。 */
 .item-actions { display: flex; justify-content: flex-end; gap: 0.5rem; } /* 将保存和删除操作靠右排列。 */
 .delete-button { border: 1px solid #e2c7c4; color: #9b4b45; background: #fff5f4; } /* 使用克制危险色标记删除操作。 */
 @media (max-width: 1040px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } } /* 中等宽度优先保持每项输入可读。 */
+@media (max-width: 900px) { .library-card { grid-template-columns: 1fr; } .item-editor { grid-template-columns: minmax(0, 1fr) 8rem; } .item-editor-header, .note-field, .item-actions { grid-column: 1 / -1; } } /* 平板将右侧管理区移至论文下方并保留紧凑双列编辑。 */
 @media (max-width: 820px) { .filter-panel { grid-template-columns: 1fr 1fr; } .semantic-panel { grid-template-columns: 1fr 1fr; } } /* 平板将筛选器收敛为两列布局。 */
-@media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .note-field, .item-actions { grid-column: auto; } .item-actions { align-items: stretch; flex-direction: column; } } /* 手机使用单列控件和全宽操作。 */
+@media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .item-editor-header, .note-field, .item-actions { grid-column: auto; } .item-actions { align-items: stretch; flex-direction: column; } } /* 手机使用单列控件和全宽操作。 */
 </style>
