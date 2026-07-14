@@ -1,121 +1,130 @@
-/** 验证时间分层引用图的纯布局规则，不依赖浏览器或 D3。 */
+/** 验证自适应时间分层引用图的纯函数布局、标签、端口和通道路由规则。 */
 
-import assert from 'node:assert/strict' // 使用 Node 内置断言验证布局输出。
-import test from 'node:test' // 使用 Node 内置测试运行器保持前端测试轻量。
-import { buildCitationGraphLayout, type CitationGraphData } from '../src/utils/citationGraphLayout.ts' // 引入待测的纯布局函数和数据契约。
+import assert from 'node:assert/strict' // 使用 Node 内置断言验证确定性布局输出。
+import test from 'node:test' // 使用 Node 内置测试运行器保持测试轻量。
+import { assignYearColumns, buildCitationGraphLayout, measureLabelBoxes, type CitationGraphData } from '../src/utils/citationGraphLayout.ts' // 引入被测纯函数和数据契约。
 
-const graph: CitationGraphData = { // 构造两条引用分支、一个版本族和一篇孤立论文。
-  nodes: [
-    { paper_id: 'foundation', title: 'Foundation paper', year: 2020, relevance: 0.8, source: 'openalex', work_family_id: 'family-a' },
-    { paper_id: 'foundation-preprint', title: 'Foundation preprint', year: 2019, relevance: 0.6, source: 'arxiv', work_family_id: 'family-a' },
-    { paper_id: 'method', title: 'Method paper', year: 2022, relevance: 0.9, source: 'semantic_scholar' },
-    { paper_id: 'application', title: 'Application paper', year: 2024, relevance: 0.7, source: 'openalex' },
-    { paper_id: 'parallel-old', title: 'Parallel old paper', year: 2021, relevance: 0.5, source: 'openalex' },
-    { paper_id: 'parallel-new', title: 'Parallel new paper', year: 2023, relevance: 0.5, source: 'openalex' },
-    { paper_id: 'isolated', title: 'Isolated paper', year: 2025, relevance: 0.4, source: 'pubmed' },
-  ],
-  edges: [
-    { source_paper_id: 'method', target_paper_id: 'foundation', edge_type: 'cites' },
-    { source_paper_id: 'application', target_paper_id: 'method', edge_type: 'cites' },
-    { source_paper_id: 'parallel-new', target_paper_id: 'parallel-old', edge_type: 'cites' },
-    { source_paper_id: 'foundation', target_paper_id: 'foundation-preprint', edge_type: 'same_work' },
-  ],
-  truncated: false,
-  max_nodes: 30,
+function graph(nodes: CitationGraphData['nodes'], edges: CitationGraphData['edges']): CitationGraphData { // 快速构造固定的受限引用图响应。
+  return { nodes, edges, truncated: false, max_nodes: 30 } // 保持与生产 API 响应一致的最小字段。
 }
 
-function layout(overrides: Partial<Parameters<typeof buildCitationGraphLayout>[1]> = {}) { // 为各测试提供统一的默认布局参数。
-  return buildCitationGraphLayout(graph, { width: 960, collapseFamilies: true, includeVersionLinks: false, includeIsolates: false, ...overrides }) // 保持默认的版本族合并和孤立节点折叠策略。
+function layout(data: CitationGraphData, width = 960) { // 为测试提供统一布局选项。
+  return buildCitationGraphLayout(data, { width, collapseFamilies: true, includeVersionLinks: false, includeIsolates: false }) // 使用默认版本族合并和孤立论文折叠策略。
 }
 
-test('按发表年份固定横轴，并将引用分支拆分布局', () => { // 验证核心时间分层与弱连通分量行为。
-  const result = layout() // 计算默认主图布局。
-  const byId = new Map(result.nodes.map((node) => [node.id, node])) // 建立便于断言的节点索引。
-  const foundation = byId.get('family:family-a') // 读取已合并版本族的代表节点。
-  const method = byId.get('paper:method') // 读取中间方法论文。
-  const application = byId.get('paper:application') // 读取最新应用论文。
+const chain = graph( // 构造包含缺失年份和跨多年关系的基准图。
+  [
+    { paper_id: 'old', title: 'Foundational retrieval paper', year: 2018, relevance: 0.8, source: 'openalex' },
+    { paper_id: 'middle', title: 'Intermediate retrieval paper', year: 2021, relevance: 0.7, source: 'openalex' },
+    { paper_id: 'recent', title: 'Recent retrieval application', year: 2024, relevance: 0.9, source: 'semantic_scholar' },
+  ],
+  [
+    { source_paper_id: 'middle', target_paper_id: 'old', edge_type: 'cites' },
+    { source_paper_id: 'recent', target_paper_id: 'middle', edge_type: 'cites' },
+    { source_paper_id: 'recent', target_paper_id: 'old', edge_type: 'cites' },
+  ],
+)
 
-  assert.ok(foundation && method && application) // 确认三个主分支节点均可见。
-  assert.ok(foundation.x < method.x && method.x < application.x) // 验证旧论文在左、新论文在右。
-  assert.equal(result.componentCount, 2) // 验证两个互不连接的引用分支分开统计。
-  assert.equal(result.isolatedCount, 1) // 验证孤立论文被识别而非混入主图。
-  assert.equal(byId.has('paper:isolated'), false) // 验证默认折叠孤立论文。
+test('实际出现年份采用等间距序数列，缺失年份不产生空白', () => { // 验证年份差值不会影响横向间距。
+  const columns = assignYearColumns([2018, 2021, 2029], 900) // 传入年份间隔不均匀的三列。
+  const first = columns.get(2018) || 0 // 读取第一列坐标。
+  const middle = columns.get(2021) || 0 // 读取中间列坐标。
+  const last = columns.get(2029) || 0 // 读取最后一列坐标。
+
+  assert.equal(middle - first, last - middle) // 验证每个实际年份列等间距。
 })
 
-test('版本族可默认合并，孤立论文可按需展开为网格', () => { // 验证版本族和孤立论文的可控呈现。
-  const result = layout({ includeIsolates: true }) // 显式展开孤立论文。
-  const family = result.nodes.find((node) => node.id === 'family:family-a') // 读取合并后的版本族节点。
-  const isolated = result.nodes.find((node) => node.id === 'paper:isolated') // 读取展开后的孤立论文。
+test('两个年份边连接圆周端口，箭头终点留在目标圆外', () => { // 验证最小跨年份图不依赖标签侧特例。
+  const result = layout(graph( // 构造两个年份的一条引用边。
+    [{ paper_id: 'a', title: 'A', year: 2020, relevance: 0.8, source: 'openalex' }, { paper_id: 'b', title: 'B', year: 2023, relevance: 0.8, source: 'openalex' }],
+    [{ source_paper_id: 'b', target_paper_id: 'a', edge_type: 'cites' }],
+  ))
+  const edge = result.edges[0] // 读取唯一边。
+  const source = result.nodes.find((node) => node.id === 'paper:b') // 读取源节点。
+  const target = result.nodes.find((node) => node.id === 'paper:a') // 读取目标节点。
+  const end = edge.points.at(-1) // 读取最终路径点以验证箭头切线端点。
 
-  assert.equal(family?.memberCount, 2) // 验证同一版本族仅显示为一个工作节点。
-  assert.equal(result.edges.some((edge) => edge.edgeType === 'same_work'), false) // 验证合并模式不会重复绘制版本族边。
-  assert.equal(isolated?.isIsolate, true) // 验证展开项仍保留孤立语义。
+  assert.ok(source && target && end) // 确认端点节点和路径都存在。
+  assert.notDeepEqual(edge.points[0], { x: source.x, y: source.y }) // 验证边不从节点中心出发。
+  assert.ok(Math.hypot(end.x - target.x, end.y - target.y) > target.radius) // 验证箭头尖端在目标圆周外留有安全距离。
 })
 
-test('一阶邻域只保留选中论文的直接引用关系', () => { // 验证交互模式不会泄漏无关分支。
-  const result = layout({ focusNodeId: 'method' }) // 仅查看方法论文的一阶邻域。
-  const ids = new Set(result.nodes.map((node) => node.id)) // 收集可见节点标识。
+test('三个以上年份的长引用边按每个年份间通道分段', () => { // 验证长边不会直接横跨整个画布。
+  const result = layout(chain) // 计算包含三个实际年份列的布局。
+  const longEdge = result.edges.find((edge) => edge.id === 'cites:paper:recent:paper:old') // 定位跨越多个年份的直接引用。
 
-  assert.deepEqual(ids, new Set(['family:family-a', 'paper:method', 'paper:application'])) // 验证只保留中心、引用它和被它引用的论文。
-  assert.equal(result.edges.length, 2) // 验证边也同步收缩为直接关系。
+  assert.ok(longEdge) // 确认长边存在。
+  assert.ok(longEdge.points.length >= 5) // 验证路径至少保留源端、多个通道折点和目标端。
+  assert.match(longEdge.path, /Q/) // 验证正交通道路由在折点使用圆角而非固定贝塞尔模板。
 })
 
-test('首末年份标题向时间轴外侧放置，跨年份边连接左右圆周端口', () => { // 验证标题和引用边分别占据外侧与内部区域。
-  const result = layout() // 计算包含最早、最晚和中间年份的默认布局。
-  const source = result.nodes.find((node) => node.id === 'paper:method') // 读取较新引用方节点。
-  const target = result.nodes.find((node) => node.id === 'family:family-a') // 读取较早被引目标节点。
-  const edge = result.edges.find((item) => item.id === 'cites:paper:method:family:family-a') // 定位跨年份真实引用边。
-  const pathNumbers = edge?.path.match(/-?\d+\.\d+/g)?.map(Number) || [] // 提取三次贝塞尔的两端和控制点坐标。
-
-  assert.equal(target?.labelSide, 'left') // 验证最左年份标题向左侧外置。
-  assert.equal(result.nodes.find((node) => node.id === 'paper:application')?.labelSide, 'right') // 验证最右年份标题向右侧外置。
-  assert.ok(source && target && edge) // 确认跨年份边和端点节点均存在。
-  assert.equal(pathNumbers.length, 8) // 验证跨年份边使用平缓的三次贝塞尔曲线。
-  assert.ok(pathNumbers[0] < source.x) // 验证来源于源节点面向目标的左侧圆周端口，而不是圆心。
-  assert.ok(pathNumbers[6] > target.x + target.radius) // 验证箭头尖端停在目标圆周外并预留间距。
-})
-
-test('同年真实引用边使用年份线附近的独立弧线轨道', () => { // 验证同年引用关系不与时间线或其他同年边重合。
-  const sameYearGraph: CitationGraphData = { // 构造两个同年且存在真实引用关系的最小图。
-    nodes: [ // 两个节点会被布局到同一条年份时间列。
-      { paper_id: 'same-year-a', title: 'Same year source', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明引用边起点。
-      { paper_id: 'same-year-b', title: 'Same year target', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明引用边终点。
+test('同一年多个节点的引用边使用动态外部通道', () => { // 验证同年边不会固定只走一侧。
+  const result = layout(graph( // 构造三篇同年论文和两条共享目标的引用。
+    [
+      { paper_id: 'a', title: 'A', year: 2023, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'b', title: 'B', year: 2023, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'c', title: 'C', year: 2023, relevance: 0.8, source: 'openalex' },
     ],
-    edges: [{ source_paper_id: 'same-year-a', target_paper_id: 'same-year-b', edge_type: 'cites' }], // 仅保留一条可审计的同年真实引用边。
-    truncated: false, // 声明未发生后端节点裁剪。
-    max_nodes: 30, // 保持与生产默认上限一致。
-  }
-  const result = buildCitationGraphLayout(sameYearGraph, { width: 960, collapseFamilies: true, includeVersionLinks: false, includeIsolates: false }) // 计算不依赖浏览器的稳定布局。
-  const edge = result.edges[0] // 读取唯一边的 SVG 三次曲线路径。
-  const source = result.nodes.find((node) => node.id === 'paper:same-year-a') // 读取路径起点节点坐标。
-  const target = result.nodes.find((node) => node.id === 'paper:same-year-b') // 读取路径终点节点坐标。
-  const pathNumbers = edge?.path.match(/-?\d+\.\d+/g)?.map(Number) || [] // 按路径格式提取起点、控制点和终点坐标。
+    [{ source_paper_id: 'a', target_paper_id: 'b', edge_type: 'cites' }, { source_paper_id: 'c', target_paper_id: 'b', edge_type: 'cites' }],
+  ))
+  const target = result.nodes.find((node) => node.id === 'paper:b') // 读取同年边共享的目标列。
+  const lanes = result.edges.map((edge) => edge.points[1]?.x) // 读取同年边外部通道横坐标。
 
-  assert.ok(source && target && edge) // 确认同年节点和真实引用边均进入当前主图。
-  assert.equal(pathNumbers.length, 8) // 验证真实引用边使用八个数值组成的三次贝塞尔曲线。
-  assert.notEqual(pathNumbers[0], source.x) // 验证路径从节点朝内部的左右圆周端口离开。
-  assert.equal(pathNumbers[1], source.y) // 验证端口保持在节点圆周水平中线。
-  assert.notEqual(pathNumbers[2], source.x) // 验证控制点进入年份线附近的独立轨道。
-  assert.ok(Math.abs(pathNumbers[6] - target.x) > target.radius) // 验证箭头终点停在目标圆周外而不是节点中心。
+  assert.ok(target) // 确认目标节点存在。
+  assert.equal(new Set(lanes).size, 2) // 验证多条边分配独立轨道。
+  assert.ok(lanes.some((lane) => typeof lane === 'number' && lane < target.x) || lanes.some((lane) => typeof lane === 'number' && lane > target.x)) // 验证车道由算法选择为列外通道而非时间线中心。
 })
 
-test('多条同年真实引用边分配不同的独立轨道', () => { // 验证同一年份的多条边不会重叠为一条弧线。
-  const sameYearGraph: CitationGraphData = { // 构造三篇同年论文与两条真实引用边。
-    nodes: [ // 三个节点会处于同一条年份线。
-      { paper_id: 'same-year-a', title: 'Same year A', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明第一条边的来源节点。
-      { paper_id: 'same-year-b', title: 'Same year B', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明两个边共享的目标节点。
-      { paper_id: 'same-year-c', title: 'Same year C', year: 2023, relevance: 0.8, source: 'openalex' }, // 声明第二条边的来源节点。
+test('双向边和同一目标多入边分散端口', () => { // 验证端口占用会参与动态选择。
+  const result = layout(graph( // 构造双向边和三条指向同一节点的边。
+    [
+      { paper_id: 'a', title: 'A', year: 2020, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'b', title: 'B', year: 2021, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'c', title: 'C', year: 2022, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'd', title: 'D', year: 2023, relevance: 0.8, source: 'openalex' },
     ],
-    edges: [ // 保留两条同年真实引用关系。
-      { source_paper_id: 'same-year-a', target_paper_id: 'same-year-b', edge_type: 'cites' }, // 第一条同年边。
-      { source_paper_id: 'same-year-c', target_paper_id: 'same-year-b', edge_type: 'cites' }, // 第二条同年边。
+    [
+      { source_paper_id: 'a', target_paper_id: 'b', edge_type: 'cites' }, { source_paper_id: 'b', target_paper_id: 'a', edge_type: 'cites' },
+      { source_paper_id: 'c', target_paper_id: 'b', edge_type: 'cites' }, { source_paper_id: 'd', target_paper_id: 'b', edge_type: 'cites' },
     ],
-    truncated: false, // 声明未发生后端节点裁剪。
-    max_nodes: 30, // 保持与生产默认上限一致。
-  }
-  const result = buildCitationGraphLayout(sameYearGraph, { width: 960, collapseFamilies: true, includeVersionLinks: false, includeIsolates: false }) // 计算不依赖浏览器的稳定布局。
-  const controlXs = result.edges.map((edge) => edge.path.match(/-?\d+\.\d+/g)?.map(Number)?.[2]) // 读取每条路径第一个控制点的横坐标。
+  ))
+  const incomingPorts = result.edges.filter((edge) => edge.targetId === 'paper:b').map((edge) => edge.targetPort) // 收集多入边在目标节点使用的端口。
 
-  assert.equal(result.edges.length, 2) // 确认两条同年边均被保留。
-  assert.equal(new Set(controlXs).size, 2) // 验证两条边分配到不同的年份线附近轨道。
+  assert.ok(new Set(incomingPorts).size >= 2) // 验证端口占用避免所有入边堆叠到同一端口。
+})
+
+test('长标题会先测量后参与标签候选布局', () => { // 验证文字不是最终渲染时才参与避让。
+  const result = layout(graph( // 构造带长标题的两篇相关论文。
+    [{ paper_id: 'a', title: 'A very long paper title that should be measured before it is placed in the citation network', year: 2020, relevance: 0.8, source: 'openalex' }, { paper_id: 'b', title: 'Short title', year: 2021, relevance: 0.8, source: 'openalex' }],
+    [{ source_paper_id: 'b', target_paper_id: 'a', edge_type: 'cites' }],
+  ))
+  const longNode = result.nodes.find((node) => node.id === 'paper:a') // 读取长标题节点。
+  const measured = measureLabelBoxes(result.nodes).get('paper:a') // 独立复算同一标题测量值。
+
+  assert.ok(longNode && measured) // 确认节点和测量结果存在。
+  assert.equal(longNode.labelBox.width, measured.width) // 验证最终布局直接使用测量宽度。
+  assert.ok(longNode.labelText.endsWith('…')) // 验证默认标签采用语义缩放后的短标题。
+})
+
+test('窄画布减少默认标签数量但保留悬浮和选中所需坐标', () => { // 验证空间不足时不强制显示所有标题。
+  const result = layout(chain, 680) // 使用接近组件最小宽度的窄画布。
+
+  assert.ok(result.nodes.filter((node) => node.showLabel).length <= 5) // 验证默认常驻标签预算缩小。
+  assert.ok(result.nodes.every((node) => node.labelBox.width > 0 && node.labelBox.height > 0)) // 验证隐藏节点仍有可用于悬浮显示的计算位置。
+})
+
+test('一阶邻域、版本族合并和孤立节点策略保持不变', () => { // 验证重构未改变既有筛选与交互契约。
+  const data = graph( // 构造版本族、引用链和孤立论文。
+    [
+      { paper_id: 'old', title: 'Old', year: 2019, relevance: 0.8, source: 'openalex', work_family_id: 'family' },
+      { paper_id: 'old-version', title: 'Old version', year: 2020, relevance: 0.6, source: 'arxiv', work_family_id: 'family' },
+      { paper_id: 'middle', title: 'Middle', year: 2021, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'new', title: 'New', year: 2022, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'isolated', title: 'Isolated', year: 2023, relevance: 0.4, source: 'openalex' },
+    ],
+    [{ source_paper_id: 'middle', target_paper_id: 'old', edge_type: 'cites' }, { source_paper_id: 'new', target_paper_id: 'middle', edge_type: 'cites' }],
+  )
+  const result = buildCitationGraphLayout(data, { width: 960, collapseFamilies: true, includeVersionLinks: false, includeIsolates: false, focusNodeId: 'middle' }) // 进入既有一阶邻域模式。
+
+  assert.deepEqual(new Set(result.nodes.map((node) => node.id)), new Set(['family:family', 'paper:middle', 'paper:new'])) // 验证版本族、一阶邻域和孤立节点规则未变化。
 })

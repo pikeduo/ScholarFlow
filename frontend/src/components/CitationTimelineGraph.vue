@@ -49,14 +49,6 @@ function relatedNodes(node: CitationLayoutNode | null, direction: 'incoming' | '
   return [...new Set(relatedIds)].map((id) => nodeById.value.get(id)).filter((item): item is CitationLayoutNode => Boolean(item)) // 去重并过滤不可见节点。
 }
 
-function shortenTitle(title: string, maxLength = 24): string { // 生成少量永久标签使用的短标题。
-  return title.length > maxLength ? `${title.slice(0, maxLength).trim()}…` : title // 保持长标题仅在悬浮和侧栏完整展示。
-}
-
-function labelWidth(title: string): number { // 为节点外侧标题计算足以遮挡路径的稳定标签底板宽度。
-  return Math.min(184, Math.max(76, shortenTitle(title).length * 6.5 + 16)) // 按小字号英文平均宽度估算，并限制极短或极长标题的占用。
-}
-
 function communityColor(community: number, isIsolate: boolean): string { // 为引用分支提供稳定的可区分颜色。
   if (isIsolate) return '#d7e2ea' // 孤立论文使用中性颜色，避免被误解为一个引用社区。
   return d3.schemeTableau10[Math.abs(community) % d3.schemeTableau10.length] || '#4f82a0' // 对社区编号循环取色以保证稳定性。
@@ -151,24 +143,24 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   nodeGroups.append('title').text((node) => `${node.title}\n年份：${node.year || '未知'}\n入度：${node.inDegree}，出度：${node.outDegree}${node.memberCount > 1 ? `\n合并版本：${node.memberCount} 篇` : ''}`) // 悬浮时展示完整信息而非永久铺满标题。
   const labelGroups = nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点创建位于外侧的标签组。
     .append('g') // 使用独立容器同时承载路径遮挡底板和文字。
-    .attr('transform', (node) => `translate(${node.labelSide === 'left' ? -node.radius - 8 : node.radius + 8},-9)`) // 首末年份标题分别向外放置，其余标题也避开内部边通道。
+    .attr('transform', (node) => `translate(${node.labelBox.x - node.x},${node.labelBox.y - node.y})`) // 直接使用纯布局函数从八个候选位置选择的标签矩形。
     .attr('pointer-events', 'none') // 标签组不抢占节点的悬浮与点击事件。
   labelGroups.append('rect') // 先绘制浅色半透明标签底板，阻断下层引用路径穿过文字。
-    .attr('x', (node) => node.labelSide === 'left' ? -labelWidth(node.title) : 0) // 左侧标题将底板向外展开，右侧标题保持原方向。
-    .attr('y', 0) // 让底板围绕节点圆心所在行垂直居中。
-    .attr('width', (node) => labelWidth(node.title)) // 按截断后的标题长度提供可读宽度。
-    .attr('height', 18) // 为十一像素文字保留上下内边距。
+    .attr('x', 0) // 标签矩形坐标已由布局函数计算为局部原点。
+    .attr('y', 0) // 保持标签底板与测量矩形完全一致。
+    .attr('width', (node) => node.labelBox.width) // 使用与碰撞检测相同的实际估算宽度。
+    .attr('height', (node) => node.labelBox.height) // 使用与碰撞检测相同的实际高度。
     .attr('rx', 4) // 使用小圆角避免形成生硬矩形。
     .attr('fill', '#fbfdfe') // 与图画布浅色底保持一致，遮住边线但不显得像额外卡片。
     .attr('fill-opacity', 0.9) // 保持浅色半透明，同时确保边不会干扰文字阅读。
   labelGroups.append('text') // 在遮挡底板上绘制向外展开的短标签文本。
-    .attr('x', (node) => node.labelSide === 'left' ? -8 : 8) // 为左右两侧文字分别预留靠近外缘的内边距。
-    .attr('y', 13) // 让文字基线位于底板内垂直居中位置。
-    .attr('text-anchor', (node) => node.labelSide === 'left' ? 'end' : 'start') // 让标题始终朝时间轴外侧展开，不占用内部边通道。
+    .attr('x', 8) // 使用与标签测量一致的左侧内边距。
+    .attr('y', 14) // 让十一像素文字基线位于二十像素标签底板内。
+    .attr('text-anchor', 'start') // 标签矩形已选定方向，文字在矩形内统一从左开始。
     .attr('fill', '#31576e') // 使用足够深的阅读颜色。
     .attr('font-size', 11) // 降低标签视觉权重。
     .attr('font-weight', 650) // 仍确保小字号可阅读。
-    .text((node) => shortenTitle(node.title)) // 限制永久标题长度。
+    .text((node) => node.labelText) // 渲染参与过实际布局测量的同一份短标题文本。
 }
 
 function toggleIsolates(): void { // 在不改变主图布局规则的前提下展开或收起孤立论文网格。
