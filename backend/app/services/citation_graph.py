@@ -21,7 +21,7 @@ class CitationGraphService:
         """
         visible_papers = list(papers[:max_nodes])  # 仅取请求顺序靠前的节点，确保裁剪行为稳定可解释。
         visible_ids = {paper.paper_id for paper in visible_papers}  # 构造集合以过滤指向图外论文的引用。
-        nodes = [CitationGraphNode(paper_id=paper.paper_id, title=paper.title, year=paper.year, relevance=paper.llm_relevance_score if paper.llm_relevance_score is not None else paper.cross_encoder_score, source=paper.source) for paper in visible_papers]  # 投影可展示元数据且不新增推断。
+        nodes = [CitationGraphNode(paper_id=paper.paper_id, title=paper.title, year=paper.year, relevance=paper.llm_relevance_score if paper.llm_relevance_score is not None else paper.cross_encoder_score, source=paper.source, work_family_id=paper.work_family_id) for paper in visible_papers]  # 投影可展示元数据和已保存版本族事实且不新增推断。
         edges: list[CitationGraphEdge] = []  # 累积经事实校验的图关系。
         seen_edges: set[tuple[str, str, GraphEdgeType]] = set()  # 避免同一关系重复渲染。
         if "cites" in edge_types:  # 仅在调用方允许时处理来源提供的引用事实。

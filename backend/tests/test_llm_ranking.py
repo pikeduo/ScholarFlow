@@ -144,7 +144,7 @@ def test_rerank_rejects_low_relevance_paper_without_negative_evidence() -> None:
 
 def test_rerank_prioritizes_relevance_over_satisfied_constraint_status() -> None:
     """高相关但待核验论文必须排在低相关的“约束已满足”论文之前。"""
-    papers = [_paper("high-uncertain", 0.7), _paper("low-satisfied", 0.9)]  # 构造上游分数故意更高但 LLM 相关度更低的已满足候选。
+    papers = [_paper("high-uncertain", 0.7), _paper("partial-satisfied", 0.9)]  # 构造上游分数故意更高但 LLM 相关度处于部分相关范围的候选。
     assessments = [  # 构造可定位证据与不同的 LLM 相关度，覆盖最终排序冲突。
         LlmPaperAssessment(paper_id="high-uncertain", relevance_score=0.9, constraint_status="uncertain", evidence=[], recommendation_reason="相关性高但部分约束仍需核验。"),  # 高相关候选不需要伪造证据来表示不确定。
         LlmPaperAssessment(paper_id="partial-satisfied", relevance_score=0.35, constraint_status="satisfied", evidence=["ETT benchmark"], recommendation_reason="具备可定位的 ETT 证据。"),  # 边界分数候选应保留为部分相关范围。
@@ -153,6 +153,7 @@ def test_rerank_prioritizes_relevance_over_satisfied_constraint_status() -> None
     result = asyncio.run(LlmPaperReranker(client=_StubAssessmentClient(assessments)).rerank(papers, _query()))  # 执行最终核验和排序。
 
     assert [paper.paper_id for paper in result.papers] == ["high-uncertain", "partial-satisfied"]  # 验证相关度 0.9 优先于 0.35 边界候选，状态不得越级排序。
+    assert result.papers[1].constraint_status == "uncertain"  # 验证 0.35–0.59 即使存在约束证据也统一展示为部分相关。
 
 
 def test_rerank_rejects_invalid_result_limit() -> None:

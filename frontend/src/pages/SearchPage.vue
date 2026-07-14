@@ -5,6 +5,7 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 在搜索页和文献库统一展示论文详情与字段翻译。
 import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // 在搜索页和文献库统一展示事实型论文比较。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
+import CitationTimelineGraph from '../components/CitationTimelineGraph.vue' // 以时间分层方式展示当前结果集内的真实引用关系。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
@@ -102,18 +103,6 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
 const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
 const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
 const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
-const citationGraphLayout = computed(() => { // 为保留的受限图能力计算确定性圆形布局。
-  const nodes = citationGraph.value?.nodes || [] // 获取后端已裁剪的节点集合。
-  const radius = Math.max(95, Math.min(150, nodes.length * 14)) // 按节点数量限定圆形半径以减少重叠。
-  return nodes.map((node, index) => ({ ...node, x: 210 + radius * Math.cos((Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2), y: 190 + radius * Math.sin((Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2) })) // 返回 SVG 视图坐标。
-})
-const citationGraphNodeMap = computed(() => new Map(citationGraphLayout.value.map((node) => [node.paper_id, node]))) // 供保留图谱能力快速查找两端节点坐标。
-
-function citationGraphNodeLabel(node) { // 将图节点标题压缩为不影响 SVG 布局的可扫读标签。
-  const title = String(node?.title || '未命名论文') // 为历史快照缺失标题提供安全占位。
-  return title.length > 26 ? `${title.slice(0, 26)}…` : title // 限制标签长度，完整标题可通过节点点击详情查看。
-}
-
 watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd, resultSort.value], () => { // 任意筛选或排序变化时回到第一页避免越界空页。
   resultPage.value = 1 // 保持筛选后的首屏结果可见。
   void loadSearchResultPage() // 由服务端基于已保存结果执行筛选、排序与分页。
@@ -569,7 +558,7 @@ function closePaperComparison() { // 关闭比较弹层而保留选择，方便�
   comparisonLoading.value = false // 防御关闭时遗留加载状态。
 }
 
-async function openCitationGraph() { // 读取当前最终结果内可验证的引用和版本族关系。
+async function openCitationGraph() { // 读取当前最终结果内可验证的引用和可选版本族事实。
   const paperIds = (result.value?.papers || []).map((paper) => paper.paper_id).filter(Boolean) // 只提交当前同次搜索的稳定论文标识。
   if (!paperIds.length) { // 无搜索结果时不能生成空图。
     citationGraphError.value = '当前没有可用于生成引用图的论文' // 提供明确空状态提示。
@@ -578,7 +567,7 @@ async function openCitationGraph() { // 读取当前最终结果内可验证的�
   citationGraphLoading.value = true // 打开图谱读取中弹层。
   citationGraphError.value = '' // 清除旧图谱失败提示。
   try { // 将客户端公共错误映射为页面提示。
-    citationGraph.value = await getCitationGraph(paperIds, undefined, undefined, 30) // 只读取 SQLite 已保存的最多 30 个节点。
+    citationGraph.value = await getCitationGraph(paperIds, undefined, undefined, 30, ['cites', 'same_work']) // 只读取 SQLite 已保存的节点；页面默认仅渲染真实引用边。
   } catch (error) { // 不展示底层网络或持久化细节。
     citationGraphError.value = error instanceof SearchApiError ? error.message : '读取引用图时出现未知错误，请稍后重试' // 保持可安全展示的错误边界。
   } finally { // 无论成功失败都结束读取状态。
@@ -592,9 +581,9 @@ function closeCitationGraph() { // 关闭引用图弹层并释放本次布局数
   citationGraphLoading.value = false // 防御关闭时遗留的加载状态。
 }
 
-function openCitationGraphPaper(node) { // 点击图节点后复用已有详情读取入口。
+function openCitationGraphPaper(paperId) { // 点击图节点后复用已有详情读取入口。
   closeCitationGraph() // 先关闭关系图避免两个弹层叠加。
-  void openPaperDetail(node) // 使用节点中的稳定标识只读读取完整论文详情。
+  void openPaperDetail({ paper_id: paperId }) // 使用节点中的稳定标识只读读取完整论文详情。
 }
 
 async function openTechnicalRoutes() { // 从当前已保存论文关键词读取保守路线。
@@ -734,10 +723,9 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         </section>
 
         <details open class="overview-disclosure">
-          <summary><span><strong>过程与用量</strong><small>本次实际调用、Token、耗时与缓存</small></span><em>按需展开</em></summary>
+          <summary><span><strong>本次实际用量</strong><small>本次实际调用、Token、耗时与缓存</small></span><em>按需展开</em></summary>
           <div class="overview-disclosure-content">
             <div class="search-usage" aria-label="本次搜索实际用量">
-              <strong>本次实际用量</strong>
               <span v-if="searchUsageLoading">正在读取已保存统计…</span>
               <span v-else-if="searchUsageError" role="alert">{{ searchUsageError }}</span>
               <dl v-else-if="searchUsage">
@@ -824,19 +812,12 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           <button type="button" class="citation-graph-close" aria-label="关闭引用网络" @click="closeCitationGraph">×</button>
           <p class="eyebrow">SAVED RELATIONSHIP NETWORK</p>
           <h2 id="citation-graph-title">引用网络</h2>
-          <p class="citation-graph-boundary">仅保留当前搜索结果集合内可验证的引用边与版本族边；不补抓外部引文，不读取 PDF。</p>
+          <p class="citation-graph-boundary">仅保留当前搜索结果集合内可验证的引用事实；默认不显示版本族关系，不补抓外部引文，不读取 PDF。</p>
           <p v-if="citationGraphLoading" class="citation-graph-message">正在读取已保存关系…</p>
           <p v-else-if="citationGraphError" class="citation-graph-message is-error" role="alert">{{ citationGraphError }}</p>
           <template v-else-if="citationGraph">
             <p v-if="citationGraph.truncated" class="citation-graph-message">为保持流畅，本次仅展示前 {{ citationGraph.max_nodes }} 个已保存节点。</p>
-            <div class="citation-graph-legend" aria-label="关系图图例"><span class="is-cites">引用</span><span class="is-same-work">同一版本族</span><small>{{ `${citationGraph.nodes.length} 个节点 · ${citationGraph.edges.length} 条关系` }}</small></div>
-            <p v-if="!citationGraph.edges.length" class="citation-graph-empty">当前结果中尚未保存可连接的内部引用或版本族关系；节点仍可点击查看详情。</p>
-            <svg v-else class="citation-graph-canvas" viewBox="0 0 420 380" role="img" aria-label="当前搜索结果的受限引用关系图">
-              <defs><marker id="citation-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0,0 L0,7 L7,3.5 z" /></marker></defs>
-              <line v-for="(edge, index) in citationGraph.edges" :key="`${edge.edge_type}-${edge.source_paper_id}-${edge.target_paper_id}-${index}`" :class="['citation-graph-edge', `is-${edge.edge_type}`]" :x1="citationGraphNodeMap.get(edge.source_paper_id)?.x" :y1="citationGraphNodeMap.get(edge.source_paper_id)?.y" :x2="citationGraphNodeMap.get(edge.target_paper_id)?.x" :y2="citationGraphNodeMap.get(edge.target_paper_id)?.y" :marker-end="edge.edge_type === 'cites' ? 'url(#citation-arrow)' : undefined" />
-              <g v-for="node in citationGraphLayout" :key="node.paper_id" class="citation-graph-node" tabindex="0" role="button" :aria-label="`查看论文详情：${node.title}`" @click="openCitationGraphPaper(node)" @keydown.enter.prevent="openCitationGraphPaper(node)" @keydown.space.prevent="openCitationGraphPaper(node)"><circle :cx="node.x" :cy="node.y" r="18" /><text :x="node.x" :y="node.y + 32">{{ citationGraphNodeLabel(node) }}</text><title>{{ `${node.title}${node.year ? ` · ${node.year}` : ''}` }}</title></g>
-            </svg>
-            <ul v-if="!citationGraph.edges.length" class="citation-node-list" aria-label="无关系时的已保存论文节点"><li v-for="node in citationGraphLayout" :key="node.paper_id"><button type="button" @click="openCitationGraphPaper(node)">{{ `${node.title}${node.year ? ` · ${node.year}` : ''}` }}</button></li></ul>
+            <CitationTimelineGraph :graph="citationGraph" @open-paper="openCitationGraphPaper" />
           </template>
         </section>
       </div>
@@ -1531,11 +1512,6 @@ textarea::placeholder { /* 设置查询示例占位。 */
   padding-top: 0.2rem; /* 与覆盖缺口保持紧凑但清晰的距离。 */
 }
 
-.search-usage > strong { /* 标记统计来源为实际持久化快照。 */
-  color: #31566e; /* 使用与过程区一致的中层级蓝色。 */
-  font-size: 0.72rem; /* 保持为辅助信息而非结果主标题。 */
-}
-
 .search-usage > span { /* 展示读取中或安全错误提示。 */
   color: #718496; /* 使用克制的辅助文字色。 */
   font-size: 0.68rem; /* 控制状态信息视觉权重。 */
@@ -1911,10 +1887,10 @@ textarea::placeholder { /* 设置查询示例占位。 */
   background: rgba(18, 43, 60, 0.38); /* 使用低饱和遮罩聚焦关系视图。 */
 }
 
-.citation-graph-panel { /* 承载节点、关系边、图例和严格边界说明。 */
+.citation-graph-panel { /* 承载时间分层引用图、侧栏和严格边界说明。 */
   position: relative; /* 为关闭按钮提供定位上下文。 */
-  width: min(52rem, 100%); /* 限制宽屏图面板并适配手机。 */
-  max-height: min(48rem, 100%); /* 保持长节点列表和错误信息可滚动。 */
+  width: min(92vw, 82rem); /* 为时间画布和论文关系侧栏保留足够宽度。 */
+  max-height: min(90vh, 54rem); /* 保持长分支和侧栏信息可滚动。 */
   overflow: auto; /* 允许小屏查看完整关系说明与节点。 */
   padding: 2rem; /* 为标题、图例和画布提供舒适留白。 */
   border-radius: 1rem; /* 与其他搜索页弹层保持一致。 */
@@ -1957,107 +1933,6 @@ textarea::placeholder { /* 设置查询示例占位。 */
   border-radius: 0.65rem; /* 与其他安全错误提示协调。 */
   color: #9b3c36; /* 使用安全错误色。 */
   background: #fff0ee; /* 使用浅红背景增强可辨识性。 */
-}
-
-.citation-graph-legend { /* 展示两类允许关系和当前图规模。 */
-  display: flex; /* 横向组织图例胶囊与统计。 */
-  flex-wrap: wrap; /* 窄屏允许自然换行。 */
-  align-items: center; /* 垂直对齐图例元素。 */
-  gap: 0.45rem; /* 分隔关系类型和统计信息。 */
-  margin-top: 1rem; /* 与边界说明形成清晰分区。 */
-}
-
-.citation-graph-legend span { /* 设置关系类型图例胶囊。 */
-  padding: 0.28rem 0.5rem; /* 提供紧凑识别区域。 */
-  border-radius: 999px; /* 以胶囊区分不同关系。 */
-  font-size: 0.65rem; /* 保持图例为辅助层级。 */
-  font-weight: 800; /* 确保小字号可辨识。 */
-}
-
-.citation-graph-legend .is-cites { /* 标记有方向的来源引用关系。 */
-  color: #2e6f95; /* 使用蓝色提示引用边。 */
-  background: #e5f1f7; /* 与 SVG 引用边保持视觉对应。 */
-}
-
-.citation-graph-legend .is-same-work { /* 标记无方向的同一版本族关系。 */
-  color: #7b5f22; /* 使用金棕色提示版本关联。 */
-  background: #fff4d9; /* 与 SVG 虚线边保持视觉对应。 */
-}
-
-.citation-graph-legend small { /* 显示节点和边数量而不夸大网络规模。 */
-  color: #718496; /* 使用辅助统计颜色。 */
-  font-size: 0.66rem; /* 保持为次级信息。 */
-}
-
-.citation-graph-canvas { /* 渲染集合内部关系的固定坐标 SVG 画布。 */
-  display: block; /* 移除 SVG 内联底部留白。 */
-  width: 100%; /* 自适应面板可用宽度。 */
-  min-height: 22rem; /* 为关系边和标题标签保留阅读空间。 */
-  margin-top: 0.6rem; /* 与图例保持紧凑分隔。 */
-  overflow: visible; /* 允许节点外侧标题不被 SVG 视口裁切。 */
-}
-
-.citation-graph-edge { /* 设置所有事实关系边的公共可见性。 */
-  stroke-width: 2; /* 保证在浅色背景上可清晰阅读。 */
-  opacity: 0.86; /* 让节点仍保持主要视觉焦点。 */
-}
-
-.citation-graph-edge.is-cites { /* 使用实线和箭头表达有向引用事实。 */
-  stroke: #5c9fbd; /* 与引用图例对应。 */
-}
-
-.citation-graph-edge.is-same_work { /* 使用虚线表达无方向的版本族事实。 */
-  stroke: #c8a653; /* 与版本族图例对应。 */
-  stroke-dasharray: 5 4; /* 明确区别于引用边。 */
-}
-
-#citation-arrow path { /* 设置引用箭头的填充色。 */
-  fill: #5c9fbd; /* 与有向引用边保持一致。 */
-}
-
-.citation-graph-node { /* 将每个图节点设置为可点击详情入口。 */
-  cursor: pointer; /* 让用户知道节点可打开论文详情。 */
-  outline: none; /* 使用下方焦点圈替代浏览器默认外框。 */
-}
-
-.citation-graph-node circle { /* 绘制论文节点圆形主体。 */
-  fill: #e8f2f5; /* 使用低饱和蓝绿色承载论文节点。 */
-  stroke: #4b839b; /* 保持节点与边有足够对比。 */
-  stroke-width: 2; /* 确保缩小时仍可见。 */
-}
-
-.citation-graph-node text { /* 显示压缩论文标题标签。 */
-  fill: #405b6d; /* 使用可读正文色。 */
-  font-size: 10px; /* 在最多三十个节点时控制文字拥挤。 */
-  text-anchor: middle; /* 让标签以节点中心对齐。 */
-  pointer-events: none; /* 确保标签点击仍交给节点容器。 */
-}
-
-.citation-graph-node:hover circle, .citation-graph-node:focus circle { /* 提供鼠标和键盘一致的节点聚焦反馈。 */
-  fill: #cfe7d7; /* 突出当前可打开详情的论文。 */
-  stroke: #28745a; /* 使用关系入口的可信绿色。 */
-  stroke-width: 3; /* 加强当前节点边界。 */
-}
-
-.citation-node-list { /* 无关系时仍提供全部节点的可点击详情列表。 */
-  display: grid; /* 纵向组织论文条目。 */
-  gap: 0.45rem; /* 分隔可点击节点按钮。 */
-  margin: 0.9rem 0 0; /* 与空关系说明分隔。 */
-  padding: 0; /* 清除列表默认缩进。 */
-  list-style: none; /* 使用按钮样式而非默认项目符号。 */
-}
-
-.citation-node-list button { /* 让无关系节点仍可进入详情抽屉。 */
-  width: 100%; /* 在窄屏提供整行可点击区域。 */
-  padding: 0.55rem 0.65rem; /* 提供舒适点击面积。 */
-  border: 1px solid #dbe7ed; /* 使用轻量边界组织节点条目。 */
-  border-radius: 0.55rem; /* 与关系图控件协调。 */
-  color: #31566e; /* 保持正文可读性。 */
-  background: #f8fbfc; /* 使用浅色背景不夸大关系。 */
-  cursor: pointer; /* 明确节点列表可交互。 */
-  font: inherit; /* 继承页面字体。 */
-  font-size: 0.71rem; /* 控制长标题的信息密度。 */
-  text-align: left; /* 保持论文标题自然左对齐。 */
 }
 
 .paper-comparison-panel { /* 展示二至五篇论文的固定列事实对比。 */

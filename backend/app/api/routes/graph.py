@@ -27,7 +27,7 @@ def get_citation_graph(
         paper_ids：需要进入图谱的已保存内部论文标识。
         state_store：可替换的 SQLite 搜索结果读取适配层。
         max_nodes：最多展示的节点数，默认 30。
-        edge_types：可选的事实边类型；省略时展示引用和版本族边。
+        edge_types：可选的事实边类型；省略时仅展示真实引用边。
     返回：
         CitationGraphResponse：受节点上限保护的图节点、边和裁剪状态。
     异常：
@@ -44,6 +44,6 @@ def get_citation_graph(
     papers_by_id = {paper.paper_id: paper for paper in papers}  # 建立按请求顺序重排的稳定索引。
     if len(papers_by_id) != len(normalized_ids) or any(paper_id not in papers_by_id for paper_id in normalized_ids):  # 不允许部分事实集合伪装为完整图。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="存在未保存的论文，无法生成引用图")  # 不暴露哪些论文实际存在。
-    selected_edge_types: set[GraphEdgeType] = set(edge_types or ["cites", "same_work"])  # 省略时只启用两类已有事实边。
+    selected_edge_types: set[GraphEdgeType] = set(edge_types or ["cites"])  # 默认只启用真实引用边，版本族必须由前端显式请求。
     ordered_papers = [papers_by_id[paper_id] for paper_id in normalized_ids]  # 固定节点顺序以支持前端稳定布局。
     return CitationGraphService().build(ordered_papers, max_nodes=max_nodes, edge_types=selected_edge_types)  # 构建受限内部关系图且不进行外部扩展。

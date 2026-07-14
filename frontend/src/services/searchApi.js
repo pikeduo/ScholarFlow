@@ -400,15 +400,18 @@ export async function comparePapers(paperIds, fetchImpl = globalThis.fetch, apiB
 }
 
 /** 读取当前已保存论文集合的受限引用图，不调用外部引文来源。 */
-export async function getCitationGraph(paperIds, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL, maxNodes = 30) { // 允许页面和测试复用只读图谱请求。
+export async function getCitationGraph(paperIds, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL, maxNodes = 30, edgeTypes = []) { // 允许页面和测试复用只读图谱请求。
   if (!Array.isArray(paperIds)) throw new SearchApiError('请选择至少 1 篇论文生成引用图') // 阻止非数组输入进入网络层。
   const normalizedIds = paperIds.map((paperId) => String(paperId || '').trim()) // 规范化当前搜索结果提供的内部标识。
   if (!normalizedIds.length || normalizedIds.length > 50 || normalizedIds.some((paperId) => !paperId)) throw new SearchApiError('请选择 1 至 50 篇论文生成引用图') // 保持受限图的节点请求边界。
   if (new Set(normalizedIds).size !== normalizedIds.length) throw new SearchApiError('引用图论文不能重复') // 防止同一节点重复进入布局。
   const normalizedMaxNodes = Number(maxNodes) // 将调用方提供的节点上限转换为数值。
   if (!Number.isInteger(normalizedMaxNodes) || normalizedMaxNodes < 1 || normalizedMaxNodes > 50) throw new SearchApiError('引用图节点上限必须在 1 至 50 之间') // 与后端查询参数边界保持一致。
+  const normalizedEdgeTypes = Array.isArray(edgeTypes) ? [...new Set(edgeTypes.map((edgeType) => String(edgeType || '').trim()))] : [] // 仅接受调用方显式选择的已审计关系类型。
+  if (normalizedEdgeTypes.some((edgeType) => edgeType !== 'cites' && edgeType !== 'same_work')) throw new SearchApiError('引用图关系类型只能是 cites 或 same_work') // 阻止关键词或模型推断关系进入接口。
   const searchParams = new URLSearchParams({ max_nodes: String(normalizedMaxNodes) }) // 构建可安全编码的只读查询参数。
   for (const paperId of normalizedIds) searchParams.append('paper_ids', paperId) // 使用重复参数传递稳定论文标识列表。
+  for (const edgeType of normalizedEdgeTypes) searchParams.append('edge_types', edgeType) // 仅在页面需要版本族辅助信息时显式请求。
   let response // 保存图谱读取 HTTP 响应。
   try { // 将网络或代理异常转换为公共提示。
     response = await fetchImpl(`${apiBaseUrl}/api/v1/graph/citations?${searchParams.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }) // 仅读取 SQLite 已保存的内部关系图。

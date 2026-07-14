@@ -7,13 +7,20 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/searchApi.test.js tests/libraryApi.test.js tests/duration.test.js tests/doi.test.js"
+    "test": "node --test tests/searchApi.test.js tests/libraryApi.test.js tests/duration.test.js tests/doi.test.js",
+    "test:graph": "tsx --test tests/citationGraphLayout.test.ts",
+    "typecheck:graph": "vue-tsc --noEmit -p tsconfig.citation-graph.json"
   },
   "dependencies": {
+    "d3": "7.9.0",
     "vue": "3.5.39"
   },
   "devDependencies": {
+    "@types/d3": "7.4.3",
     "@vitejs/plugin-vue": "6.0.7",
-    "vite": "8.1.3"
+    "tsx": "4.19.2",
+    "typescript": "5.7.3",
+    "vite": "8.1.3",
+    "vue-tsc": "2.2.10"
   }
 }

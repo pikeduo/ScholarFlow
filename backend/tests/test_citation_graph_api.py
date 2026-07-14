@@ -28,8 +28,8 @@ def api_client() -> Iterator[TestClient]:
     app.dependency_overrides.pop(get_search_run_state_store, None)  # 防止替身污染其他用例。
 
 
-def test_citation_graph_only_returns_internal_fact_edges(api_client: TestClient) -> None:
-    """图应按请求顺序返回节点，并忽略指向集合外的引用。"""
+def test_citation_graph_defaults_to_internal_citation_edges(api_client: TestClient) -> None:
+    """默认图应按请求顺序返回节点，仅保留集合内真实引用。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: FakeGraphStore()  # 注入固定保存论文替身。
 
     response = api_client.get("/api/v1/graph/citations?paper_ids=paper-2&paper_ids=paper-1&max_nodes=2")  # 使用反向顺序验证节点稳定性。
@@ -37,4 +37,16 @@ def test_citation_graph_only_returns_internal_fact_edges(api_client: TestClient)
     assert response.status_code == 200  # 验证受限图读取成功。
     payload = response.json()  # 解析公共图响应。
     assert [node["paper_id"] for node in payload["nodes"]] == ["paper-2", "paper-1"]  # 验证节点按请求顺序排列。
-    assert {(edge["source_paper_id"], edge["target_paper_id"], edge["edge_type"]) for edge in payload["edges"]} == {("paper-1", "paper-2", "cites"), ("paper-1", "paper-2", "same_work")}  # 验证只保留内部引用和版本族事实边。
+    assert payload["nodes"][0]["work_family_id"] == "family-1"  # 验证前端可获得已保存的版本族聚合事实。
+    assert {(edge["source_paper_id"], edge["target_paper_id"], edge["edge_type"]) for edge in payload["edges"]} == {("paper-1", "paper-2", "cites")}  # 验证默认只保留内部真实引用边。
+
+
+def test_citation_graph_can_explicitly_include_version_family_edges(api_client: TestClient) -> None:
+    """版本族关系仅在调用方显式选择后作为可区分事实边返回。"""
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeGraphStore()  # 注入固定保存论文替身。
+
+    response = api_client.get("/api/v1/graph/citations?paper_ids=paper-1&paper_ids=paper-2&edge_types=cites&edge_types=same_work")  # 显式请求两类已审计事实关系。
+
+    assert response.status_code == 200  # 验证显式关系选择可正常读取。
+    edge_types = {edge["edge_type"] for edge in response.json()["edges"]}  # 收集响应内的关系类型。
+    assert edge_types == {"cites", "same_work"}  # 验证版本族不会被混同为真实引用。

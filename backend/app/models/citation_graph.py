@@ -16,6 +16,7 @@ class CitationGraphNode(BaseModel):
     year: int | None = None  # 展示来源提供的发表年份。
     relevance: float | None = None  # 复用既有排序分数，不重新计算语义关系。
     source: str  # 展示主溯源来源。
+    work_family_id: str | None = None  # 提供已保存版本族事实，供前端默认聚合工作节点。
 
 
 class CitationGraphEdge(BaseModel):

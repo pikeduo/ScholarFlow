@@ -255,6 +255,16 @@ test('getCitationGraph 仅以重复查询参数提交已保存论文标识', asy
   assert.equal(capturedUrl, 'http://test.local/api/v1/graph/citations?max_nodes=30&paper_ids=paper-2&paper_ids=paper-1') // 验证稳定节点上限和重复标识参数顺序。
 })
 
+test('getCitationGraph 仅显式请求可审计的版本族辅助边', async () => { // 验证前端不会把推断关系提交给后端。
+  let capturedUrl = '' // 保存图谱读取路径。
+  const fetchStub = async (url) => { capturedUrl = url; return { ok: true, status: 200, json: async () => ({ nodes: [], edges: [], truncated: false, max_nodes: 30 }) } } // 提供最小成功响应。
+
+  await getCitationGraph(['paper-1'], fetchStub, 'http://test.local', 30, ['cites', 'same_work']) // 显式请求真实引用和版本族辅助事实。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/graph/citations?max_nodes=30&paper_ids=paper-1&edge_types=cites&edge_types=same_work') // 验证关系类型不会默认混入请求。
+  await assert.rejects(() => getCitationGraph(['paper-1'], fetchStub, 'http://test.local', 30, ['semantic_similar']), /关系类型只能是 cites 或 same_work/) // 验证拒绝推断关系类型。
+})
+
 test('getSearchRunUsage 读取同次运行快照并拒绝缺失运行标识', async () => { // 验证用量入口不触发新的搜索或重新计算统计。
   let capturedUrl = '' // 保存用量读取路径。
   const expectedUsage = { run_id: 'run-1', api_call_count: 4, token_usage: 360, latency_ms: 1480, cache_hits: 2, current_round: 2, max_rounds: 3, selected_sources: ['openalex'], stop_reason: '已满足目标数量' } // 构造来自 SQLite 的最小完整观测快照。
