@@ -33,7 +33,7 @@ class MultiRoundSearchExecutor(Protocol):
         """按累计候选计算可解释覆盖报告与停止原因。"""
         ...  # 覆盖服务不调用外部 API。
 
-    def evolve_query(self, query: QueryIntent, coverage_report: CoverageReport, *, executed_subqueries: list[str]) -> QueryEvolutionResult:
+    async def evolve_query(self, query: QueryIntent, coverage_report: CoverageReport, *, papers: list[PaperRecord], executed_subqueries: list[str]) -> QueryEvolutionResult:
         """根据覆盖缺口生成有限且去重的补充子查询。"""
         ...  # 演化服务不放宽用户硬约束。
 
@@ -167,22 +167,27 @@ class MultiRoundSearchWorkflow:
         coverage_report = state["coverage_report"]  # 读取覆盖节点已经生成的报告。
         if coverage_report is None:  # 防御图配置错误或缺失状态传播。
             raise SearchWorkflowError("覆盖评估节点未生成报告")  # 阻止缺少停止条件的循环继续执行。
-        evolution_result = self._executor.evolve_query(state["query"], coverage_report, executed_subqueries=state["executed_subqueries"])  # 仅针对当前缺口生成去重补充查询。
-        pending_subqueries = _append_pending_subqueries(state["pending_subqueries"], evolution_result.generated_subqueries, state["executed_subqueries"])  # 保留原计划优先并追加不重复演化查询。
-        run_state = state["run_state"]  # 读取当前已完成轮次以决定下一轮来源与单源召回规模。
+        evolution_result = await self._executor.evolve_query(state["query"], coverage_report, papers=state["accumulated_papers"], executed_subqueries=state["executed_subqueries"])  # 基于当前论文证据与缺口生成去重补充查询。
+        if evolution_result.strategy_model_name is not None:  # 仅在 LLM 已实际产出有效策略时让其优先决定下一轮表达。
+            strategy_subqueries = _append_pending_subqueries([], evolution_result.generated_subqueries, state["executed_subqueries"])  # 先对策略提案执行既有去重保护。
+            pending_subqueries = _append_pending_subqueries(strategy_subqueries, state["pending_subqueries"], state["executed_subqueries"])  # 再保留尚未执行的初始计划作为后备。
+        else:  # 规则回退和未调用策略时维持原有计划优先级，避免改变离线流程。
+            pending_subqueries = _append_pending_subqueries(state["pending_subqueries"], evolution_result.generated_subqueries, state["executed_subqueries"])  # 追加不重复的确定性演化查询。
+        run_state = state["run_state"].model_copy(update={"token_usage": state["run_state"].token_usage + evolution_result.strategy_prompt_tokens + evolution_result.strategy_completion_tokens, "warnings": [*state["run_state"].warnings, *evolution_result.warnings]})  # 将策略模型 Token 与安全降级摘要写入可恢复运行状态。
+        self._executor.persist_state(run_state)  # 在下一轮来源调用前持久化策略成本和降级信息。
         next_round = run_state.current_round + 1  # 下一轮只能位于已校验的最大轮次范围内。
         next_source_recall_count = _remaining_source_recall_count(state["query"], coverage_report) if next_round == 3 else state["query"].source_recall_count  # 第三轮只按尚缺高相关论文数请求单源候选，其余轮保持规划召回规模。
         if not pending_subqueries:  # 没有可执行新查询时不能重复首轮表达。
             if next_round == 3 and coverage_report.high_relevance_count < state["query"].target_paper_count:  # 两轮后仍不足目标时允许第三轮切换来源，不因缺少子查询错过补足机会。
                 fallback_query = _query_for_round(state["query"], retrieval_round=next_round, source_recall_count=next_source_recall_count)  # 使用完整原始约束向第三相关来源请求恰好覆盖缺口的候选规模。
-                return {"current_query": fallback_query, "pending_subqueries": pending_subqueries, "should_stop": False}  # 直接回到召回节点执行唯一补足轮，不重复前两轮来源组合。
+                return {"run_state": run_state, "current_query": fallback_query, "pending_subqueries": pending_subqueries, "should_stop": False}  # 直接回到召回节点执行唯一补足轮，并保留策略审计状态。
             final_report = self._executor.analyze_coverage(state["query"], state["accumulated_papers"], new_valid_count=coverage_report.new_valid_count, source_counts=state["source_counts"], unavailable_sources=tuple(state["source_errors"]), current_round=run_state.current_round, max_rounds=run_state.max_rounds, budget_exhausted=state["budget_exhausted"], has_executable_query=False)  # 重算“没有可执行新查询”而非伪造其他停止原因。
             completed_state = run_state.model_copy(update={"status": "completed", "stop_reason": final_report.stop_reason, "coverage_report": final_report, "latency_ms": _elapsed_latency_ms(state["started_at"]), "warnings": [*run_state.warnings, *evolution_result.warnings]})  # 保存演化跳过提示与最终报告。
             self._executor.persist_state(completed_state)  # 保存无新查询时的完成状态。
             return {"run_state": completed_state, "pending_subqueries": pending_subqueries, "coverage_report": final_report, "should_stop": True}  # 由条件边进入结果整理。
         next_subquery = pending_subqueries.pop(0)  # 按 Query Agent 原计划优先、再按缺口严重度选择下一条查询。
         executed_subqueries = [*state["executed_subqueries"], next_subquery.query]  # 在下一轮来源调用前标记已执行以防恢复后重复。
-        return {"current_query": _query_for_subquery(state["query"], next_subquery, retrieval_round=next_round, source_recall_count=next_source_recall_count), "pending_subqueries": pending_subqueries, "executed_subqueries": executed_subqueries, "should_stop": False}  # 回到召回节点执行唯一补充表达，并在第三轮按缺口限制来源返回量。
+        return {"run_state": run_state, "current_query": _query_for_subquery(state["query"], next_subquery, retrieval_round=next_round, source_recall_count=next_source_recall_count), "pending_subqueries": pending_subqueries, "executed_subqueries": executed_subqueries, "should_stop": False}  # 回到召回节点执行唯一补充表达，并保留策略用量进入后续轮次。
 
     async def _compose_results(self, state: SearchWorkflowState) -> dict[str, object]:
         """发布终态事件并构造不额外调用来源的稳定最终结果。"""

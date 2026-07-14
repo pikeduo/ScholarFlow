@@ -13,7 +13,7 @@ from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 维护
 from backend.app.models.search_run import SearchRunState  # 保存可恢复的运行状态快照。
 from backend.app.models.search_event import SearchProgressEvent  # 发布不含论文详情的轻量进度事件。
 from backend.app.services.coverage_analysis import CoverageGapAnalyzer  # 提供纯本地覆盖分析和停止判断。
-from backend.app.services.query_evolution import QueryEvolutionService  # 提供受硬约束保护的查询演化。
+from backend.app.services.llm_query_evolution import LlmQueryEvolutionService  # 提供 LLM 优先且可安全回退的查询演化。
 from backend.app.services.search_events import SearchRunEventPublisher  # 解耦 SSE 或 Redis 进度发布实现。
 from backend.app.services.search_run_store import SearchRunStateStore  # 持久化每个工作流节点后的轻量快照。
 
@@ -29,7 +29,7 @@ class SingleRoundRecallCoordinator(Protocol):
 class MultiRoundSearchController:
     """装配 LangGraph 工作流所需服务，维持原有公共搜索调用契约。"""
 
-    def __init__(self, coordinator: SingleRoundRecallCoordinator, coverage_gap_analyzer: CoverageGapAnalyzer | None = None, query_evolution_service: QueryEvolutionService | None = None, state_store: SearchRunStateStore | None = None, standard_max_rounds: int = 3, deep_max_rounds: int = 3) -> None:
+    def __init__(self, coordinator: SingleRoundRecallCoordinator, coverage_gap_analyzer: CoverageGapAnalyzer | None = None, query_evolution_service: LlmQueryEvolutionService | None = None, state_store: SearchRunStateStore | None = None, standard_max_rounds: int = 3, deep_max_rounds: int = 3) -> None:
         """保存可替换协作者和标准、深度模式的硬轮次上限。
 
         参数：
@@ -48,7 +48,7 @@ class MultiRoundSearchController:
             raise ValueError("deep_max_rounds 必须位于 [standard_max_rounds, 3] 区间")  # 保持成本策略可解释。
         self._coordinator = coordinator  # 保存不绑定适配器、模型或 API 的单轮服务。
         self._coverage_gap_analyzer = coverage_gap_analyzer or CoverageGapAnalyzer()  # 默认使用纯本地覆盖分析。
-        self._query_evolution_service = query_evolution_service or QueryEvolutionService()  # 默认使用不调用外部服务的确定性演化。
+        self._query_evolution_service = query_evolution_service or LlmQueryEvolutionService(enabled=False)  # 直接服务构造默认不触发外部模型，生产组合根会显式启用策略。
         self._state_store = state_store  # 未装配持久化时允许纯内存单元测试。
         self._standard_max_rounds = standard_max_rounds  # 保存标准模式硬上限。
         self._deep_max_rounds = deep_max_rounds  # 保存深度模式硬上限。
@@ -71,9 +71,9 @@ class MultiRoundSearchController:
         """委托纯本地覆盖服务生成继续或停止决策。"""
         return self._coverage_gap_analyzer.analyze(query, papers, new_valid_count=new_valid_count, source_counts=source_counts, unavailable_sources=unavailable_sources, current_round=current_round, max_rounds=max_rounds, budget_exhausted=budget_exhausted, has_executable_query=has_executable_query)  # 节点不直接依赖具体分析实现。
 
-    def evolve_query(self, query: QueryIntent, coverage_report: CoverageReport, *, executed_subqueries: list[str]) -> QueryEvolutionResult:
-        """委托查询演化服务生成遵循硬约束的补充子查询。"""
-        return self._query_evolution_service.evolve(query, coverage_report, executed_subqueries=executed_subqueries)  # 保持演化去重规则位于可单测服务层。
+    async def evolve_query(self, query: QueryIntent, coverage_report: CoverageReport, *, papers: list[PaperRecord], executed_subqueries: list[str]) -> QueryEvolutionResult:
+        """委托 LLM 优先、确定性回退的演化服务生成遵循硬约束的补充子查询。"""
+        return await self._query_evolution_service.evolve(query, coverage_report, papers=papers, executed_subqueries=executed_subqueries)  # 保持策略调用、去重与降级位于可单测服务层。
 
     def persist_state(self, state: SearchRunState) -> None:
         """尽力保存轻量运行快照，存储失败不影响搜索控制流。"""

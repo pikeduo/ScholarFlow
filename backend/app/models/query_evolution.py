@@ -19,3 +19,7 @@ class QueryEvolutionResult(BaseModel):
     generated_subqueries: list[QuerySubquery] = Field(default_factory=list)  # 保存本轮可交给来源适配器的新增查询。
     skipped_gap_count: int = Field(default=0, ge=0)  # 统计未能形成新查询的缺口数量。
     warnings: list[str] = Field(default_factory=list)  # 保存不含原始敏感查询的可展示跳过摘要。
+    strategy_reason: str | None = None  # 保存 LLM 策略产生的简短理由，缺失表示未调用或已降级。
+    strategy_model_name: str | None = None  # 保存实际执行策略的模型名称供用量审计。
+    strategy_prompt_tokens: int = Field(default=0, ge=0)  # 保存本轮策略模型输入 Token。
+    strategy_completion_tokens: int = Field(default=0, ge=0)  # 保存本轮策略模型输出 Token。

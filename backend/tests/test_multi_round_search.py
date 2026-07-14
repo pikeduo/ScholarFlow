@@ -6,6 +6,8 @@ from backend.app.models.multi_source_recall import MultiSourceRecallResult  # �
 from backend.app.models.paper import PaperRecord  # 构造已核验的最终论文候选。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 构造主查询与待执行补充子查询。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计的来源计划。
+from backend.app.adapters.deepseek_search_strategy import SearchStrategyProposal  # 构造不访问网络的 LLM 策略提案。
+from backend.app.services.llm_query_evolution import LlmQueryEvolutionService  # 装配生产可替换的策略优先查询演化服务。
 from backend.app.services.multi_round_search import MultiRoundSearchController  # 导入待测多轮搜索控制器。
 
 
@@ -54,6 +56,15 @@ class _FailingCoordinator:
         raise RuntimeError("模拟来源协调器内部故障")  # 触发 LangGraph 召回节点的安全失败路径。
 
 
+class _StubSearchStrategyClient:
+    """返回固定 LLM 策略提案，验证工作流会优先执行其下一轮查询。"""
+
+    async def propose(self, query: QueryIntent, coverage_report: object, papers: list[PaperRecord], executed_subqueries: list[str]) -> SearchStrategyProposal:
+        """返回一条受限英文子查询，不访问真实模型、网络或密钥。"""
+        _ = query, coverage_report, papers, executed_subqueries  # 本替身只验证工作流装配，不读取业务内容。
+        return SearchStrategyProposal(subqueries=[QuerySubquery(query="LLM selected forecasting benchmark", language="en", purpose="dataset")], reason="补足当前结果数量缺口", model_name="deepseek-test", prompt_tokens=120, completion_tokens=30)  # 提供可审计且不重复的策略结果。
+
+
 def _query(*, target_paper_count: int = 2, source_recall_count: int = 5, search_mode: str = "standard", subqueries: list[QuerySubquery] | None = None) -> QueryIntent:
     """构造可按用例控制目标数量、模式和待执行子查询的查询意图。"""
     return QueryIntent(  # 提供无需 Query Agent 或外部 API 的稳定领域输入。
@@ -99,6 +110,16 @@ def test_controller_executes_planned_subquery_and_stops_after_target_is_covered(
     assert [paper.paper_id for paper in result.papers] == ["paper-1", "paper-2"]  # 验证跨轮候选按首次出现顺序累积。
     assert result.run_state.status == "completed"  # 验证控制器写入可恢复完成状态。
     assert result.run_state.stop_reason == "已获得目标数量的高相关论文且关键约束已覆盖"  # 验证达到目标后不继续搜索。
+
+
+def test_controller_prioritizes_llm_strategy_and_persists_strategy_token_usage() -> None:
+    """覆盖缺口存在时，控制器应优先执行有效策略并将其 Token 保留到最终状态。"""
+    planned_subquery = QuerySubquery(query="planned backup forecasting query", language="en", purpose="dataset")  # 构造尚未执行的原始计划，验证其会退居策略之后。
+    coordinator = _StubCoordinator([_round_result([_paper("paper-1")]), _round_result([_paper("paper-2")])])  # 让第二轮补齐两篇目标论文。
+    strategy_service = LlmQueryEvolutionService(client=_StubSearchStrategyClient(), enabled=True)  # 注入离线 LLM 策略替身而不发起真实请求。
+    result = asyncio.run(MultiRoundSearchController(coordinator, query_evolution_service=strategy_service).run(_query(subqueries=[planned_subquery])))  # 执行包含覆盖缺口的两轮工作流。
+    assert coordinator.queries[1].research_topics == ["LLM selected forecasting benchmark"]  # 验证有效 LLM 策略优先于初始计划成为下一轮查询。
+    assert result.run_state.token_usage == 150  # 验证策略输入与输出 Token 穿过工作流并写入最终快照。
 
 
 def test_controller_stops_when_no_executable_query_exists() -> None:

@@ -34,6 +34,7 @@ from backend.app.services.search_events import InMemorySearchRunEventPublisher  
 from backend.app.services.search_result_page import SearchResultPageService  # 在已保存结果上执行确定性筛选、排序和分页。
 from backend.app.services.openalex_search import OpenAlexSearchService  # 复用客户端与去重的业务编排服务。
 from backend.app.services.query_planning import QueryPlanningService  # 在多源检索前生成结构化英文查询计划。
+from backend.app.services.llm_query_evolution import LlmQueryEvolutionService  # 在存在覆盖缺口时提供一次受限的 LLM 策略提案。
 from backend.app.adapters.deepseek_query_planner import QueryPlanningError  # 将查询规划故障转换为稳定 HTTP 错误。
 from backend.app.services.source_router import SourceRouter  # 使用确定性规则选择本次可调用的数据源。
 
@@ -82,7 +83,7 @@ def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
 @lru_cache(maxsize=1)
 def get_multi_round_search_controller() -> MultiRoundSearchController:
     """构造并复用多轮搜索控制器，复用单轮协调器的来源限流和模型实例。"""
-    return MultiRoundSearchController(get_multi_source_recall_coordinator(), state_store=get_search_run_state_store())  # 让多轮执行复用来源模型和运行状态持久化适配层。
+    return MultiRoundSearchController(get_multi_source_recall_coordinator(), query_evolution_service=LlmQueryEvolutionService(enabled=True), state_store=get_search_run_state_store())  # 生产组合根显式启用一次 LLM 策略，并复用来源模型和运行状态持久化适配层。
 
 
 @lru_cache(maxsize=1)
