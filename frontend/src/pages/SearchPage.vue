@@ -697,52 +697,70 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
 
     <!-- 成功响应后展示可审计检索轨迹和证据化论文。 -->
     <section v-if="result && !loading" class="results-shell" aria-labelledby="results-title">
-      <SearchStats :result="result" />
-      <section v-if="runState" class="run-summary" aria-labelledby="run-summary-title">
-        <div>
-          <p class="eyebrow">MULTI-ROUND CONTROL</p>
-          <h2 id="run-summary-title">多轮搜索状态</h2>
-          <p>{{ `已完成 ${runState.current_round} / ${runState.max_rounds} 轮，${runState.stop_reason || '正在汇总结果'}` }}</p>
-        </div>
-        <div v-if="coverageReport" class="coverage-summary">
-          <span>高相关 {{ coverageReport.high_relevance_count }} / {{ coverageReport.target_count }}</span>
-          <span>部分相关 {{ coverageReport.partial_relevance_count }}</span>
-          <span>边际收益 {{ Math.round((coverageReport.marginal_gain || 0) * 100) }}%</span>
-        </div>
-        <ul v-if="coverageReport?.gaps?.length" class="coverage-gap-list" aria-label="尚未覆盖的检索缺口">
-          <li v-for="gap in coverageReport.gaps" :key="`${gap.gap_type}-${gap.constraint}`">{{ `${gap.constraint}：当前 ${gap.current_match_count} 篇，建议补充检索“${gap.recommended_query_focus}”` }}</li>
-        </ul>
-        <div class="search-usage" aria-label="本次搜索实际用量">
-          <strong>本次实际用量</strong>
-          <span v-if="searchUsageLoading">正在读取已保存统计…</span>
-          <span v-else-if="searchUsageError" role="alert">{{ searchUsageError }}</span>
-          <dl v-else-if="searchUsage">
-            <div><dt>API</dt><dd>{{ searchUsage.api_call_count }} 次</dd></div>
-            <div><dt>Token</dt><dd>{{ searchUsage.token_usage }}</dd></div>
-            <div><dt>总耗时</dt><dd>{{ formatDuration(searchUsage.latency_ms) }}</dd></div>
-            <div><dt>缓存命中</dt><dd>{{ `${searchUsage.cache_hits} 次` }}</dd></div>
+      <!-- 将结论、覆盖行动和按需细节收敛为一个概览，避免同一事实重复出现三次。 -->
+      <section class="search-overview" aria-labelledby="search-overview-title">
+        <header class="overview-header">
+          <div>
+            <p class="eyebrow">SEARCH OVERVIEW</p>
+            <h2 id="search-overview-title">检索概览</h2>
+            <p>{{ runState ? `已完成 ${runState.current_round} / ${runState.max_rounds} 轮，${runState.stop_reason || '正在汇总结果'}` : '已完成本次检索结果汇总。' }}</p>
+          </div>
+          <dl class="overview-stats" aria-label="本次检索核心结论">
+            <div><dt>最终保留</dt><dd>{{ `${result.papers?.length ?? 0} 篇` }}</dd></div>
+            <div><dt>高相关（目标）</dt><dd>{{ `${coverageReport?.high_relevance_count ?? 0} / ${coverageReport?.target_count ?? 0}` }}</dd></div>
+            <div><dt>待确认</dt><dd>{{ `${coverageReport?.partial_relevance_count ?? 0} 篇` }}</dd></div>
+            <div><dt>边际收益</dt><dd>{{ `${Math.round((coverageReport?.marginal_gain || 0) * 100)}%` }}</dd></div>
           </dl>
-        </div>
-      </section>
-      <section class="search-synthesis" aria-labelledby="synthesis-title">
-        <div>
-          <p class="eyebrow">FACTUAL SYNTHESIS</p>
-          <h2 id="synthesis-title">检索综合报告</h2>
-          <p>仅汇总本次已保存结果、覆盖分析和停止原因；不会再次调用模型、学术来源或读取 PDF。</p>
-        </div>
-        <p v-if="searchSynthesisLoading" class="synthesis-message">正在汇总已保存结果…</p>
-        <p v-else-if="searchSynthesisError" class="synthesis-message is-error" role="alert">{{ searchSynthesisError }}</p>
-        <template v-else-if="searchSynthesis">
-          <dl class="synthesis-stats">
-            <div><dt>最终保留</dt><dd>{{ `${searchSynthesis.final_paper_count} 篇` }}</dd></div>
-            <div><dt>高相关</dt><dd>{{ `${searchSynthesis.high_relevance_count} 篇` }}</dd></div>
-            <div><dt>待确认</dt><dd>{{ `${searchSynthesis.partial_relevance_count} 篇` }}</dd></div>
-            <div><dt>年份覆盖</dt><dd>{{ searchSynthesis.year_start ? `${searchSynthesis.year_start}–${searchSynthesis.year_end}` : '未提供' }}</dd></div>
-          </dl>
-          <ul v-if="searchSynthesis.findings.length" class="synthesis-list" aria-label="检索结论"><li v-for="finding in searchSynthesis.findings" :key="finding">{{ finding }}</li></ul>
-          <div v-if="searchSynthesis.top_keywords.length" class="synthesis-keywords" aria-label="结果关键词"><strong>结果关键词</strong><span v-for="keyword in searchSynthesis.top_keywords" :key="keyword.keyword">{{ `${keyword.keyword} · ${keyword.paper_count}` }}</span></div>
-          <ul v-if="searchSynthesis.follow_up_suggestions.length" class="synthesis-list is-suggestions" aria-label="后续建议"><li v-for="suggestion in searchSynthesis.follow_up_suggestions" :key="suggestion">{{ suggestion }}</li></ul>
-        </template>
+        </header>
+
+        <section class="overview-coverage" aria-labelledby="coverage-actions-title">
+          <div>
+            <h3 id="coverage-actions-title">覆盖与下一步</h3>
+            <p>以下仅展示当前运行仍未覆盖的条件及对应补充方向。</p>
+          </div>
+          <ul v-if="coverageReport?.gaps?.length" class="coverage-gap-list" aria-label="尚未覆盖的检索缺口">
+            <li v-for="gap in coverageReport.gaps" :key="`${gap.gap_type}-${gap.constraint}`">
+              <strong>{{ gap.constraint }}</strong>
+              <span>{{ `当前 ${gap.current_match_count} 篇` }}</span>
+              <small>{{ `建议补充检索“${gap.recommended_query_focus}”` }}</small>
+            </li>
+          </ul>
+          <p v-else class="coverage-complete">{{ coverageReport ? '关键条件已覆盖，当前无需继续补充检索。' : '当前没有可展示的覆盖缺口。' }}</p>
+        </section>
+
+        <details class="overview-disclosure">
+          <summary><span><strong>过程与用量</strong><small>候选演进、来源调用和实际耗时</small></span><em>按需展开</em></summary>
+          <div class="overview-disclosure-content">
+            <SearchStats :result="result" />
+            <div class="search-usage" aria-label="本次搜索实际用量">
+              <strong>本次实际用量</strong>
+              <span v-if="searchUsageLoading">正在读取已保存统计…</span>
+              <span v-else-if="searchUsageError" role="alert">{{ searchUsageError }}</span>
+              <dl v-else-if="searchUsage">
+                <div><dt>API</dt><dd>{{ searchUsage.api_call_count }} 次</dd></div>
+                <div><dt>Token</dt><dd>{{ searchUsage.token_usage }}</dd></div>
+                <div><dt>总耗时</dt><dd>{{ formatDuration(searchUsage.latency_ms) }}</dd></div>
+                <div><dt>缓存命中</dt><dd>{{ `${searchUsage.cache_hits} 次` }}</dd></div>
+              </dl>
+            </div>
+          </div>
+        </details>
+
+        <details class="overview-disclosure">
+          <summary><span><strong>结果洞察</strong><small>年份覆盖、来源贡献和来源关键词</small></span><em>按需展开</em></summary>
+          <div class="overview-disclosure-content">
+            <p v-if="searchSynthesisLoading" class="synthesis-message">正在汇总已保存结果…</p>
+            <p v-else-if="searchSynthesisError" class="synthesis-message is-error" role="alert">{{ searchSynthesisError }}</p>
+            <template v-else-if="searchSynthesis">
+              <dl class="insight-stats">
+                <div><dt>年份覆盖</dt><dd>{{ searchSynthesis.year_start ? `${searchSynthesis.year_start}–${searchSynthesis.year_end}` : '未提供' }}</dd></div>
+                <div><dt>参与来源</dt><dd>{{ `${searchSynthesis.sources.length} 个` }}</dd></div>
+              </dl>
+              <div v-if="searchSynthesis.sources.length" class="insight-tags" aria-label="来源贡献"><strong>来源贡献</strong><span v-for="source in searchSynthesis.sources" :key="source.source">{{ `${source.source} · ${source.final_paper_count}` }}</span></div>
+              <div v-if="searchSynthesis.top_keywords.length" class="insight-tags" aria-label="结果关键词"><strong>结果关键词</strong><span v-for="keyword in searchSynthesis.top_keywords" :key="keyword.keyword">{{ `${keyword.keyword} · ${keyword.paper_count}` }}</span></div>
+            </template>
+          </div>
+        </details>
       </section>
       <QueryIntentPanel v-if="result.query_intent" :intent="result.query_intent" :planning-meta="planningMeta" :disabled="loading" @resubmit="resubmitIntent" />
       <header class="results-header">
@@ -1325,58 +1343,178 @@ textarea::placeholder { /* 设置查询示例占位。 */
   padding-top: 0.5rem; /* 增加与统计区距离。 */
 }
 
-.run-summary { /* 展示多轮控制器的轮次、停止原因和覆盖缺口。 */
-  display: grid; /* 纵向组织主状态、统计胶囊和缺口列表。 */
-  gap: 0.8rem; /* 保持不同层级信息清晰分隔。 */
-  padding: 1.2rem 1.35rem; /* 为多轮过程摘要提供紧凑留白。 */
-  border: 1px solid #cfe0e8; /* 使用浅蓝边框表示过程性信息。 */
-  border-radius: 1rem; /* 与搜索统计面板保持一致圆角。 */
-  background: #f7fbfc; /* 使用轻量背景避免压过论文结果。 */
+.search-overview { /* 将结论、覆盖行动和可折叠细节收敛为一个统一信息面板。 */
+  display: grid; /* 纵向组织概览中的三个层级。 */
+  gap: 1rem; /* 在首屏结论与按需信息间保留清晰间距。 */
+  padding: 1.35rem; /* 提供可读但不过度膨胀的内边距。 */
+  border: 1px solid #d2e2e8; /* 使用统一边界代替原来的三个独立卡片。 */
+  border-radius: 1.15rem; /* 与搜索页其他大面板保持圆角一致。 */
+  background: linear-gradient(145deg, #f8fcfc, #f4f9fb); /* 使用轻量渐变表达结果已收束。 */
 }
 
-.run-summary h2 { /* 设置多轮过程标题。 */
-  margin: 0; /* 移除默认标题留白。 */
-  color: #254a62; /* 使用沉稳蓝色文字。 */
+.overview-header { /* 在首行并列展示停止原因和唯一一组核心结论。 */
+  display: grid; /* 使用网格适配宽屏与窄屏。 */
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 1.15fr); /* 给说明和数字各自稳定空间。 */
+  align-items: end; /* 让数字与标题区底部对齐。 */
+  gap: 1rem; /* 防止两块信息相互拥挤。 */
+}
+
+.overview-header h2 { /* 设置统一概览标题。 */
+  margin: 0; /* 清除默认标题留白。 */
+  color: #254a62; /* 使用沉稳蓝色承接搜索主题。 */
   font-family: Georgia, "Noto Serif SC", serif; /* 延续页面学术排版。 */
-  font-size: 1.12rem; /* 保持过程区低于主结果标题。 */
+  font-size: 1.25rem; /* 保持低于最终论文列表标题。 */
 }
 
-.run-summary > div:first-child > p:last-child { /* 展示用户可理解的停止原因。 */
-  margin: 0.35rem 0 0; /* 与标题紧凑分隔。 */
+.overview-header > div > p:last-child { /* 展示可审计停止原因。 */
+  margin: 0.35rem 0 0; /* 与标题形成紧凑层级。 */
   color: #607487; /* 使用辅助正文颜色。 */
-  font-size: 0.73rem; /* 控制过程说明信息密度。 */
+  font-size: 0.76rem; /* 控制过程说明的信息权重。 */
+  line-height: 1.55; /* 允许较长停止原因自然换行。 */
 }
 
-.coverage-summary { /* 横向展示完成度、部分相关和边际收益。 */
-  display: flex; /* 使用弹性布局排列统计胶囊。 */
-  flex-wrap: wrap; /* 窄屏允许统计换行。 */
-  gap: 0.45rem; /* 分隔每项统计。 */
+.overview-stats { /* 将核心结果放入唯一一组响应式统计块。 */
+  display: grid; /* 稳定排列四项首屏结论。 */
+  grid-template-columns: repeat(4, minmax(0, 1fr)); /* 宽屏下方便横向扫读。 */
+  gap: 0.45rem; /* 分隔相邻统计项。 */
+  margin: 0; /* 清除定义列表默认间距。 */
 }
 
-.coverage-summary span { /* 设置单个覆盖统计胶囊。 */
-  padding: 0.32rem 0.55rem; /* 提供紧凑留白。 */
-  border-radius: 999px; /* 使用胶囊表现辅助统计。 */
-  color: #386277; /* 使用低饱和蓝色。 */
-  background: #e8f2f5; /* 与面板底色拉开层次。 */
-  font-size: 0.66rem; /* 保持辅助信息紧凑。 */
-  font-weight: 700; /* 提升小字号可读性。 */
+.overview-stats div { /* 为每项结论提供克制的背景层。 */
+  padding: 0.55rem 0.6rem; /* 保持数字块紧凑。 */
+  border-radius: 0.65rem; /* 与概览容器协调。 */
+  background: #e8f3f5; /* 用浅蓝突出结论但不制造额外大卡。 */
 }
 
-.coverage-gap-list { /* 列出仍未充分覆盖的可解释约束。 */
-  display: grid; /* 纵向排列缺口条目。 */
-  gap: 0.35rem; /* 分隔相邻缺口。 */
+.overview-stats dt { /* 弱化统计名称以突出具体结果。 */
+  color: #648194; /* 使用低饱和标签色。 */
+  font-size: 0.63rem; /* 保持首屏紧凑。 */
+  font-weight: 800; /* 保证小字号仍清晰。 */
+}
+
+.overview-stats dd { /* 突出最终数量、完成度和边际收益。 */
+  margin: 0.2rem 0 0; /* 与标签形成清楚层级。 */
+  color: #214d69; /* 使用深蓝强化数值。 */
+  font-family: Georgia, "Noto Serif SC", serif; /* 增强数字的扫读性。 */
+  font-size: 0.9rem; /* 比旧面板略大，便于首屏识别。 */
+  font-weight: 700; /* 保持信息焦点。 */
+}
+
+.overview-coverage { /* 集中展示缺口和唯一对应的后续方向。 */
+  display: grid; /* 纵向排列说明与缺口项。 */
+  gap: 0.55rem; /* 控制行动区的信息密度。 */
+  padding: 0.85rem 0.95rem; /* 形成与统计块不同的阅读层级。 */
+  border-radius: 0.8rem; /* 使用柔和圆角区分行动区。 */
+  background: #f1f7f8; /* 用中性浅蓝表达行动而非故障警告。 */
+}
+
+.overview-coverage h3 { /* 标记覆盖行动区。 */
+  margin: 0; /* 移除默认标题边距。 */
+  color: #31566e; /* 使用中层级蓝色。 */
+  font-size: 0.82rem; /* 保持在概览标题之下。 */
+}
+
+.overview-coverage > div > p { /* 说明行动项的事实边界。 */
+  margin: 0.2rem 0 0; /* 与小标题紧凑分隔。 */
+  color: #718496; /* 弱化辅助说明。 */
+  font-size: 0.68rem; /* 避免长说明抢占首屏。 */
+}
+
+.coverage-gap-list { /* 将每个未覆盖条件组织为可执行行动项。 */
+  display: grid; /* 纵向排列缺口项。 */
+  gap: 0.35rem; /* 分隔相邻行动项。 */
   margin: 0; /* 清除默认列表外边距。 */
   padding: 0; /* 清除默认列表缩进。 */
-  list-style: none; /* 使用提示条而非默认圆点。 */
+  list-style: none; /* 使用结构化文本代替项目符号。 */
 }
 
-.coverage-gap-list li { /* 设置单条缺口说明。 */
-  padding: 0.45rem 0.6rem; /* 提供可扫读的提示条留白。 */
-  border-radius: 0.55rem; /* 与统计胶囊形成层级差异。 */
-  color: #7a5b2c; /* 使用克制琥珀文字提示尚未覆盖。 */
-  background: #fff8e9; /* 使用浅琥珀背景。 */
-  font-size: 0.68rem; /* 控制缺口提示密度。 */
-  line-height: 1.5; /* 提升较长建议文本可读性。 */
+.coverage-gap-list li { /* 为单个缺口提供条件、现状与建议的明确层级。 */
+  display: grid; /* 使用网格稳定组织三类信息。 */
+  grid-template-columns: minmax(7rem, auto) auto minmax(0, 1fr); /* 保持建议占据主要阅读宽度。 */
+  align-items: baseline; /* 对齐不同字号的文字基线。 */
+  gap: 0.45rem; /* 分隔条件、数量和建议。 */
+  padding: 0.48rem 0.58rem; /* 让每项可快速浏览。 */
+  border: 1px solid #d9e8eb; /* 轻微界定单条行动。 */
+  border-radius: 0.55rem; /* 保持与概览一致的圆角。 */
+  background: rgba(255, 255, 255, 0.68); /* 与行动区底色形成柔和对比。 */
+  color: #486a7d; /* 使用中性文字，避免将缺口误读为失败。 */
+  font-size: 0.7rem; /* 保持行动项紧凑。 */
+  line-height: 1.45; /* 允许补充查询自然换行。 */
+}
+
+.coverage-gap-list strong { /* 优先展示需要补足的具体条件。 */
+  color: #31566e; /* 提升条件名称可扫描性。 */
+}
+
+.coverage-gap-list span { /* 次级展示当前覆盖数量。 */
+  color: #718496; /* 避免数量压过补充方向。 */
+  white-space: nowrap; /* 保持数量整体可读。 */
+}
+
+.coverage-gap-list small { /* 将建议作为唯一的补充检索行动。 */
+  color: #3e6c58; /* 以绿色强调可执行的下一步。 */
+  font-size: inherit; /* 与行动项正文保持一致。 */
+}
+
+.coverage-complete { /* 在没有缺口时提供正向且不过度醒目的空状态。 */
+  margin: 0; /* 清除默认段落间距。 */
+  color: #3e6c58; /* 使用绿色表达已覆盖状态。 */
+  font-size: 0.72rem; /* 保持辅助信息层级。 */
+}
+
+.overview-disclosure { /* 将过程、用量和洞察降为按需阅读的细节。 */
+  border-top: 1px solid #d9e6eb; /* 以分隔线组织概览层级。 */
+}
+
+.overview-disclosure summary { /* 提供语义化且可点击的折叠入口。 */
+  display: flex; /* 横向组织标题说明与提示词。 */
+  align-items: center; /* 对齐不同文字层级。 */
+  justify-content: space-between; /* 分置内容说明和展开提示。 */
+  gap: 0.75rem; /* 防止窄屏内容贴合。 */
+  padding: 0.75rem 0.1rem 0.05rem; /* 保证可点击区域足够清晰。 */
+  cursor: pointer; /* 提示该行可展开。 */
+  color: #31566e; /* 使用可交互的中层级文字。 */
+  list-style: none; /* 使用自定义简洁入口而非默认三角。 */
+}
+
+.overview-disclosure summary::-webkit-details-marker { /* 隐藏 WebKit 默认标记以保持跨浏览器一致。 */
+  display: none; /* 由文字提示表达可展开状态。 */
+}
+
+.overview-disclosure summary span { /* 纵向组织细节区标题与范围。 */
+  display: grid; /* 使标题和说明自然分层。 */
+  gap: 0.12rem; /* 保持紧凑间距。 */
+}
+
+.overview-disclosure summary strong { /* 标记可展开信息类别。 */
+  font-size: 0.78rem; /* 作为二级标题保持清晰。 */
+}
+
+.overview-disclosure summary small { /* 说明折叠区包含的信息范围。 */
+  color: #718496; /* 弱化说明文本。 */
+  font-size: 0.66rem; /* 保持次级视觉权重。 */
+}
+
+.overview-disclosure summary em { /* 提示用户可按需查看细节。 */
+  color: #7691a2; /* 使用克制的辅助色。 */
+  font-size: 0.65rem; /* 不抢占折叠标题。 */
+  font-style: normal; /* 保持界面文字稳定。 */
+  white-space: nowrap; /* 避免提示词折行。 */
+}
+
+.overview-disclosure[open] summary em { /* 展开后明确当前可收起。 */
+  font-size: 0; /* 使用伪元素替换静态提示词。 */
+}
+
+.overview-disclosure[open] summary em::after { /* 提供展开状态的准确操作提示。 */
+  content: '收起'; /* 与当前 details 状态一致。 */
+  font-size: 0.65rem; /* 恢复辅助文字字号。 */
+}
+
+.overview-disclosure-content { /* 为折叠后的实际内容提供一致的间距。 */
+  display: grid; /* 纵向组织诊断、用量或结果洞察。 */
+  gap: 0.8rem; /* 分隔不同信息块。 */
+  padding: 0.75rem 0.1rem 0.1rem; /* 避免内容贴近折叠入口。 */
 }
 
 .search-usage { /* 展示同次 SQLite 快照中的实际调用与预算统计。 */
@@ -1425,29 +1563,6 @@ textarea::placeholder { /* 设置查询示例占位。 */
   font-weight: 800; /* 让数值便于扫读。 */
 }
 
-.search-synthesis { /* 展示不调用模型的事实型检索结论与后续建议。 */
-  display: grid; /* 纵向组织说明、统计、结论和关键词。 */
-  gap: 0.75rem; /* 区分报告中的不同事实层级。 */
-  padding: 1.15rem 1.35rem; /* 与多轮状态面板保持相近留白。 */
-  border: 1px solid #d7e6dc; /* 使用低饱和绿色边界区分结果汇总。 */
-  border-radius: 1rem; /* 与搜索页其他信息面板保持一致。 */
-  background: #f8fcf9; /* 提供轻量结果收束背景。 */
-}
-
-.search-synthesis h2 { /* 设置综合报告标题层级。 */
-  margin: 0; /* 移除默认标题外边距。 */
-  color: #2f5e4d; /* 使用可信且不抢眼的深绿色。 */
-  font-family: Georgia, "Noto Serif SC", serif; /* 延续页面的学术阅读排版。 */
-  font-size: 1.08rem; /* 保持低于最终推荐标题。 */
-}
-
-.search-synthesis > div:first-child > p:last-child { /* 说明报告严格使用的事实边界。 */
-  margin: 0.35rem 0 0; /* 与标题保持紧凑距离。 */
-  color: #698078; /* 使用辅助说明颜色。 */
-  font-size: 0.72rem; /* 避免说明压过检索结论。 */
-  line-height: 1.55; /* 提升长说明的可读性。 */
-}
-
 .synthesis-message { /* 展示报告读取中或安全错误状态。 */
   margin: 0; /* 清除默认段落间距。 */
   color: #698078; /* 使用辅助状态颜色。 */
@@ -1458,59 +1573,45 @@ textarea::placeholder { /* 设置查询示例占位。 */
   color: #9b4b45; /* 使用安全错误色。 */
 }
 
-.synthesis-stats { /* 将报告核心数字组织为响应式统计网格。 */
+.insight-stats { /* 只展示与首屏结论不重复的结果元数据。 */
   display: grid; /* 使用网格保证窄屏可自动换行。 */
-  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr)); /* 在不同宽度下保持信息块可读。 */
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); /* 让年份与来源统计保持可读。 */
   gap: 0.45rem; /* 分隔相邻统计块。 */
   margin: 0; /* 清除定义列表默认边距。 */
 }
 
-.synthesis-stats div { /* 设置单项报告统计外观。 */
+.insight-stats div { /* 设置单项结果洞察统计外观。 */
   padding: 0.45rem 0.55rem; /* 提供紧凑且可扫读的留白。 */
   border-radius: 0.55rem; /* 与其他统计块协调。 */
   background: #eaf5ee; /* 使用浅绿底色突出结果事实。 */
 }
 
-.synthesis-stats dt { /* 显示统计维度名称。 */
+.insight-stats dt { /* 显示统计维度名称。 */
   color: #698078; /* 弱化标签以突出数据值。 */
   font-size: 0.6rem; /* 保持统计块紧凑。 */
   font-weight: 800; /* 小字号仍需清晰可辨。 */
 }
 
-.synthesis-stats dd { /* 显示统计维度的事实值。 */
+.insight-stats dd { /* 显示统计维度的事实值。 */
   margin: 0.15rem 0 0; /* 与标签形成紧凑层级。 */
   color: #2f5e4d; /* 强调稳定且可信的结果值。 */
   font-size: 0.72rem; /* 与页面统计层级一致。 */
   font-weight: 800; /* 增强数字扫读性。 */
 }
 
-.synthesis-list { /* 展示模板化结论或基于缺口的后续建议。 */
-  display: grid; /* 纵向排列每条短结论。 */
-  gap: 0.35rem; /* 避免多条建议相互拥挤。 */
-  margin: 0; /* 清除列表默认外边距。 */
-  padding-left: 1.1rem; /* 保留可扫读的项目符号。 */
-  color: #526d62; /* 使用舒适正文颜色。 */
-  font-size: 0.71rem; /* 控制报告文本的信息密度。 */
-  line-height: 1.55; /* 提升长建议的可读性。 */
-}
-
-.synthesis-list.is-suggestions { /* 将后续操作与观察性结论轻微区分。 */
-  color: #3e6c58; /* 使用略深颜色提示可执行建议。 */
-}
-
-.synthesis-keywords { /* 以紧凑标签展示来源论文关键词统计。 */
+.insight-tags { /* 以紧凑标签展示来源贡献或来源关键词。 */
   display: flex; /* 横向组织标题和关键词胶囊。 */
   flex-wrap: wrap; /* 窄屏时允许关键词自然换行。 */
   align-items: center; /* 对齐标题与关键词标签。 */
   gap: 0.4rem; /* 分隔相邻元素。 */
 }
 
-.synthesis-keywords strong { /* 标记关键词统计的事实来源。 */
+.insight-tags strong { /* 标记当前标签组的事实来源。 */
   color: #4d6b5c; /* 保持为辅助标题层级。 */
   font-size: 0.68rem; /* 不抢占报告主标题。 */
 }
 
-.synthesis-keywords span { /* 设置单个关键词频次胶囊。 */
+.insight-tags span { /* 设置单个来源或关键词频次胶囊。 */
   padding: 0.25rem 0.45rem; /* 提供小而清晰的点击无关标签留白。 */
   border-radius: 999px; /* 使用胶囊便于扫描。 */
   color: #3e6c58; /* 使用与建议一致的文字色。 */
@@ -2262,6 +2363,14 @@ textarea::placeholder { /* 设置查询示例占位。 */
 }
 
 @media (max-width: 820px) { /* 调整平板与窄屏表单。 */
+  .overview-header { /* 平板将概览说明和结论改为纵向阅读。 */
+    grid-template-columns: 1fr; /* 防止停止原因与统计块彼此挤压。 */
+  }
+
+  .overview-stats { /* 让核心结论保持足够触达面积。 */
+    grid-template-columns: repeat(2, minmax(0, 1fr)); /* 每行显示两个结论。 */
+  }
+
   .advanced-fields { /* 将高级字段改为两列。 */
     grid-template-columns: repeat(2, minmax(0, 1fr)); /* 减少单列宽度压力。 */
   }
@@ -2296,6 +2405,23 @@ textarea::placeholder { /* 设置查询示例占位。 */
 
   .route-summary { /* 手机来源标签左对齐。 */
     justify-content: flex-start; /* 与结果标题对齐。 */
+  }
+
+  .search-overview { /* 收紧手机端统一概览的内边距。 */
+    padding: 1rem; /* 为论文结果列表保留更多可视空间。 */
+  }
+
+  .overview-stats { /* 手机端保持两列，避免单项统计过长。 */
+    grid-template-columns: repeat(2, minmax(0, 1fr)); /* 兼顾数值可读性和首屏高度。 */
+  }
+
+  .coverage-gap-list li { /* 将长条件和补充方向改为自然纵向布局。 */
+    grid-template-columns: 1fr; /* 避免窄屏文本挤压和截断。 */
+    gap: 0.16rem; /* 保持单条行动项紧凑。 */
+  }
+
+  .overview-disclosure summary { /* 给手机折叠入口更多纵向空间。 */
+    align-items: start; /* 避免说明换行时与提示词错位。 */
   }
 
   .query-actions { /* 调整手机查询操作区。 */

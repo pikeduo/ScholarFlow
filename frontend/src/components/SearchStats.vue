@@ -9,25 +9,16 @@ const isMultiRound = computed(() => Boolean(props.result.run_state)) // 区分�
 const runState = computed(() => props.result.run_state || {}) // 提取多轮运行状态并在旧响应时提供稳定空对象。
 const coverageReport = computed(() => props.result.coverage_report || runState.value.coverage_report || null) // 读取累计候选的最终覆盖报告。
 const fusedCount = computed(() => Math.max(0, (props.result.raw_paper_count ?? 0) - (props.result.merged_paper_count ?? 0))) // 根据旧响应原始与合并数量推导融合后候选数。
-const filteredCount = computed(() => Math.max(0, fusedCount.value - (props.result.filtered_paper_count ?? 0))) // 推导旧响应规则过滤后的候选数。
-const semanticCount = computed(() => Math.max(0, filteredCount.value - (props.result.semantic_truncated_count ?? 0))) // 推导旧响应 BGE-M3 截断后的候选数。
-const crossEncoderCount = computed(() => Math.max(0, semanticCount.value - (props.result.cross_encoder_truncated_count ?? 0))) // 推导旧响应 Cross Encoder 截断后的候选数。
 
-const singleRoundStageStats = computed(() => [ // 按旧单轮检索流程组织阶段数量。
+const singleRoundStageStats = computed(() => [ // 旧单轮响应仅保留三个不与概览重复的过程节点。
   { label: '多源召回', value: props.result.raw_paper_count ?? 0, detail: sourceSummary.value }, // 展示来源级原始论文数。
   { label: '身份融合', value: fusedCount.value, detail: `合并 ${props.result.merged_paper_count ?? 0} 条重复记录` }, // 展示融合后规模。
-  { label: '规则过滤', value: filteredCount.value, detail: `移除 ${props.result.filtered_paper_count ?? 0} 篇` }, // 展示硬规则过滤结果。
-  { label: '语义排序', value: semanticCount.value, detail: `BGE 截断 ${props.result.semantic_truncated_count ?? 0} 篇` }, // 展示 BGE 阶段截断统计。
-  { label: '精细重排', value: crossEncoderCount.value, detail: `Cross Encoder 截断 ${props.result.cross_encoder_truncated_count ?? 0} 篇` }, // 展示 Cross Encoder 阶段统计。
-  { label: '最终推荐', value: props.result.papers?.length ?? 0, detail: `LLM 核验淘汰 ${props.result.llm_rejected_count ?? 0} 篇` }, // 展示最终证据化结果数量。
+  { label: '规则筛选', value: Math.max(0, fusedCount.value - (props.result.filtered_paper_count ?? 0)), detail: `规则移除 ${props.result.filtered_paper_count ?? 0} 篇` }, // 展示进入排序前的可用候选规模。
 ])
-const multiRoundStageStats = computed(() => [ // 将多轮控制器状态组织为可扫读的过程摘要。
+const multiRoundStageStats = computed(() => [ // 多轮响应只保留轮次、来源和候选演进。
   { label: '搜索轮次', value: runState.value.current_round ?? 0, detail: `最多 ${runState.value.max_rounds ?? 0} 轮` }, // 展示实际完成轮次和硬上限。
   { label: '来源调用', value: runState.value.api_call_count ?? 0, detail: sourceSummary.value }, // 展示所有轮次累计的来源调用和结果统计。
-  { label: '累计候选', value: runState.value.candidate_ids?.length ?? props.result.papers?.length ?? 0, detail: `最终保留 ${props.result.papers?.length ?? 0} 篇` }, // 区分跨轮候选与最终显示论文。
-  { label: '高相关', value: coverageReport.value?.high_relevance_count ?? 0, detail: `目标 ${coverageReport.value?.target_count ?? 0} 篇` }, // 展示覆盖报告的目标完成度。
-  { label: '部分相关', value: coverageReport.value?.partial_relevance_count ?? 0, detail: `本轮新增 ${coverageReport.value?.new_valid_count ?? 0} 篇` }, // 展示仍需人工核验的候选与边际收益。
-  { label: '最终推荐', value: props.result.papers?.length ?? 0, detail: runState.value.stop_reason || '已完成' }, // 展示控制器停止原因而非将不足结果误解为失败。
+  { label: '累计候选', value: runState.value.candidate_ids?.length ?? props.result.papers?.length ?? 0, detail: `本轮新增 ${coverageReport.value?.new_valid_count ?? 0} 篇` }, // 区分跨轮候选与本轮边际收益。
 ])
 const stageStats = computed(() => isMultiRound.value ? multiRoundStageStats.value : singleRoundStageStats.value) // 按响应类型选择正确的过程统计。
 
@@ -45,15 +36,9 @@ const warnings = computed(() => { // 汇总来源和排序阶段的安全降级�
 </script>
 
 <template>
-  <!-- 用流程卡展示候选如何逐层收敛，避免把最终数量误解为召回不足。 -->
-  <section class="stats-panel" aria-labelledby="stats-heading">
-    <div class="section-heading">
-      <div>
-        <p class="kicker">SEARCH TRACE</p>
-        <h2 id="stats-heading">检索过程</h2>
-      </div>
-      <p v-if="result.llm_model_name || result.query_planning_model_name" class="model-meta">{{ result.llm_model_name || result.query_planning_model_name }} · {{ (result.llm_prompt_tokens || result.query_planning_prompt_tokens || 0) + (result.llm_completion_tokens || result.query_planning_completion_tokens || 0) }} tokens</p>
-    </div>
+  <!-- 仅在概览的折叠诊断区展示候选演进，避免重复陈列最终结论。 -->
+  <section class="stats-panel" aria-label="检索过程诊断">
+    <p v-if="result.llm_model_name || result.query_planning_model_name" class="model-meta">{{ result.llm_model_name || result.query_planning_model_name }} · {{ (result.llm_prompt_tokens || result.query_planning_prompt_tokens || 0) + (result.llm_completion_tokens || result.query_planning_completion_tokens || 0) }} tokens</p>
     <ol class="stage-grid">
       <li v-for="(stage, index) in stageStats" :key="stage.label" class="stage-card">
         <span class="stage-index">{{ String(index + 1).padStart(2, '0') }}</span>
@@ -70,35 +55,9 @@ const warnings = computed(() => { // 汇总来源和排序阶段的安全降级�
 </template>
 
 <style scoped>
-.stats-panel { /* 包裹完整检索轨迹。 */
-  padding: 1.5rem; /* 为统计内容提供稳定留白。 */
-  border: 1px solid #dfe7ef; /* 使用浅边框区分背景。 */
-  border-radius: 1.25rem; /* 与搜索面板保持一致圆角。 */
-  background: rgba(255, 255, 255, 0.88); /* 提供轻盈白色信息面板。 */
-  box-shadow: 0 16px 40px rgba(30, 64, 92, 0.06); /* 与页面背景建立层次。 */
-}
-
-.section-heading { /* 横向排列标题和模型统计。 */
-  display: flex; /* 使用弹性布局。 */
-  align-items: end; /* 将模型信息与标题基线对齐。 */
-  justify-content: space-between; /* 分置标题和模型信息。 */
-  gap: 1rem; /* 避免窄屏内容相贴。 */
-  margin-bottom: 1.1rem; /* 与流程卡分隔。 */
-}
-
-.kicker { /* 显示英文辅助标题。 */
-  margin: 0 0 0.25rem; /* 与中文标题形成紧凑组合。 */
-  color: #2e6f95; /* 使用品牌强调色。 */
-  font-size: 0.68rem; /* 降低英文辅助信息权重。 */
-  font-weight: 800; /* 保持小字号清晰。 */
-  letter-spacing: 0.16em; /* 建立标签感。 */
-}
-
-h2 { /* 设置区块标题。 */
-  margin: 0; /* 移除默认标题间距。 */
-  color: #18354f; /* 使用深蓝主文字。 */
-  font-family: Georgia, "Noto Serif SC", serif; /* 延续学术出版气质。 */
-  font-size: 1.35rem; /* 清晰但不压过页面主标题。 */
+.stats-panel { /* 作为概览折叠区内部内容，不再形成独立大面板。 */
+  display: grid; /* 纵向组织模型元数据、过程统计和降级提示。 */
+  gap: 0.75rem; /* 保持折叠内容的阅读层级。 */
 }
 
 .model-meta { /* 展示模型和 Token 成本。 */
@@ -107,9 +66,9 @@ h2 { /* 设置区块标题。 */
   font-size: 0.75rem; /* 控制信息密度。 */
 }
 
-.stage-grid { /* 横向展示六个处理阶段。 */
+.stage-grid { /* 横向展示三个不重复的过程阶段。 */
   display: grid; /* 使用等宽网格。 */
-  grid-template-columns: repeat(6, minmax(0, 1fr)); /* 保持阶段宽度一致。 */
+  grid-template-columns: repeat(3, minmax(0, 1fr)); /* 保持过程节点宽度一致。 */
   gap: 0.65rem; /* 分隔相邻阶段。 */
   margin: 0; /* 移除有序列表默认外边距。 */
   padding: 0; /* 移除列表默认缩进。 */
@@ -119,7 +78,7 @@ h2 { /* 设置区块标题。 */
 .stage-card { /* 展示单个阶段数量和说明。 */
   position: relative; /* 为连接线和编号提供定位上下文。 */
   display: grid; /* 纵向组织阶段内容。 */
-  min-height: 8.3rem; /* 保持所有卡片等高。 */
+  min-height: 7.1rem; /* 保持所有卡片等高但不制造大面积留白。 */
   align-content: start; /* 从顶部排列内容。 */
   padding: 0.9rem; /* 提供卡片内部留白。 */
   border-radius: 0.9rem; /* 使用柔和圆角。 */
@@ -151,7 +110,7 @@ h2 { /* 设置区块标题。 */
   margin-top: 0.3rem; /* 与阶段名称保持关联。 */
   overflow: hidden; /* 防止长来源统计撑开布局。 */
   color: #8293a5; /* 降低细节权重。 */
-  font-size: 0.66rem; /* 控制六列信息密度。 */
+  font-size: 0.66rem; /* 控制过程说明的信息密度。 */
   line-height: 1.45; /* 保证多行细节可读。 */
   text-overflow: ellipsis; /* 超长内容使用省略提示。 */
 }
@@ -168,20 +127,15 @@ h2 { /* 设置区块标题。 */
   font-size: 0.72rem; /* 保持警告为辅助信息。 */
 }
 
-@media (max-width: 980px) { /* 在中等屏幕将六列折为三列。 */
+@media (max-width: 980px) { /* 在中等屏幕保持三个过程节点并收紧宽度。 */
   .stage-grid { /* 调整统计网格。 */
-    grid-template-columns: repeat(3, minmax(0, 1fr)); /* 每行展示三个阶段。 */
+    grid-template-columns: repeat(3, minmax(0, 1fr)); /* 每行仍展示三个阶段。 */
   }
 }
 
 @media (max-width: 560px) { /* 在手机上进一步收敛布局。 */
   .stage-grid { /* 调整手机统计网格。 */
-    grid-template-columns: repeat(2, minmax(0, 1fr)); /* 每行展示两个阶段。 */
-  }
-
-  .section-heading { /* 允许模型信息换行。 */
-    align-items: start; /* 使用左对齐提升窄屏可读性。 */
-    flex-direction: column; /* 将模型信息放在标题下。 */
+    grid-template-columns: 1fr; /* 单列显示以避免过程说明被过度截断。 */
   }
 }
 </style>
