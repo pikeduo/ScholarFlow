@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     local_model_minimum_cuda_memory_mb: int = Field(default=4096, ge=1)  # 自动模式启用 CUDA 所需的最小总显存，避免低显存设备频繁 OOM。
     llm_ranking_enabled: bool = Field(default=True)  # 允许在快速路径跳过 DeepSeek 论文核验与理由生成。
     academic_source_recall_limit: int = Field(default=50, ge=20, le=100)  # 自然语言搜索时每个学术来源的候选召回上限。
-    llm_minimum_relevance_score: float = Field(default=0.2, ge=0.0, le=1.0)  # 最终结果最低 LLM 相关度，阻止零分论文透传。
+    llm_minimum_relevance_score: float = Field(default=0.35, ge=0.0, le=1.0)  # 最终结果最低 LLM 相关度，低于 0.35 的弱相关论文不得透传。
 
     @model_validator(mode="after")
     def resolve_project_relative_paths(self) -> "Settings":

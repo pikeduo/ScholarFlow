@@ -9,6 +9,7 @@ from backend.app.models.query_intent import QueryIntent  # 接收目标结果数
 
 
 DEFAULT_FINAL_RESULT_LIMIT = 20  # 标准搜索最终最多返回二十篇论文。
+HIGH_RELEVANCE_SCORE = 0.60  # LLM 分数达到 0.60 才可展示为高相关，较低保留分数统一归入部分相关。
 
 
 class LlmPaperReranker:
@@ -68,6 +69,8 @@ class LlmPaperReranker:
                 continue  # 避免零分或近零分论文展示为“需要进一步核验”。
             valid_evidence = _validated_evidence(paper, assessment.evidence)  # 只保留能在公开元数据中逐字定位的片段。
             status = _safe_status(assessment.constraint_status, valid_evidence)  # 无有效证据时禁止声称硬约束已满足。
+            if assessment.relevance_score < HIGH_RELEVANCE_SCORE and status == "satisfied":  # 0.35–0.59 虽可保留，但不得按高相关计入覆盖完成度。
+                status = "uncertain"  # 将中等相关候选稳定归入部分相关，避免约束证据掩盖较弱主题相关性。
             if status == "not_satisfied":  # LLM 明确发现规则过滤无法识别的语义硬约束失败。
                 rejected_count += 1  # 计入核验淘汰统计。
                 continue  # 不将明确失败论文放入最终推荐集合。
