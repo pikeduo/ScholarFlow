@@ -66,51 +66,51 @@ const warnings = computed(() => { // 汇总来源和排序阶段的安全降级�
   font-size: 0.75rem; /* 控制信息密度。 */
 }
 
-.stage-grid { /* 横向展示三个不重复的过程阶段。 */
-  display: grid; /* 使用等宽网格。 */
-  grid-template-columns: repeat(3, minmax(0, 1fr)); /* 保持过程节点宽度一致。 */
-  gap: 0.65rem; /* 分隔相邻阶段。 */
+.stage-grid { /* 横向展示三个不重复的紧凑过程节点。 */
+  display: grid; /* 使用网格稳定排列过程统计。 */
+  grid-template-columns: repeat(3, minmax(0, 12rem)); /* 限制卡片宽度，避免少量统计被放大铺满整行。 */
+  justify-content: start; /* 让统计从左侧紧凑排列。 */
+  gap: 0.5rem; /* 缩小相邻过程节点间距。 */
   margin: 0; /* 移除有序列表默认外边距。 */
   padding: 0; /* 移除列表默认缩进。 */
   list-style: none; /* 使用自定义阶段编号。 */
 }
 
 .stage-card { /* 展示单个阶段数量和说明。 */
-  position: relative; /* 为连接线和编号提供定位上下文。 */
   display: grid; /* 纵向组织阶段内容。 */
-  min-height: 7.1rem; /* 保持所有卡片等高但不制造大面积留白。 */
+  min-height: 5rem; /* 将诊断卡控制为辅助信息高度。 */
   align-content: start; /* 从顶部排列内容。 */
-  padding: 0.9rem; /* 提供卡片内部留白。 */
-  border-radius: 0.9rem; /* 使用柔和圆角。 */
+  padding: 0.65rem 0.75rem; /* 缩小卡片留白以降低过程区视觉重量。 */
+  border-radius: 0.65rem; /* 使用较紧凑的圆角。 */
   background: #f6f9fc; /* 以浅蓝灰区分阶段。 */
 }
 
 .stage-index { /* 显示阶段序号。 */
   color: #8ba1b5; /* 弱化编号权重。 */
   font-family: Georgia, serif; /* 使用衬线数字增加流程感。 */
-  font-size: 0.7rem; /* 保持编号辅助地位。 */
+  font-size: 0.62rem; /* 保持编号辅助地位。 */
 }
 
 .stage-card strong { /* 突出阶段论文数量。 */
-  margin-top: 0.45rem; /* 与编号分隔。 */
+  margin-top: 0.2rem; /* 与编号保持紧凑分隔。 */
   color: #173f7a; /* 使用品牌主色。 */
   font-family: Georgia, serif; /* 强化数字辨识度。 */
-  font-size: 1.75rem; /* 让数量成为卡片视觉焦点。 */
+  font-size: 1.2rem; /* 将过程数字降为辅助统计而非页面主焦点。 */
   line-height: 1; /* 紧凑数字行高。 */
 }
 
 .stage-card > span:not(.stage-index) { /* 显示阶段名称。 */
-  margin-top: 0.55rem; /* 与数字分隔。 */
+  margin-top: 0.28rem; /* 与数字保持紧凑分隔。 */
   color: #334e68; /* 使用稳定正文色。 */
-  font-size: 0.78rem; /* 保持流程卡紧凑。 */
+  font-size: 0.68rem; /* 保持流程卡紧凑。 */
   font-weight: 700; /* 强调阶段语义。 */
 }
 
 .stage-card small { /* 显示阶段补充统计。 */
-  margin-top: 0.3rem; /* 与阶段名称保持关联。 */
+  margin-top: 0.18rem; /* 与阶段名称保持关联。 */
   overflow: hidden; /* 防止长来源统计撑开布局。 */
   color: #8293a5; /* 降低细节权重。 */
-  font-size: 0.66rem; /* 控制过程说明的信息密度。 */
+  font-size: 0.6rem; /* 控制过程说明的信息密度。 */
   line-height: 1.45; /* 保证多行细节可读。 */
   text-overflow: ellipsis; /* 超长内容使用省略提示。 */
 }

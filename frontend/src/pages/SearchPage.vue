@@ -728,7 +728,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           <p v-else class="coverage-complete">{{ coverageReport ? '关键条件已覆盖，当前无需继续补充检索。' : '当前没有可展示的覆盖缺口。' }}</p>
         </section>
 
-        <details class="overview-disclosure">
+        <details open class="overview-disclosure">
           <summary><span><strong>过程与用量</strong><small>候选演进、来源调用和实际耗时</small></span><em>按需展开</em></summary>
           <div class="overview-disclosure-content">
             <SearchStats :result="result" />
@@ -746,7 +746,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
           </div>
         </details>
 
-        <details class="overview-disclosure">
+        <details open class="overview-disclosure">
           <summary><span><strong>结果洞察</strong><small>年份覆盖、来源贡献和来源关键词</small></span><em>按需展开</em></summary>
           <div class="overview-disclosure-content">
             <p v-if="searchSynthesisLoading" class="synthesis-message">正在汇总已保存结果…</p>
