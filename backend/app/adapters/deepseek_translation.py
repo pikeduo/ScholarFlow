@@ -7,6 +7,7 @@ import httpx  # 复用项目统一的异步 HTTP 客户端。
 from pydantic import BaseModel, Field, ValidationError  # 严格校验模型返回的 JSON 翻译对象。
 
 from backend.app.core.config import Settings, settings  # 从集中配置读取 DeepSeek 端点、模型和密钥。
+from backend.app.models.discovery_translation import DiscoveryTranslationResponse  # 返回不混入论文的网页发现翻译契约。
 from backend.app.models.paper import PaperRecord  # 只接受已保存的规范化论文事实。
 from backend.app.models.paper_translation import PaperTranslationResponse  # 返回稳定的中文翻译契约。
 
@@ -20,6 +21,14 @@ class PaperTranslationClient(Protocol):
 
     async def translate(self, paper: PaperRecord, field: Literal["title", "abstract"]) -> PaperTranslationResponse:
         """将论文指定的标题或摘要字段翻译为简体中文。"""
+        ...
+
+
+class DiscoveryTranslationClient(Protocol):
+    """定义按需翻译已保存补充网页发现的可替换异步边界。"""
+
+    async def translate_discovery(self, discovery_id: str, field: Literal["title", "snippet"], source_text: str) -> DiscoveryTranslationResponse:
+        """将网页发现指定的标题或摘要片段翻译为简体中文。"""
         ...
 
 
@@ -47,6 +56,23 @@ class DeepSeekPaperTranslationClient:
         if not source_text.strip():  # 缺失字段不应消耗模型调用。
             field_label = "标题" if field == "title" else "摘要"  # 为当前缺失字段构造准确公共提示。
             raise PaperTranslationError(f"论文{field_label}暂缺，无法翻译")  # 返回可直接展示的明确公共错误。
+        text_zh, model_name = await self._translate_source_text(field, source_text)  # 复用受控单字段模型调用，禁止额外传递论文事实。
+        return PaperTranslationResponse(paper_id=paper.paper_id, field=field, text_zh=text_zh, model_name=model_name)  # 返回与保存论文和请求字段绑定的稳定中文结果。
+
+    async def translate_discovery(self, discovery_id: str, field: Literal["title", "snippet"], source_text: str) -> DiscoveryTranslationResponse:
+        """调用 DeepSeek 并返回补充网页发现单字段的简体中文翻译。
+
+        异常：
+            PaperTranslationError：密钥、网络、状态码或模型输出不符合契约时抛出。
+        """
+        if not source_text.strip():  # 缺失摘要片段或标题时不应消耗模型调用。
+            field_label = "标题" if field == "title" else "摘要片段"  # 为当前缺失字段构造准确公共提示。
+            raise PaperTranslationError(f"网页发现{field_label}暂缺，无法翻译")  # 返回可直接展示且不泄露内部细节的错误。
+        text_zh, model_name = await self._translate_source_text(field, source_text)  # 只发送用户请求的已保存网页公开字段。
+        return DiscoveryTranslationResponse(discovery_id=discovery_id, field=field, text_zh=text_zh, model_name=model_name)  # 保持网页发现与论文翻译响应严格分离。
+
+    async def _translate_source_text(self, field: str, source_text: str) -> tuple[str, str]:
+        """将单一已保存公开文本交给 DeepSeek，并返回译文与实际模型名。"""
         try:  # 在网络请求前校验密钥配置。
             api_key = self._config.require_deepseek_api_key()  # 仅在适配器请求层解封装密钥。
         except ValueError as exc:  # 缺失配置不应泄露环境字段或原始异常。
@@ -73,7 +99,7 @@ class DeepSeekPaperTranslationClient:
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:  # 覆盖供应商与解析层全部可预期边界。
             raise PaperTranslationError("DeepSeek 论文翻译失败，请稍后重试") from exc  # 不泄露端点、响应正文或调用细节。
         model_name = response_data.get("model") if isinstance(response_data, dict) else None  # 优先回显供应商报告的实际模型名。
-        return PaperTranslationResponse(paper_id=paper.paper_id, field=field, text_zh=translated.text_zh.strip(), model_name=model_name if isinstance(model_name, str) and model_name.strip() else self._config.deepseek_model)  # 返回与保存论文和请求字段绑定的稳定中文结果。
+        return translated.text_zh.strip(), model_name if isinstance(model_name, str) and model_name.strip() else self._config.deepseek_model  # 返回由两个独立资源契约复用的安全翻译结果。
 
 
 _SYSTEM_PROMPT = """你是严谨的学术翻译器。将输入论文的单个 field 与 text 翻译为简体中文。

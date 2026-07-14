@@ -376,6 +376,31 @@ export async function translatePaperToChinese(paperId, field, fetchImpl = global
   }
 }
 
+/** 按用户操作翻译同次已保存补充网页发现的标题或摘要片段，不向浏览器暴露 DeepSeek 密钥或正文提交入口。 */
+export async function translateDiscoveryToChinese(runId, url, field, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许网页发现卡片复用安全的按字段翻译边界。
+  const normalizedRunId = String(runId || '').trim() // 规范化当前已保存搜索运行标识。
+  const normalizedUrl = String(url || '').trim() // 规范化当前网页发现在该运行中的精确 URL。
+  if (!normalizedRunId) throw new SearchApiError('缺少当前搜索运行标识') // 阻止脱离已保存结果快照的翻译请求。
+  if (!normalizedUrl) throw new SearchApiError('缺少需要翻译的网页发现地址') // 阻止空地址进入后端快照查找。
+  if (!['title', 'snippet'].includes(field)) throw new SearchApiError('翻译字段仅支持标题或摘要片段') // 防止前端请求超出后端允许范围的文本字段。
+  const params = new URLSearchParams({ run_id: normalizedRunId, url: normalizedUrl }) // 仅提交运行标识和 URL，绝不提交或伪造网页正文。
+  let response // 保存翻译请求 HTTP 响应供统一错误处理。
+  try { // 将网络或代理故障转换为页面可展示的公共提示。
+    response = await fetchImpl(`${apiBaseUrl}/api/v1/discoveries/translation/${field}?${params.toString()}`, { method: 'POST', headers: { Accept: 'application/json' } }) // 后端只从同次 SQLite 结果快照读取当前字段。
+  } catch { // 不向用户暴露浏览器底层网络异常。
+    throw new SearchApiError('无法翻译网页发现，请确认后端已启动') // 给出安全且可操作的失败提示。
+  }
+  if (!response.ok) throw await parseSearchError(response) // 复用统一公共错误解析并保留后端安全摘要。
+  try { // 校验卡片渲染中文标题和摘要片段所需的最小响应契约。
+    const translation = await response.json() // 解析后端返回的按需翻译响应。
+    if (!translation || translation.field !== field || typeof translation.discovery_id !== 'string' || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('网页发现翻译数据不完整') // 防止损坏响应覆盖原始网页发现文本。
+    return translation // 返回经过最小校验的中文翻译。
+  } catch (error) { // 将 JSON 解析或字段错误映射为稳定前端错误。
+    if (error instanceof SearchApiError) throw error // 保留明确的响应契约错误。
+    throw new SearchApiError('网页发现翻译无法解析') // 不展示服务端原始响应正文。
+  }
+}
+
 /** 比较二至五篇 SQLite 已保存论文，不触发外部来源或 PDF 读取。 */
 export async function comparePapers(paperIds, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用稳定对比请求。
   if (!Array.isArray(paperIds)) throw new SearchApiError('请选择 2 至 5 篇论文进行比较') // 阻止非数组输入进入网络层。

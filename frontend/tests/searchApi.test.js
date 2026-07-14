@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、翻译、详情、综合报告、比较、图谱、分页、历史、用量与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、两类翻译、详情、综合报告、比较、图谱、分页、历史、用量与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers, resolveSearchPageJump } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -173,6 +173,22 @@ test('translatePaperToChinese 只按论文标识和字段请求后端中文翻�
   assert.equal(capturedUrl, 'http://test.local/api/v1/papers/translation/title?paper_id=paper-1') // 验证论文标识以查询参数安全传递，兼容包含斜杠的来源标识。
   assert.equal(translation.text_zh, '中文标题') // 验证单字段译文可返回给卡片展示。
   await assert.rejects(() => translatePaperToChinese('', 'title', fetchStub), /缺少需要翻译/) // 验证空标识不会进入网络层。
+})
+
+test('translateDiscoveryToChinese 只提交已保存运行、网页地址和字段', async () => { // 验证浏览器不会把网页标题或摘要片段作为请求正文提交。
+  let capturedUrl = '' // 保存请求地址以验证同次运行快照边界。
+  const fetchStub = async (url, options) => { // 提供不访问网络的网页发现翻译接口替身。
+    capturedUrl = url // 记录后端翻译资源路径。
+    assert.equal(options.method, 'POST') // 验证翻译由显式用户操作触发。
+    assert.equal(options.body, undefined) // 验证前端不提交或伪造网页标题和摘要片段正文。
+    return { ok: true, status: 200, json: async () => ({ discovery_id: 'discovery:1', field: 'snippet', text_zh: '中文网页摘要', model_name: 'deepseek-v4-flash' }) } // 返回最小完整单字段翻译响应。
+  }
+
+  const translation = await translateDiscoveryToChinese('run-1', 'https://example.com/a?x=1', 'snippet', fetchStub, 'http://test.local') // 请求已保存网页发现的摘要片段翻译。
+
+  assert.equal(capturedUrl, 'http://test.local/api/v1/discoveries/translation/snippet?run_id=run-1&url=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1') // 验证运行与 URL 通过查询参数安全传递。
+  assert.equal(translation.text_zh, '中文网页摘要') // 验证单字段译文可返回给网页卡片展示。
+  await assert.rejects(() => translateDiscoveryToChinese('', 'https://example.com/a', 'title', fetchStub), /缺少当前搜索运行标识/) // 验证缺少已保存运行时不会进入网络层。
 })
 
 test('restoreSearchRun 先恢复状态，再读取同次已完成结果', async () => { // 验证刷新页面不会重新提交检索。

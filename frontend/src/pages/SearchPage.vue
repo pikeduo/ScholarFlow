@@ -7,7 +7,7 @@ import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // �
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import CitationTimelineGraph from '../components/CitationTimelineGraph.vue' // 以时间分层方式展示当前结果集内的真实引用关系。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
-import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量与路线。
+import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量、路线与网页发现翻译。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
 import { resolveSearchPageJump } from '../utils/searchResults.js' // 严格校验用户输入的目标页码。
 
@@ -89,6 +89,7 @@ const conditionChips = ref([]) // 保存最近一次成功提交的条件标签�
 const showSearchHistory = computed(() => !currentRunId.value) // 仅在不带运行标识的首页展示已保存搜索运行。
 
 const discoveries = computed(() => result.value?.discoveries || []) // 保持补充网页发现与论文结果独立展示。
+const discoveryTranslationStates = ref({}) // 按网页 URL 和字段保存彼此独立的翻译、加载与错误状态。
 const runState = computed(() => result.value?.run_state || null) // 提取多轮运行状态供搜索页展示过程和停止原因。
 const coverageReport = computed(() => result.value?.coverage_report || runState.value?.coverage_report || null) // 提取累计候选覆盖报告并兼容后续状态存储。
 const searchDegradationWarnings = computed(() => { // 仅保留来源、排序或模型回退等真实降级，不重复展示覆盖缺口。
@@ -120,6 +121,7 @@ watch(() => resultPage.value, () => { // 用户切换页码时只读取同次已
 })
 
 watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另一运行时重置旧筛选和页码。
+  discoveryTranslationStates.value = {} // 不让旧运行网页发现的局部译文或加载状态短暂混入新结果。
   resultFilters.source = 'all' // 恢复来源不过滤。
   resultFilters.relevance = 'all' // 恢复核验状态不过滤。
   resultFilters.yearStart = '' // 清除旧年份起点。
@@ -175,6 +177,32 @@ function buildQueryKeywords(intent) { // 将 Query Agent 已解析的核心术�
   ]
   const seen = new Set() // 使用大小写无关键跨字段去重。
   return values.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 8) // 限制最多八个词，保持卡片元数据紧凑。
+}
+
+function discoveryTranslationKey(item, field) { // 为当前运行内的网页发现标题或摘要片段生成独立界面状态键。
+  return `${field}:${String(item?.url || '').trim()}` // URL 来自已保存发现，字段保证标题与摘要片段互不影响。
+}
+
+function discoveryTranslationState(item, field) { // 读取网页发现指定字段的局部翻译状态并提供稳定默认值。
+  return discoveryTranslationStates.value[discoveryTranslationKey(item, field)] || { translation: null, loading: false, error: '', shown: false } // 未点击前不创建模型请求或共享状态。
+}
+
+async function translateDiscoveryField(item, field) { // 仅翻译用户当前点击的网页标题或摘要片段。
+  const runId = String(runState.value?.run_id || '').trim() // 从当前已保存结果提取翻译授权所需的运行标识。
+  const key = discoveryTranslationKey(item, field) // 固定当前条目与字段的独立状态位置。
+  const current = discoveryTranslationState(item, field) // 读取当前字段已有译文、加载状态与错误。
+  if (!runId || !item?.url || current.loading) return // 缺少已保存运行或同字段请求中时禁止重复调用。
+  if (current.translation) { // 已从缓存或模型获得译文时仅切换显示状态。
+    discoveryTranslationStates.value = { ...discoveryTranslationStates.value, [key]: { ...current, shown: true } } // 不重复消耗模型调用。
+    return // 当前字段操作已完成。
+  }
+  discoveryTranslationStates.value = { ...discoveryTranslationStates.value, [key]: { ...current, loading: true, error: '' } } // 只将当前字段标记为翻译中。
+  try { // 通过受控后端边界读取快照并翻译，不传递网页正文。
+    const translated = await translateDiscoveryToChinese(runId, item.url, field) // 标题与摘要片段分别请求并由 SQLite 缓存。
+    discoveryTranslationStates.value = { ...discoveryTranslationStates.value, [key]: { translation: translated, loading: false, error: '', shown: true } } // 只更新当前字段，不影响另一按钮。
+  } catch (error) { // 将客户端公共错误映射到当前字段附近。
+    discoveryTranslationStates.value = { ...discoveryTranslationStates.value, [key]: { ...current, loading: false, error: error instanceof SearchApiError ? error.message : '网页发现翻译暂时不可用，请稍后重试', shown: false } } // 失败时保留原文并允许该字段单独重试。
+  }
 }
 
 function syncRunIdToUrl(runId) { // 将可恢复运行标识写入当前地址而不产生额外历史记录。
@@ -855,7 +883,24 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <ul>
           <li v-for="item in discoveries" :key="item.url">
             <a :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
-            <span>{{ item.snippet || item.url }}</span>
+            <div class="discovery-title-translation">
+              <button type="button" class="discovery-translate-button" :disabled="discoveryTranslationState(item, 'title').loading" @click="translateDiscoveryField(item, 'title')">{{ discoveryTranslationState(item, 'title').loading ? '正在翻译…' : discoveryTranslationState(item, 'title').shown ? '已显示中文标题' : '翻译标题' }}</button>
+              <p v-if="discoveryTranslationState(item, 'title').error" class="discovery-translation-error" role="alert">{{ discoveryTranslationState(item, 'title').error }}</p>
+              <p v-if="discoveryTranslationState(item, 'title').shown && discoveryTranslationState(item, 'title').translation" class="discovery-translated-title" lang="zh-CN">{{ discoveryTranslationState(item, 'title').translation.text_zh }}</p>
+            </div>
+            <template v-if="item.snippet">
+              <span>{{ item.snippet }}</span>
+              <div class="discovery-snippet-translation">
+                <button type="button" class="discovery-translate-button" :disabled="discoveryTranslationState(item, 'snippet').loading" @click="translateDiscoveryField(item, 'snippet')">{{ discoveryTranslationState(item, 'snippet').loading ? '正在翻译…' : discoveryTranslationState(item, 'snippet').shown ? '已显示中文摘要' : '翻译摘要' }}</button>
+                <p v-if="discoveryTranslationState(item, 'snippet').error" class="discovery-translation-error" role="alert">{{ discoveryTranslationState(item, 'snippet').error }}</p>
+                <section v-if="discoveryTranslationState(item, 'snippet').shown && discoveryTranslationState(item, 'snippet').translation" class="discovery-translated-snippet" lang="zh-CN" aria-label="中文网页摘要翻译">
+                  <strong>中文摘要</strong>
+                  <p>{{ discoveryTranslationState(item, 'snippet').translation.text_zh }}</p>
+                  <small>{{ `由 ${discoveryTranslationState(item, 'snippet').translation.model_name} 翻译` }}</small>
+                </section>
+              </div>
+            </template>
+            <span v-else>{{ item.url }}</span>
           </li>
         </ul>
       </section>
@@ -2332,6 +2377,78 @@ textarea::placeholder { /* 设置查询示例占位。 */
   color: #8e887d; /* 使用暖灰辅助色。 */
   font-size: 0.66rem; /* 控制补充证据信息密度。 */
   line-height: 1.5; /* 提升摘要可读性。 */
+}
+
+.discovery-title-translation,
+.discovery-snippet-translation { /* 让网页发现的两类字段翻译独立紧贴各自原文展示。 */
+  display: flex; /* 让按钮和短标题译文在宽屏保持紧凑排列。 */
+  flex-wrap: wrap; /* 长译文或错误提示出现时允许自然换行。 */
+  align-items: baseline; /* 保持操作与文字的阅读基线协调。 */
+  gap: 0.4rem 0.55rem; /* 分隔按钮、错误与译文，避免信息拥挤。 */
+}
+
+.discovery-snippet-translation { /* 将摘要翻译操作与原始网页摘要保持轻量层级。 */
+  margin-top: 0.15rem; /* 紧跟原始摘要而不形成大块留白。 */
+}
+
+.discovery-translate-button { /* 提供与论文卡片一致的按需翻译操作视觉。 */
+  padding: 0.32rem 0.55rem; /* 保持补充网页卡片的紧凑点击面积。 */
+  border: 1px solid #d3c5a8; /* 使用暖色边界呼应网页发现区域。 */
+  border-radius: 0.45rem; /* 延续页面小控件圆角语言。 */
+  color: #7b602b; /* 使用暖褐色区别于论文卡片的学术蓝。 */
+  background: #fffaf0; /* 表达该操作仅在用户点击后调用模型。 */
+  cursor: pointer; /* 明确当前字段可独立翻译。 */
+  font-family: inherit; /* 保持与页面正文一致的字体。 */
+  font-size: 0.66rem; /* 控制补充证据区的信息密度。 */
+  font-weight: 800; /* 保证小字号操作仍易于发现。 */
+}
+
+.discovery-translate-button:disabled { /* 仅禁用当前字段，避免另一个翻译按钮被连带锁定。 */
+  cursor: default; /* 表达当前操作不可重复提交。 */
+  opacity: 0.7; /* 降低进行中或已完成状态的强调度。 */
+}
+
+.discovery-translation-error { /* 在对应标题或摘要片段附近展示安全的失败提示。 */
+  margin: 0; /* 由翻译容器统一控制间距。 */
+  color: #a44c45; /* 使用克制红色提醒用户可单独重试。 */
+  font-size: 0.66rem; /* 保持错误属于局部辅助信息。 */
+  line-height: 1.5; /* 允许中文错误自然换行。 */
+}
+
+.discovery-translated-title { /* 将中文网页标题直接放在原文标题下方或同一紧凑区域。 */
+  margin: 0; /* 由父容器管理与按钮的距离。 */
+  color: #7b602b; /* 使用暖褐色区分网页发现原文与译文。 */
+  font-size: 0.72rem; /* 保持译文低于网页标题的视觉层级。 */
+  font-weight: 700; /* 提升中文标题扫读辨识度。 */
+  line-height: 1.55; /* 保证长中文标题舒适换行。 */
+}
+
+.discovery-translated-snippet { /* 为较长中文网页摘要片段提供清晰但克制的阅读容器。 */
+  width: 100%; /* 让长译文在按钮下方占用完整可读行宽。 */
+  margin-top: 0.15rem; /* 与摘要翻译按钮保持紧凑关联。 */
+  padding: 0.65rem 0.75rem; /* 提供长中文译文所需的稳定留白。 */
+  border-left: 3px solid #c8a96a; /* 使用暖色细线标记机器翻译内容。 */
+  border-radius: 0 0.5rem 0.5rem 0; /* 与其他翻译区保持协调。 */
+  background: #fffaf0; /* 在暖白网页发现区中保持可辨识分层。 */
+}
+
+.discovery-translated-snippet strong { /* 标记摘要片段译文类型。 */
+  color: #7b602b; /* 保持网页发现翻译的暖色层级。 */
+  font-size: 0.66rem; /* 保持辅助标题轻量。 */
+}
+
+.discovery-translated-snippet p { /* 设置中文网页摘要片段正文。 */
+  margin: 0.35rem 0 0; /* 与标签保持紧凑关联。 */
+  color: #625b50; /* 使用舒适暖灰保证长段落可读。 */
+  font-size: 0.72rem; /* 与原始摘要层级相当。 */
+  line-height: 1.7; /* 提升中文段落阅读体验。 */
+}
+
+.discovery-translated-snippet small { /* 弱化展示实际翻译模型说明。 */
+  display: block; /* 避免模型说明打断译文正文。 */
+  margin-top: 0.4rem; /* 与译文正文建立清晰距离。 */
+  color: #a09583; /* 保持来源说明为最低视觉层级。 */
+  font-size: 0.62rem; /* 避免占用补充证据阅读焦点。 */
 }
 
 @keyframes spin { /* 定义加载环旋转动画。 */
