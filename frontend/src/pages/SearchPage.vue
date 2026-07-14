@@ -5,7 +5,6 @@ import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇�
 import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 在搜索页和文献库统一展示论文详情与字段翻译。
 import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // 在搜索页和文献库统一展示事实型论文比较。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
-import SearchStats from '../components/SearchStats.vue' // 展示多源检索与排序阶段统计。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量与路线。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
@@ -88,6 +87,12 @@ const showSearchHistory = computed(() => !currentRunId.value) // 仅在不带运
 const discoveries = computed(() => result.value?.discoveries || []) // 保持补充网页发现与论文结果独立展示。
 const runState = computed(() => result.value?.run_state || null) // 提取多轮运行状态供搜索页展示过程和停止原因。
 const coverageReport = computed(() => result.value?.coverage_report || runState.value?.coverage_report || null) // 提取累计候选覆盖报告并兼容后续状态存储。
+const searchDegradationWarnings = computed(() => { // 仅保留来源、排序或模型回退等真实降级，不重复展示覆盖缺口。
+  const sourceWarnings = Object.entries(result.value?.source_errors || {}).map(([source, message]) => `${source}：${message}`) // 将来源调用失败映射为可读摘要。
+  const rankingWarnings = [result.value?.semantic_ranking_error, result.value?.cross_encoder_ranking_error, result.value?.llm_ranking_error].filter(Boolean) // 收集本地模型和 LLM 排序实际错误。
+  const stateWarnings = Array.isArray(runState.value?.warnings) ? runState.value.warnings.filter((warning) => !String(warning).startsWith('缺口“')) : [] // 排除已由概览行动区呈现的缺口处理提示。
+  return [...new Set([...sourceWarnings, ...rankingWarnings, ...stateWarnings])] // 合并并去重，避免同一降级在不同快照中重复显示。
+})
 const planningMeta = computed(() => ({ // 将后端查询规划观测字段映射为面板属性。
   modelName: result.value?.query_planning_model_name || null, // 自然入口展示实际模型，直接重搜时为空。
   promptTokens: result.value?.query_planning_prompt_tokens || 0, // 展示规划输入 Token。
@@ -729,9 +734,8 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         </section>
 
         <details open class="overview-disclosure">
-          <summary><span><strong>过程与用量</strong><small>候选演进、来源调用和实际耗时</small></span><em>按需展开</em></summary>
+          <summary><span><strong>过程与用量</strong><small>本次实际调用、Token、耗时与缓存</small></span><em>按需展开</em></summary>
           <div class="overview-disclosure-content">
-            <SearchStats :result="result" />
             <div class="search-usage" aria-label="本次搜索实际用量">
               <strong>本次实际用量</strong>
               <span v-if="searchUsageLoading">正在读取已保存统计…</span>
@@ -742,6 +746,10 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
                 <div><dt>总耗时</dt><dd>{{ formatDuration(searchUsage.latency_ms) }}</dd></div>
                 <div><dt>缓存命中</dt><dd>{{ `${searchUsage.cache_hits} 次` }}</dd></div>
               </dl>
+            </div>
+            <div v-if="searchDegradationWarnings.length" class="search-degradation" role="status" aria-label="本次检索实际降级信息">
+              <strong>本次检索已降级</strong>
+              <span v-for="warning in searchDegradationWarnings" :key="warning">{{ warning }}</span>
             </div>
           </div>
         </details>
@@ -1561,6 +1569,18 @@ textarea::placeholder { /* 设置查询示例占位。 */
   color: #31566e; /* 使用较深文字突出实际数值。 */
   font-size: 0.7rem; /* 保持与页面辅助统计一致。 */
   font-weight: 800; /* 让数值便于扫读。 */
+}
+
+.search-degradation { /* 将真实来源或模型降级紧邻实际用量展示，避免与覆盖行动混淆。 */
+  display: flex; /* 横向组织标题与多条安全降级摘要。 */
+  flex-wrap: wrap; /* 窄屏允许摘要自然换行。 */
+  gap: 0.4rem 0.75rem; /* 区分标题和不同降级项。 */
+  padding: 0.62rem 0.75rem; /* 提供紧凑但可辨识的提示留白。 */
+  border-radius: 0.65rem; /* 与用量统计块保持视觉协调。 */
+  color: #8a5a18; /* 使用克制琥珀色表达实际降级。 */
+  background: #fff8e8; /* 与中性的覆盖行动区明确区分。 */
+  font-size: 0.68rem; /* 保持降级为辅助信息。 */
+  line-height: 1.45; /* 保证长摘要可读。 */
 }
 
 .synthesis-message { /* 展示报告读取中或安全错误状态。 */
