@@ -262,7 +262,7 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
       <div v-else class="library-list">
         <section v-for="(item, index) in items" :key="item.item_id" class="library-card">
           <PaperResultCard :paper="item.paper" :rank="index + 1" :keywords="item.keywords" :show-score="false" :show-search-actions="false" @detail="openPaperDetail">
-            <template #actions><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" :class="['library-detail-button', { 'is-selected': comparisonPaperIds.includes(item.paper.paper_id) }]" :disabled="comparisonPaperIds.length >= 5 && !comparisonPaperIds.includes(item.paper.paper_id)" @click="togglePaperComparison(item.paper)">{{ comparisonPaperIds.includes(item.paper.paper_id) ? '已加入比较' : '加入比较' }}</button><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button></template>
+            <template #actions><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" :class="['library-detail-button', { 'is-selected': comparisonPaperIds.includes(item.paper.paper_id) }]" :disabled="comparisonPaperIds.length >= 5 && !comparisonPaperIds.includes(item.paper.paper_id)" @click="togglePaperComparison(item.paper)">{{ comparisonPaperIds.includes(item.paper.paper_id) ? '已加入比较' : '加入比较' }}</button><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button><button class="library-delete-card-button" type="button" :disabled="Boolean(busyItemId)" @click="removeItem(item)">删除收藏</button></template>
           </PaperResultCard>
           <form v-if="drafts[item.item_id]" class="item-editor" @submit.prevent="saveChanges(item)">
             <header class="item-editor-header"><strong>收藏信息</strong><span>{{ statusLabels[drafts[item.item_id].readingStatus] }}</span></header>
@@ -271,7 +271,6 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
             <label class="note-field">个人备注<textarea v-model="drafts[item.item_id].note" rows="3" maxlength="5000" placeholder="记录阅读重点、疑问或后续行动" :disabled="Boolean(busyItemId)"></textarea></label>
             <div class="item-actions"><button type="submit" :disabled="Boolean(busyItemId)">{{ busyItemId === item.item_id ? '正在保存…' : '保存修改' }}</button></div>
           </form>
-          <button class="delete-button library-delete-button" type="button" :disabled="Boolean(busyItemId)" @click="removeItem(item)">删除收藏</button>
         </section>
       </div>
       <nav v-if="!semanticMode && totalPages > 1" class="library-pagination" aria-label="文献库分页">
@@ -324,7 +323,7 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .empty-library p { margin: 0.45rem 0 0; font-size: 0.75rem; } /* 提供返回搜索页的操作提示。 */
 .library-list { display: grid; gap: 0.9rem; } /* 纵向排列收藏卡片。 */
 .library-pagination { display: flex; justify-content: center; align-items: center; gap: 0.75rem; padding: 0.5rem 0; color: #536b7f; font-size: 0.74rem; } /* 在完整论文卡片列表后提供简洁的服务端翻页入口。 */
-.library-card { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) clamp(16rem, 23vw, 20rem); gap: 0.85rem; align-items: start; padding-bottom: 2.8rem; } /* 将论文阅读区置左，右侧管理区按自身内容高度收缩，并为卡片级删除操作预留底部空间。 */
+.library-card { display: grid; grid-template-columns: minmax(0, 1fr) clamp(16rem, 23vw, 20rem); gap: 0.85rem; align-items: start; } /* 将论文阅读区置左，右侧管理区按自身内容高度收缩，避免被长论文卡片拉出空白。 */
 .semantic-score { padding: 0.38rem 0.55rem; border-radius: 0.55rem; color: #5d4a8f; background: #eee9fb; font-size: 0.68rem; font-weight: 800; } /* 在复用卡片的操作区展示本轮自然语言检索相似度，并使用独立色调突出。 */
 .library-detail-button { padding: 0.45rem 0.7rem; border: 1px solid #b8ccdc; border-radius: 0.55rem; color: #536f7f; background: #fff; cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 800; } /* 在文献库卡片保留与搜索页同等的详情入口。 */
 .library-detail-button.is-selected { border-color: #b7d0bc; color: #28745a; background: #e8f7f0; } /* 标记已加入当前文献库比较集合的论文。 */
@@ -333,10 +332,9 @@ button:disabled { cursor: wait; opacity: 0.6; } /* 表达进行中的异步操�
 .item-editor-header strong { color: #29465d; } /* 突出收藏管理区标题而不压过论文标题。 */
 .item-editor-header span { padding: 0.25rem 0.45rem; border-radius: 999px; color: #456d84; background: #eaf3f8; font-size: 0.64rem; font-weight: 800; } /* 将当前阅读状态显示为紧凑提示。 */
 .item-actions { display: flex; width: fit-content; margin-top: 0.1rem; margin-left: auto; gap: 0.5rem; } /* 将保存操作收紧并推至右侧管理区的右下角。 */
-.delete-button { border: 1px solid #e2c7c4; color: #9b4b45; background: #fff5f4; } /* 使用克制危险色标记删除操作。 */
-.library-delete-button { position: absolute; right: 0; bottom: 0; padding: 0.45rem 0.7rem; border-radius: 0.55rem; cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 800; } /* 将删除收藏固定在整张论文卡片的右下角，避免与保存操作混在一起。 */
+.library-delete-card-button { padding: 0.45rem 0.7rem; border: 1px solid #e2c7c4; border-radius: 0.55rem; color: #9b4b45; background: #fff5f4; cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 800; } /* 在复用论文卡片底部操作区使用克制危险色标记删除收藏。 */
 @media (max-width: 1040px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } } /* 中等宽度优先保持每项输入可读。 */
 @media (max-width: 900px) { .library-card { grid-template-columns: 1fr; } .item-editor { grid-template-columns: minmax(0, 1fr) 8rem; } .item-editor-header, .note-field, .item-actions { grid-column: 1 / -1; } } /* 平板将右侧管理区移至论文下方并保留紧凑双列编辑。 */
 @media (max-width: 820px) { .filter-panel { grid-template-columns: 1fr 1fr; } .semantic-panel { grid-template-columns: 1fr 1fr; } } /* 平板将筛选器收敛为两列布局。 */
-@media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .item-editor-header, .note-field, .item-actions { grid-column: auto; } .item-actions { width: 100%; margin-left: 0; align-items: stretch; flex-direction: column; } .library-delete-button { right: 0; } } /* 手机使用单列控件和右下角删除操作。 */
+@media (max-width: 560px) { .filter-panel, .semantic-panel, .item-editor { grid-template-columns: 1fr; } .item-editor-header, .note-field, .item-actions { grid-column: auto; } .item-actions { width: 100%; margin-left: 0; align-items: stretch; flex-direction: column; } } /* 手机使用单列控件与紧凑保存操作。 */
 </style>
