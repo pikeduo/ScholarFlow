@@ -29,6 +29,8 @@ SEMANTIC_SCHOLAR_PAPER_FIELDS = (  # 仅请求当前统一模型与溯源需要�
     "publicationTypes",  # 获取论文类型的基础分类。
 )
 
+SEMANTIC_SCHOLAR_RATE_LIMIT_COOLDOWN_SECONDS = 3.0  # 将来源 429 的进程内与跨进程冷却统一固定为三秒。
+
 
 class SemanticScholarMappingError(ValueError):
     """表示 Semantic Scholar 响应缺少生成统一论文所必需的数据。"""
@@ -133,7 +135,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
         异常：
             SemanticScholarClientError：网络、非限流状态、认证、参数或响应结构异常。
         """
-        max_attempts = self._settings.semantic_scholar_max_retries + 1  # 将重试次数转换为包含首次调用的总尝试数。
+        max_attempts = self._settings.semantic_scholar_max_retries + 2  # 首次 429 后固定等待三秒补发一次，并保留可选额外重试预算。
         async with httpx.AsyncClient(  # 在全部尝试间复用连接池并在结束时自动关闭。
             base_url=self._settings.semantic_scholar_api_base_url,  # 使用集中配置的 Graph API 地址。
             timeout=self._settings.semantic_scholar_timeout_seconds,  # 使用集中配置的请求超时。
@@ -147,7 +149,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
                 except httpx.HTTPStatusError as error:  # 单独处理状态码并允许 429 重试。
                     status_code = error.response.status_code  # 提取不含认证信息的状态码。
                     if status_code == 429 and attempt < max_attempts:  # 仅在仍有预算时重试明确限流。
-                        await self._wait_before_retry(attempt, max_attempts)  # 按来源 RPS 等待后继续。
+                        await self._wait_before_retry(attempt, max_attempts)  # 固定等待三秒后补发同一来源请求。
                         continue  # 发起下一次有限尝试。
                     if status_code == 429:  # 最终限流响应应触发跨搜索冷却。
                         await self._activate_cooldown(error.response)  # 优先尊重 Retry-After，否则使用保守冷却时间并同步 Redis。
@@ -165,7 +167,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
                     return data  # 返回官方论文数组供单条映射。
                 error_category = _classify_error_envelope(response_data)  # 将非标准成功状态响应归类为安全错误摘要。
                 if error_category == "请求受限" and attempt < max_attempts:  # 兼容供应商以 HTTP 200 返回的限流信封。
-                    await self._wait_before_retry(attempt, max_attempts)  # 等待来源级间隔后继续。
+                    await self._wait_before_retry(attempt, max_attempts)  # 固定等待三秒后补发同一来源请求。
                     continue  # 发起下一次有限尝试。
                 if error_category == "请求受限":  # 最终限流信封同样触发跨搜索冷却。
                     await self._activate_cooldown(response)  # 使用响应头或保守默认时间并同步 Redis。
@@ -175,8 +177,8 @@ class SemanticScholarClient(AcademicSearchAdapter):
         raise SemanticScholarClientError("Semantic Scholar 请求受限")  # 防御循环异常退出，正常路径不会到达此处。
 
     async def _wait_before_retry(self, attempt: int, max_attempts: int) -> None:
-        """按已配置来源速率等待下一次限流重试。"""
-        wait_seconds = max(1.0, 1.0 / self._settings.semantic_scholar_requests_per_second)  # 至少等待一秒并遵守更低 RPS。
+        """在首次限流后固定等待三秒，再补发同一请求。"""
+        wait_seconds = SEMANTIC_SCHOLAR_RATE_LIMIT_COOLDOWN_SECONDS  # 将补发等待与最终冷却统一为用户要求的三秒。
         logger.warning("Semantic Scholar 请求受限，等待重试：秒数=%.3f，下一次=%d/%d", wait_seconds, attempt + 1, max_attempts)  # 记录可观测重试进度。
         await asyncio.sleep(wait_seconds)  # 让出事件循环且不阻塞其他来源任务。
 
@@ -198,14 +200,9 @@ class SemanticScholarClient(AcademicSearchAdapter):
             logger.warning("Semantic Scholar 仍在限流冷却期：剩余秒数=%.3f", remaining_seconds)  # 记录安全等待统计。
             raise SemanticScholarClientError("Semantic Scholar 请求受限，当前处于冷却期")  # 让协调器立即使用其他来源降级。
 
-    async def _activate_cooldown(self, response: httpx.Response) -> None:
-        """根据 Retry-After 启用本地冷却，并尽力同步给其他进程。"""
-        retry_after = response.headers.get("Retry-After", "").strip()  # 读取不含敏感信息的官方重试建议。
-        try:  # 仅解析常见秒数形式，HTTP 日期交给默认值处理。
-            retry_after_seconds = float(retry_after) if retry_after else 0.0  # 将有效秒数转换为浮点数。
-        except ValueError:  # 无法解析的 HTTP 日期或异常文本不应阻断降级。
-            retry_after_seconds = 0.0  # 使用保守默认冷却。
-        cooldown_seconds = max(60.0, retry_after_seconds, 1.0 / self._settings.semantic_scholar_requests_per_second)  # 至少冷却一分钟以避免连续搜索反复触发 429。
+    async def _activate_cooldown(self, _: httpx.Response) -> None:
+        """在来源返回限流后启用固定三秒冷却，并尽力同步给其他进程。"""
+        cooldown_seconds = SEMANTIC_SCHOLAR_RATE_LIMIT_COOLDOWN_SECONDS  # 用户要求所有现有来源冷却统一为三秒，不再按 Retry-After 延长。
         loop = asyncio.get_running_loop()  # 使用与请求限流一致的单调时间。
         self._cooldown_until = max(self._cooldown_until, loop.time() + cooldown_seconds)  # 延长而不缩短已有冷却期。
         await self._source_rate_limiter.penalize("semantic_scholar", cooldown_seconds)  # Redis 不可用时限流器只返回结果，不影响本地冷却。

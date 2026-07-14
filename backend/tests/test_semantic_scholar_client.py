@@ -47,6 +47,23 @@ class RemoteCooldownRateLimiter:
         return True  # 模拟冷却已由其他进程同步。
 
 
+class CooldownRecordingRateLimiter:
+    """记录客户端写入的 429 冷却秒数，避免测试依赖真实 Redis。"""
+
+    def __init__(self) -> None:
+        """初始化可观测的来源冷却记录。"""
+        self.penalized: list[tuple[str, float]] = []  # 保存每次 429 触发的来源和冷却秒数。
+
+    async def acquire(self, _: str, __: float) -> bool:
+        """模拟未使用 Redis 共享窗口时的进程内限流回退。"""
+        return False  # 允许测试请求继续进入本地 MockTransport。
+
+    async def penalize(self, source: str, cooldown_seconds: float) -> bool:
+        """记录调用方要求同步的固定冷却时长。"""
+        self.penalized.append((source, cooldown_seconds))  # 保存断言所需的来源冷却事实。
+        return True  # 模拟 Redis 已成功同步冷却键。
+
+
 def _load_semantic_scholar_paper_fixture() -> dict[str, object]:
     """读取固定的 Semantic Scholar 论文响应样例。
 
@@ -121,11 +138,13 @@ def test_client_hides_http_error_details() -> None:
         """返回模拟来源限流响应。"""
         nonlocal request_count  # 更新当前用例调用计数。
         request_count += 1  # 记录实际进入 MockTransport 的请求。
-        return httpx.Response(429, headers={"Retry-After": "90"}, request=request)  # 模拟带官方冷却建议的限流。
+        return httpx.Response(429, headers={"Retry-After": "90"}, request=request)  # 模拟带较长供应商建议的限流响应。
 
+    rate_limiter = CooldownRecordingRateLimiter()  # 注入可验证固定冷却时长的 Redis 限流替身。
     client = SemanticScholarClient(  # 使用 mock 限流响应构造来源客户端。
         settings_override=_build_test_settings(),  # 注入隔离配置。
         transport=httpx.MockTransport(handler),  # 拦截真实网络访问。
+        source_rate_limiter=rate_limiter,  # 防止默认全局 Redis 状态影响此离线断言。
     )
     async def execute_twice() -> None:
         """在同一事件循环验证首次 429 后快速降级。"""
@@ -134,8 +153,11 @@ def test_client_hides_http_error_details() -> None:
         with pytest.raises(SemanticScholarClientError, match="冷却期"):  # 冷却期内不应再次访问来源。
             await client.search(_build_query_intent())  # 验证进程内快速降级。
 
-    asyncio.run(execute_twice())  # 执行同一事件循环内的两次搜索。
-    assert request_count == 1  # 验证第二次搜索没有消耗 Semantic Scholar API 调用。
+    with patch("backend.app.adapters.semantic_scholar.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 跳过固定三秒补发等待并保留调用断言。
+        asyncio.run(execute_twice())  # 执行同一事件循环内的两次搜索。
+    assert request_count == 2  # 验证首次 429 后会补发一次，第二个 429 才进入冷却。
+    sleep_mock.assert_awaited_once_with(3.0)  # 验证补发前严格等待用户要求的三秒。
+    assert rate_limiter.penalized == [("semantic_scholar", 3.0)]  # 验证忽略较长 Retry-After 并统一写入三秒冷却。
 
 
 @pytest.mark.parametrize(  # 覆盖供应商可能以 HTTP 200 返回的常见错误信封。
@@ -176,7 +198,29 @@ def test_client_retries_success_status_rate_limit_envelope() -> None:
 
     assert request_count == 2  # 验证只发起首次调用和一次重试。
     assert [paper.paper_id for paper in papers] == ["S2-paper-123"]  # 验证重试成功结果正常映射。
-    sleep_mock.assert_awaited_once_with(1.0)  # 验证遵守至少一秒的来源重试间隔。
+    sleep_mock.assert_awaited_once_with(3.0)  # 验证非标准限流信封同样等待三秒后补发。
+
+
+def test_client_retries_http_rate_limit_after_three_seconds() -> None:
+    """HTTP 429 后应等待三秒补发一次，并使用第二次成功结果。"""
+    fixture = _load_semantic_scholar_paper_fixture()  # 读取第二次请求成功时返回的离线论文样例。
+    request_count = 0  # 统计同一请求的首次限流和一次补发调用。
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """首次模拟 429，第二次返回可映射的正常论文数组。"""
+        nonlocal request_count  # 更新当前闭包内的来源请求次数。
+        request_count += 1  # 记录实际进入 HTTP 适配器的每次调用。
+        if request_count == 1:  # 首次调用模拟供应商暂时限流。
+            return httpx.Response(429, request=request)  # 触发固定三秒的补发路径。
+        return httpx.Response(200, json={"data": [fixture]}, request=request)  # 第二次调用模拟供应商恢复可用。
+
+    client = SemanticScholarClient(settings_override=_build_test_settings(), transport=httpx.MockTransport(handler))  # 使用默认额外重试预算验证强制补发行为。
+    with patch("backend.app.adapters.semantic_scholar.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 避免单元测试实际等待三秒。
+        papers = asyncio.run(client.search(_build_query_intent()))  # 执行首次 429 后补发成功的完整搜索。
+
+    assert request_count == 2  # 验证只执行首次调用和一次补发，未无限重试。
+    assert [paper.paper_id for paper in papers] == ["S2-paper-123"]  # 验证补发成功结果仍完成统一论文映射。
+    sleep_mock.assert_awaited_once_with(3.0)  # 验证 HTTP 429 的补发等待精确为三秒。
 
 
 def test_client_uses_cached_response_before_cooldown_or_second_network_request() -> None:
