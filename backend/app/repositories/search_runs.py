@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column  # 声明 ORM 映射�
 from backend.app.models.search_run import SearchRunState  # 读写统一且已校验的搜索运行领域状态。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保存 SSE 完成后可按运行标识读取的最终结果。
 from backend.app.models.paper import PaperRecord  # 从已保存最终结果中恢复单篇论文详情。
-from backend.app.models.search_run_history import SearchRunHistoryItem  # 返回不含查询正文的本地运行索引。
+from backend.app.models.search_run_history import SearchRunHistoryItem  # 返回可展示搜索问题的本地运行索引。
 from backend.app.repositories.database import Base  # 注册到统一 SQLite 元数据。
 
 
@@ -100,7 +100,7 @@ class SearchRunRepository:
         return MultiRoundSearchResult.model_validate_json(row.result_json) if row is not None else None  # 恢复完整公开结果供搜索页展示。
 
     def list_history(self, limit: int) -> list[SearchRunHistoryItem]:
-        """按最近更新时间倒序读取有限运行索引，不返回查询正文或论文内容。
+        """按最近更新时间倒序读取有限运行索引，不返回论文内容。
 
         参数：
             limit：已由 API 限制在合理范围内的最大返回数量。
@@ -182,16 +182,30 @@ def _lightweight_snapshot(state: SearchRunState) -> SearchRunState:
 
 
 def _history_item_from_row(row: SearchRunRow, *, result_ready: bool) -> SearchRunHistoryItem:
-    """将 ORM 轻量状态行投影为不含查询文本的历史索引项。"""
+    """将 ORM 轻量状态行投影为带搜索问题和 UTC 时间的历史索引项。"""
     state = SearchRunState.model_validate_json(row.state_json)  # 复用领域模型校验历史 JSON 格式。
-    return SearchRunHistoryItem(  # 只返回恢复、展示轮次和删除边界所需字段。
+    return SearchRunHistoryItem(  # 只返回本地历史展示、恢复和删除边界所需字段。
         run_id=state.run_id,
+        query_text=state.query_intent.original_query,
         status=state.status,
         current_round=state.current_round,
         max_rounds=state.max_rounds,
         selected_sources=state.selected_sources,
         stop_reason=state.stop_reason,
         result_ready=result_ready,
-        created_at=row.created_at,
-        updated_at=max(row.updated_at, row.created_at),
+        created_at=_as_utc_datetime(row.created_at),
+        updated_at=_as_utc_datetime(max(row.updated_at, row.created_at)),
     )
+
+
+def _as_utc_datetime(value: datetime) -> datetime:
+    """将 SQLite 可能丢失偏移的时间恢复为明确 UTC 时刻。
+
+    参数：
+        value：ORM 读取的创建或更新时间。
+    返回：
+        datetime：携带 UTC 偏移、可被前端正确换算本地时间的时间。
+    """
+    if value.tzinfo is None:  # SQLite 的 DateTime 即使声明 timezone=True 也可能返回朴素 UTC 时间。
+        return value.replace(tzinfo=timezone.utc)  # 按写入约定补回 UTC 偏移，避免浏览器误按本地时间解释。
+    return value.astimezone(timezone.utc)  # 其他数据库返回带偏移时间时统一规范化为 UTC。

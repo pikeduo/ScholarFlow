@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 H
 
 from backend.app.api.routes.search import get_search_run_state_store  # 覆盖生产 SQLite 运行存储装配。
 from backend.app.main import app  # 导入待测 FastAPI 应用实例。
-from backend.app.models.search_run_history import SearchRunHistoryItem  # 构造不含查询正文的历史索引。
+from backend.app.models.search_run_history import SearchRunHistoryItem  # 构造包含搜索问题的历史索引。
+from backend.app.repositories.search_runs import _as_utc_datetime  # 验证 SQLite 朴素 UTC 时间的恢复逻辑。
 from backend.app.services.search_run_store import SearchRunStoreError  # 模拟受控存储故障。
 
 
@@ -52,10 +53,11 @@ def api_client() -> Iterator[TestClient]:
 
 
 def _history_item() -> SearchRunHistoryItem:
-    """构造不含查询正文、可恢复且可清理的完成运行索引。"""
+    """构造包含搜索问题、可恢复且可清理的完成运行索引。"""
     timestamp = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)  # 固定 UTC 时间避免测试依赖当前时钟。
     return SearchRunHistoryItem(  # 返回符合公共历史契约的最小索引项。
         run_id="run-history-1",
+        query_text="检索 2024 年后用于时间序列预测的大语言模型论文",
         status="completed",
         current_round=2,
         max_rounds=3,
@@ -67,8 +69,8 @@ def _history_item() -> SearchRunHistoryItem:
     )
 
 
-def test_history_endpoint_returns_safe_run_index(api_client: TestClient) -> None:
-    """历史列表应只返回运行元数据而不包含查询正文或论文内容。"""
+def test_history_endpoint_returns_search_question_without_papers(api_client: TestClient) -> None:
+    """历史列表应返回本地搜索问题和带 UTC 偏移的时间，但不包含论文内容。"""
     store = FakeHistoryStore(items=[_history_item()])  # 注入无需 SQLite 的固定历史替身。
     app.dependency_overrides[get_search_run_state_store] = lambda: store  # 装配替身到历史读取依赖。
 
@@ -78,8 +80,18 @@ def test_history_endpoint_returns_safe_run_index(api_client: TestClient) -> None
     payload = response.json()  # 解析公共 JSON 响应。
     assert payload["limit"] == 10  # 验证响应保留实际数量上限。
     assert payload["items"][0]["run_id"] == "run-history-1"  # 验证恢复入口所需标识存在。
-    assert "original_query" not in payload["items"][0]  # 验证历史索引不泄露查询正文。
+    assert payload["items"][0]["query_text"] == "检索 2024 年后用于时间序列预测的大语言模型论文"  # 验证历史条目返回用户自己的搜索问题。
+    assert payload["items"][0]["updated_at"].endswith("Z")  # 验证 UTC 时间含偏移，浏览器不会误按本地时间解析。
     assert "papers" not in payload["items"][0]  # 验证历史索引不携带论文集合。
+
+
+def test_history_time_restores_utc_offset_for_sqlite_naive_datetime() -> None:
+    """SQLite 返回朴素 UTC 时间时，历史响应必须显式标记 UTC 偏移。"""
+    naive_timestamp = datetime(2026, 7, 14, 1, 30)  # 模拟 SQLite 丢失时区信息后的 UTC 写入值。
+    restored_timestamp = _as_utc_datetime(naive_timestamp)  # 执行历史时间规范化。
+
+    assert restored_timestamp.tzinfo == timezone.utc  # 验证返回值带明确 UTC 时区。
+    assert restored_timestamp.isoformat() == "2026-07-14T01:30:00+00:00"  # 验证没有错误移动实际时刻。
 
 
 def test_delete_history_endpoint_accepts_terminal_and_rejects_missing_or_active(api_client: TestClient) -> None:

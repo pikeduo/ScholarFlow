@@ -44,7 +44,7 @@ class SearchRunStateStore(Protocol):
         ...  # 不存在标识不在返回结果中，调用方负责统一映射错误。
 
     def list_history(self, limit: int) -> list[SearchRunHistoryItem]:
-        """按最近更新时间读取不含查询正文的有限运行历史。"""
+        """按最近更新时间读取包含搜索问题但不含论文内容的有限运行历史。"""
         ...  # 具体实现必须只读取本地持久化快照。
 
     def delete_terminal_run(self, run_id: str) -> str:
@@ -168,7 +168,7 @@ class SqliteSearchRunStateStore:
     def list_history(self, limit: int) -> list[SearchRunHistoryItem]:
         """读取有限本地运行历史，数据库异常时抛出安全服务错误。"""
         session = self._session_factory()  # 为历史列表读取创建独立短生命周期会话。
-        try:  # 由仓储负责按更新时间排序并隐藏查询正文。
+        try:  # 由仓储负责按更新时间排序、规范化 UTC 时间并投影搜索问题。
             return SearchRunRepository(session).list_history(limit)  # 不访问外部来源或完整论文内容。
         except (SQLAlchemyError, ValueError) as exc:  # 覆盖数据库与历史状态 JSON 解析异常。
             logger.exception("搜索运行历史读取失败：数量上限=%s", limit)  # 仅记录上限与堆栈，不记录查询文本。

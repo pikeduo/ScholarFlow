@@ -42,6 +42,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - OpenAlex 适配器使用 `SCHOLARFLOW_OPENALEX_API_BASE_URL`、`SCHOLARFLOW_OPENALEX_API_KEY` 和 `SCHOLARFLOW_OPENALEX_TIMEOUT_SECONDS` 配置；调用前必须通过配置方法校验 API 密钥，日志中不得输出该密钥。
 - 每个来源适配器必须独立封装认证、字段映射、分页、超时、重试、限流、错误映射与健康状态；Tavily 必须实现独立的 `WebDiscoveryAdapter` 并返回不可合并的 `SupplementalDiscoveryItem`，不得进入论文去重、引用关系或学术元数据排序。LangGraph 只依赖统一适配器协议，不得依赖供应商字段。
 - 检索迭代必须设置停止条件：目标数量已满足、连续一轮无新增高质量论文、约束已覆盖，或 API/Token 预算达到上限。
+- 本地搜索运行历史仅面向当前用户的本地 SQLite 快照：每项返回原始搜索问题、运行状态、轮次、来源、停止原因、结果可用状态和明确 UTC 偏移的创建/更新时间，但不返回论文集合；搜索页将问题限制为一行省略显示，浏览器按本地时区展示时间。终态清理仍必须由用户显式确认。
 
 ## 3. Python 依赖与运行规则
 

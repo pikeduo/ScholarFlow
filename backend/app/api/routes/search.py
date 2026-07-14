@@ -25,7 +25,7 @@ from backend.app.models.search import SearchResult  # 声明稳定的成功响�
 from backend.app.models.search_run import SearchRunState  # 声明可按运行标识读取的持久化状态响应。
 from backend.app.models.search_result_page import SearchResultRelevance, SearchResultSort, SearchRunPaperPage  # 声明已保存结果分页读取契约。
 from backend.app.models.search_synthesis import SearchSynthesisReport  # 声明已保存结果的事实型综合报告契约。
-from backend.app.models.search_run_history import SearchRunHistoryPage  # 声明不含查询正文的运行历史响应。
+from backend.app.models.search_run_history import SearchRunHistoryPage  # 声明包含搜索问题但不含论文内容的运行历史响应。
 from backend.app.models.paper import PaperSource  # 限制结果来源筛选只能使用已知学术来源。
 from backend.app.models.search_event import SearchProgressEvent  # 传递不含敏感查询和论文摘要的 SSE 事件。
 from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
@@ -229,7 +229,7 @@ def list_search_run_history(
     state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
     limit: int = Query(default=10, ge=1, le=50),
 ) -> SearchRunHistoryPage:
-    """读取不含查询正文和论文内容的有限本地运行历史。
+    """读取包含搜索问题但不含论文内容的有限本地运行历史。
 
     参数：
         state_store：可替换的 SQLite 搜索运行快照存储适配层。

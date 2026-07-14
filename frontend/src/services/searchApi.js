@@ -298,7 +298,7 @@ export async function getSearchRunPapers(runId, options = {}, fetchImpl = global
   }
 }
 
-/** 读取不含查询正文与论文内容的本地搜索运行历史。 */
+/** 读取包含搜索问题但不含论文内容的本地搜索运行历史。 */
 export async function listSearchRuns(limit = 10, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页和测试复用受控历史读取请求。
   const normalizedLimit = Number(limit) // 规范化调用方提供的历史数量上限。
   if (!Number.isInteger(normalizedLimit) || normalizedLimit < 1 || normalizedLimit > 50) throw new SearchApiError('搜索历史数量上限必须在 1 至 50 之间') // 保持与后端查询参数边界一致。
@@ -310,8 +310,8 @@ export async function listSearchRuns(limit = 10, fetchImpl = globalThis.fetch, a
   }
   if (!response.ok) throw await parseSearchError(response) // 复用后端已净化错误边界。
   try { // 校验历史抽屉所需的最小索引契约。
-    const history = await response.json() // 解析不含查询正文的历史响应。
-    if (!history || !Array.isArray(history.items) || typeof history.limit !== 'number' || history.items.some((item) => typeof item?.run_id !== 'string' || typeof item.status !== 'string' || typeof item.result_ready !== 'boolean')) throw new SearchApiError('搜索运行历史数据不完整') // 防止页面渲染损坏索引。
+    const history = await response.json() // 解析包含本地搜索问题的历史响应。
+    if (!history || !Array.isArray(history.items) || typeof history.limit !== 'number' || history.items.some((item) => typeof item?.run_id !== 'string' || typeof item.query_text !== 'string' || typeof item.status !== 'string' || typeof item.result_ready !== 'boolean')) throw new SearchApiError('搜索运行历史数据不完整') // 防止页面渲染损坏索引。
     return history // 返回由服务端排序的有限历史列表。
   } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
     if (error instanceof SearchApiError) throw error // 保留明确业务错误。

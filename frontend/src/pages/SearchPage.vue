@@ -301,7 +301,7 @@ function scrollToCurrentPageFirstPaper() { // 将新页第一篇论文定位到�
 
 function formatHistoryTime(value) { // 将服务端 UTC 时间转换为浏览器本地可读的紧凑时间文本。
   const date = new Date(value) // 解析后端序列化的 ISO 时间。
-  return Number.isNaN(date.getTime()) ? '时间暂缺' : date.toLocaleString() // 历史 JSON 异常时不抛出页面渲染错误。
+  return Number.isNaN(date.getTime()) ? '时间暂缺' : date.toLocaleString('zh-CN', { hour12: false }) // 使用本地时区显示明确 UTC 时间，历史 JSON 异常时不抛出页面渲染错误。
 }
 
 function clearRunIdFromUrl(runId) { // 删除当前运行后移除地址中的失效恢复标识。
@@ -683,12 +683,12 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       </form>
       <details v-if="showSearchHistory" class="search-history" :open="searchHistoryExpanded || searchHistoryLoading || Boolean(searchHistoryError)" @toggle="searchHistoryExpanded = $event.currentTarget.open">
         <summary>已保存的搜索运行 <span>{{ searchHistory.length }}</span></summary>
-        <p>仅显示本地运行状态与时间，不展示查询正文或论文内容。</p>
+        <p>显示本地搜索问题、运行状态与时间；不展示论文内容。</p>
         <p v-if="searchHistoryLoading" class="history-message">正在读取运行历史…</p>
         <p v-else-if="searchHistoryError" class="history-message is-error" role="alert">{{ searchHistoryError }}</p>
         <ul v-else-if="searchHistory.length">
           <li v-for="item in searchHistory" :key="item.run_id">
-            <div><strong>{{ item.status }}</strong><span>{{ `${item.current_round} / ${item.max_rounds} 轮 · ${formatHistoryTime(item.updated_at)}` }}</span><small>{{ item.stop_reason || (item.result_ready ? '结果已保存' : '结果尚未就绪') }}</small></div>
+            <div><p class="history-query" :title="item.query_text">{{ item.query_text }}</p><strong>{{ item.status }}</strong><span>{{ `${item.current_round} / ${item.max_rounds} 轮 · ${formatHistoryTime(item.updated_at)}` }}</span><small>{{ item.stop_reason || (item.result_ready ? '结果已保存' : '结果尚未就绪') }}</small></div>
             <div class="history-actions"><button type="button" :disabled="loading" @click="restoreSearchHistoryRun(item.run_id)">{{ item.result_ready ? '恢复结果' : '查看状态' }}</button><button type="button" class="history-delete" :disabled="deletingRunId === item.run_id || !['completed', 'failed', 'cancelled'].includes(item.status)" @click="removeSearchHistoryRun(item)">{{ deletingRunId === item.run_id ? '正在清理…' : '清理' }}</button></div>
           </li>
         </ul>
@@ -983,6 +983,18 @@ h1 em { /* 突出“编织”产品隐喻。 */
   display: grid; /* 保持三行元数据清晰分隔。 */
   gap: 0.12rem; /* 减少紧凑索引的垂直占用。 */
   min-width: 0; /* 允许较长停止原因在窄屏换行。 */
+}
+
+.history-query { /* 将用户搜索问题限制为历史条目中的单行摘要。 */
+  width: min(100%, 42rem); /* 为右侧操作按钮和窄屏布局保留可用空间。 */
+  margin: 0; /* 清除段落默认外边距以保持条目紧凑。 */
+  overflow: hidden; /* 隐藏超出历史条目宽度的文本。 */
+  color: #31566e; /* 使用比状态信息更醒目的文字层级。 */
+  font-size: 0.7rem; /* 让问题可读但不压过主要搜索输入区。 */
+  font-weight: 750; /* 提升单行问题的扫读性。 */
+  line-height: 1.45; /* 保持紧凑行高。 */
+  text-overflow: ellipsis; /* 超长问题使用省略号提示仍有完整内容。 */
+  white-space: nowrap; /* 强制问题始终只占一行。 */
 }
 
 .search-history strong { /* 突出运行状态，便于判断是否可清理。 */
