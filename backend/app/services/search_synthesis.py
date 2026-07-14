@@ -7,6 +7,10 @@ from backend.app.models.paper import PaperRecord, PaperSource  # 使用已规范
 from backend.app.models.search_synthesis import SearchSynthesisKeyword, SearchSynthesisReport, SearchSynthesisSource  # 返回稳定且可前端消费的报告契约。
 
 
+# 仅允许可规范化为 PaperRecord 的学术来源进入来源贡献，网页补充发现不属于论文事实。
+_ACADEMIC_PAPER_SOURCES: frozenset[PaperSource] = frozenset({"openalex", "semantic_scholar", "arxiv", "dblp", "pubmed", "manual"})  # 与 PaperSource 契约保持一致。
+
+
 class SearchSynthesisService:
     """只根据已保存运行事实汇总检索结论、覆盖不足和后续建议。"""
 
@@ -47,13 +51,17 @@ class SearchSynthesisService:
 
     @staticmethod
     def _build_sources(result: MultiRoundSearchResult, papers: list[PaperRecord]) -> list[SearchSynthesisSource]:
-        """按实际参与顺序汇总来源召回和最终论文数量。"""
+        """按实际参与顺序汇总学术来源的召回和最终论文数量。"""
         final_counts = Counter(paper.source for paper in papers)  # 按最终规范化记录的主来源计数。
-        source_order = [*result.run_state.selected_sources]  # 优先使用工作流真实参与来源顺序。
+        source_order = [source_name for source_name in result.run_state.selected_sources if source_name in _ACADEMIC_PAPER_SOURCES]  # 排除 Tavily 等不可合并为论文的补充发现来源。
         for source_name in result.source_counts:  # 兼容历史快照只有来源统计的场景。
+            if source_name not in _ACADEMIC_PAPER_SOURCES:  # 网页补充发现只能保留在 discoveries，不能伪装为论文来源。
+                continue  # 跳过不符合 SearchSynthesisSource 契约的统计键。
             if source_name not in source_order:  # 避免同一来源在报告中重复出现。
                 source_order.append(source_name)  # 追加来源统计中的稳定键。
         for source_name in final_counts:  # 确保最终论文来源即使无召回统计也会展示。
+            if source_name not in _ACADEMIC_PAPER_SOURCES:  # 防御旧快照写入了不合法论文来源的异常数据。
+                continue  # 不让异常历史值破坏只读综合报告接口。
             if source_name not in source_order:  # 防御旧快照字段不完整。
                 source_order.append(source_name)  # 使用论文实际主来源补全顺序。
         return [SearchSynthesisSource(source=source_name, recalled_count=result.source_counts.get(source_name, 0), final_paper_count=final_counts.get(source_name, 0)) for source_name in source_order]  # 仅投影已保存来源事实。

@@ -68,6 +68,19 @@ def test_synthesis_endpoint_returns_only_saved_result_facts(api_client: TestClie
     assert payload["coverage_gaps"][0]["constraint"] == "ETT" and payload["follow_up_suggestions"]  # 验证建议只回显现有覆盖缺口。
 
 
+def test_synthesis_endpoint_excludes_supplemental_discovery_source(api_client: TestClient) -> None:
+    """Tavily 补充发现统计不能破坏仅接受学术来源的综合报告契约。"""
+    result = _build_result()  # 复用包含可验证学术论文来源的完成结果快照。
+    result.run_state.selected_sources.append("tavily")  # 模拟真实运行同时启用了网页补充发现来源。
+    result.source_counts["tavily"] = 5  # 模拟补充发现被写入跨来源累计统计。
+    app.dependency_overrides[get_search_run_state_store] = lambda: _FakeResultStore(result)  # 注入不访问 SQLite 或外部 API 的异常历史快照。
+
+    response = api_client.get("/api/v1/search/runs/run-synthesis-1/synthesis")  # 验证只读报告可安全读取包含 Tavily 的历史运行。
+
+    assert response.status_code == 200  # 验证不再因 Tavily 违反 PaperSource 枚举而返回 500。
+    assert [source["source"] for source in response.json()["sources"]] == ["openalex", "semantic_scholar"]  # 验证报告仅展示可作为论文事实的学术来源。
+
+
 def test_synthesis_endpoint_handles_missing_and_store_failure(api_client: TestClient) -> None:
     """未完成运行与存储故障应分别返回稳定 404 和不泄露细节的 503。"""
     app.dependency_overrides[get_search_run_state_store] = lambda: _FakeResultStore()  # 构造未命中完成结果的场景。
