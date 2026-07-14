@@ -49,6 +49,7 @@ export interface CitationLayoutNode { // 描述可直接交给 D3 渲染的稳�
   community: number // 保存弱连通分量编号作为颜色分类。
   isIsolate: boolean // 标记无入边无出边的默认折叠论文。
   showLabel: boolean // 标记是否永久显示短标题。
+  labelSide: 'left' | 'right' // 保存标题相对节点的外侧方向，确保标题不进入引用边内部通道。
 }
 
 export interface CitationLayoutEdge { // 描述可直接绘制为 SVG 路径的关系边。
@@ -56,7 +57,7 @@ export interface CitationLayoutEdge { // 描述可直接绘制为 SVG 路径的�
   sourceId: string // 保存视觉起点节点标识。
   targetId: string // 保存视觉终点节点标识。
   edgeType: CitationEdgeType // 保持引用与版本族的视觉边界。
-  path: string // 保存避开节点圆形的二次贝塞尔路径。
+  path: string // 保存避开节点圆形、标题区域和箭头间距的贝塞尔路径。
 }
 
 export interface CitationGraphLayout { // 描述布局模块输出给 D3 组件的完整可视状态。
@@ -86,11 +87,13 @@ interface VisualEdge { // 表示映射到视觉节点后的内部关系边。
   edgeType: CitationEdgeType // 保存事实关系类型。
 }
 
-const HORIZONTAL_MARGIN = 92 // 为年份标签和边界保留左右空间。
+const HORIZONTAL_MARGIN = 212 // 为最左和最右年份的外侧标题保留完整空间。
 const TOP_MARGIN = 58 // 为年份刻度和图例保留顶部空间。
 const COMPONENT_GAP = 84 // 让不同引用分支形成明确的垂直留白。
 const NODE_ROW_GAP = 72 // 为同一年多个节点和同年弧线保留不重叠行距。
 const ISOLATE_GRID_GAP = 112 // 为底部孤立论文网格保留稳定单元间距。
+const ARROW_CLEARANCE = 8 // 让箭头尖端停在目标圆周外，避免被节点覆盖。
+const SAME_YEAR_LANE_GAP = 22 // 让同年份多条引用边使用彼此独立的弧线路径。
 
 /** 将空值和异常年份统一为未知，防止时间轴出现不可信列。 */
 function normalizeYear(year: number | null | undefined): number | null { // 接收 API 模型中的可选年份。
@@ -169,41 +172,50 @@ function findWeakComponents(nodes: VisualSeed[], edges: VisualEdge[]): Map<strin
   return components // 返回完整、稳定的弱连通分量映射。
 }
 
-/** 生成关系边路径，并为右侧论文标题留出连续的安全区域。 */
-function buildEdgePath(source: CitationLayoutNode, target: CitationLayoutNode, edgeType: CitationEdgeType): string { // 根据两个已定位节点生成 SVG 贝塞尔路径。
-  const dx = target.x - source.x // 计算从引用方到被引方的横向差值。
-  const dy = target.y - source.y // 计算从引用方到被引方的纵向差值。
-  const distance = Math.hypot(dx, dy) || 1 // 避免重叠节点导致除以零。
+/** 按相邻节点的纵向重心重排同一年节点，降低跨年份引用边的交叉概率。 */
+function orderBucketsByBarycenter(buckets: Map<number | null, VisualSeed[]>, componentEdges: VisualEdge[]): void { // 仅改变同年节点的稳定纵向顺序。
+  const years = [...buckets.keys()].sort((left, right) => (left ?? Number.MIN_SAFE_INTEGER) - (right ?? Number.MIN_SAFE_INTEGER)) // 固定从旧到新的扫描顺序。
+  for (const bucket of buckets.values()) bucket.sort(compareSeed) // 在没有邻居信息时保留标题和标识的稳定顺序。
+  for (let round = 0; round < 3; round += 1) { // 进行有限轮双向重心扫描，避免引入随机布局。
+    for (const direction of [years, [...years].reverse()]) { // 正反两个方向都吸收相邻年份的排序信息。
+      const rankByNodeId = new Map<string, number>() // 保存本轮开始时各节点在同年列中的相对行号。
+      for (const year of years) (buckets.get(year) || []).forEach((seed, index) => rankByNodeId.set(seed.id, index)) // 写入稳定的初始相对位置。
+      for (const year of direction) { // 逐列按邻接节点重心重排。
+        const bucket = buckets.get(year) || [] // 读取当前年份列。
+        bucket.sort((left, right) => { // 同一年只比较可审计引用邻居的重心。
+          const barycenter = (seed: VisualSeed): number => { // 计算该节点所有跨年真实引用邻居的平均相对行号。
+            const neighborRanks = componentEdges // 只读取当前弱连通分支内的已保存关系。
+              .filter((edge) => edge.edgeType === 'cites' && (edge.sourceId === seed.id || edge.targetId === seed.id)) // 忽略版本族辅助关系和无关节点。
+              .map((edge) => rankByNodeId.get(edge.sourceId === seed.id ? edge.targetId : edge.sourceId)) // 取得另一端节点的当前行号。
+              .filter((rank): rank is number => rank !== undefined) // 排除当前分支外或不可见节点。
+            return neighborRanks.length ? neighborRanks.reduce((sum, rank) => sum + rank, 0) / neighborRanks.length : rankByNodeId.get(seed.id) || 0 // 无邻居时保持原相对位置。
+          }
+          return barycenter(left) - barycenter(right) || compareSeed(left, right) // 重心相同仍使用稳定排序避免刷新抖动。
+        })
+      }
+    }
+  }
+}
 
-  if (edgeType === 'cites') { // 真实引用边需要主动绕开节点右侧标题。
-    // 目标在下方时，从源节点下方离开、从目标上方进入；反之亦然。
-    // 同年节点按稳定标识选定方向，避免布局刷新时箭头翻转。
-    const verticalDirection = Math.abs(dy) < 1 ? (source.id.localeCompare(target.id, 'en') <= 0 ? -1 : 1) : (dy > 0 ? 1 : -1) // 确定上下绕行方向。
-    const startOffset = source.radius + 3 // 让路径从源节点圆边缘外开始。
-    const endOffset = target.radius + 10 // 为箭头尖端和目标圆边缘预留间距。
-    const startX = source.x // 垂直离开不会进入源节点右侧标题区。
-    const startY = source.y + verticalDirection * startOffset // 从源节点上方或下方离开。
-    const endX = target.x // 垂直进入不会穿过目标节点右侧标题。
-    const endY = target.y - verticalDirection * endOffset // 从目标节点相反一侧进入。
-    const curveDepth = Math.min(64, Math.max(30, Math.abs(dy) * 0.22 + 18)) // 根据纵向间距控制曲线弧度。
-    const sourceControlY = startY + verticalDirection * curveDepth // 保持起点切线垂直。
-    const targetControlY = endY - verticalDirection * curveDepth // 保持终点切线垂直。
-    return `M ${startX.toFixed(1)} ${startY.toFixed(1)} C ${startX.toFixed(1)} ${sourceControlY.toFixed(1)} ${endX.toFixed(1)} ${targetControlY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}` // 返回不接触右侧标题的平滑三次曲线。
+/** 生成只在年份列内部区域走线、连接圆周端口并为箭头留出间距的关系路径。 */
+function buildEdgePath(source: CitationLayoutNode, target: CitationLayoutNode, edgeType: CitationEdgeType, sameYearLane: number): string { // 根据两个已定位节点和轨道路由生成 SVG 三次贝塞尔路径。
+  const isSameYear = source.year === target.year && source.x === target.x // 同一年节点共享同一条时间列。
+  if (isSameYear) { // 同年份引用需要沿年份线附近使用独立弧线。
+    const internalDirection = source.labelSide === 'left' ? 1 : -1 // 始终向标题相反的内部区域绕行。
+    const startX = source.x + internalDirection * (source.radius + 2) // 从源节点面向内部的圆周端口离开。
+    const endX = target.x + internalDirection * (target.radius + ARROW_CLEARANCE) // 在目标圆周外预留箭头尖端间距。
+    const laneX = source.x + internalDirection * (Math.max(source.radius, target.radius) + 26 + sameYearLane * SAME_YEAR_LANE_GAP) // 为多条同年边分配逐层外扩的独立轨道。
+    return `M ${startX.toFixed(1)} ${source.y.toFixed(1)} C ${laneX.toFixed(1)} ${source.y.toFixed(1)} ${laneX.toFixed(1)} ${target.y.toFixed(1)} ${endX.toFixed(1)} ${target.y.toFixed(1)}` // 返回沿年份线附近的独立平滑弧线。
   }
 
-  const isSameYearColumn = Math.abs(dx) < 1 // 同一年份节点位于同一时间列，不能继续使用同列控制点。
-  const startOffset = source.radius + 2 // 让辅助关系从源节点圆边缘而非圆心开始。
-  const endOffset = target.radius + 3 // 让辅助关系在目标节点圆边缘前结束。
-  const startX = source.x + (dx / distance) * startOffset // 沿关系方向离开源节点。
-  const startY = source.y + (dy / distance) * startOffset // 沿关系方向离开源节点。
-  const endX = target.x - (dx / distance) * endOffset // 沿反向关系方向进入目标节点。
-  const endY = target.y - (dy / distance) * endOffset // 沿反向关系方向进入目标节点。
-  const verticalBend = isSameYearColumn ? 0 : Math.min(42, Math.max(16, Math.abs(dy) * 0.28 + 12)) * (source.y <= target.y ? 1 : -1) // 跨年份辅助边维持纵向弯曲。
-  const horizontalDirection = source.id.localeCompare(target.id, 'en') <= 0 ? 1 : -1 // 保持同年辅助边方向稳定。
-  const horizontalBend = isSameYearColumn ? 42 * horizontalDirection : 0 // 同年辅助边离开时间列以便阅读。
-  const controlX = (startX + endX) / 2 + horizontalBend // 计算二次曲线控制点横坐标。
-  const controlY = (startY + endY) / 2 + verticalBend // 计算二次曲线控制点纵坐标。
-  return `M ${startX.toFixed(1)} ${startY.toFixed(1)} Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}` // 返回版本族辅助关系的稳定路径。
+  const horizontalDirection = target.x > source.x ? 1 : -1 // 确定两端相对年份列方向。
+  const startX = source.x + horizontalDirection * (source.radius + 2) // 从源节点朝向目标的圆周左右端口离开。
+  const endX = target.x - horizontalDirection * (target.radius + ARROW_CLEARANCE) // 在目标圆周前保留箭头和节点的安全间距。
+  const horizontalDistance = Math.abs(endX - startX) // 计算内部年份区域可用的水平长度。
+  const controlDistance = Math.min(92, Math.max(28, horizontalDistance * 0.38)) // 约束控制点距离以形成平缓且不过度弯折的曲线。
+  const sourceControlX = startX + horizontalDirection * controlDistance // 让路径离开源节点时保持水平切线。
+  const targetControlX = endX - horizontalDirection * controlDistance // 让路径进入目标节点时保持水平切线并令箭头方向明确。
+  return `M ${startX.toFixed(1)} ${source.y.toFixed(1)} C ${sourceControlX.toFixed(1)} ${source.y.toFixed(1)} ${targetControlX.toFixed(1)} ${target.y.toFixed(1)} ${endX.toFixed(1)} ${target.y.toFixed(1)}` // 返回跨年份引用使用的平缓三次贝塞尔曲线。
 }
 
 /** 构造默认时间分层、分支分离且孤立节点折叠的完整引用图布局。 */
@@ -258,6 +270,9 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
       bucket.push(member) // 将节点加入对应年份列。
       buckets.set(member.year, bucket) // 写回年份桶。
     }
+    const memberIds = new Set(members.map((member) => member.id)) // 收集当前弱连通分支的节点标识。
+    const componentEdges = visibleEdges.filter((edge) => memberIds.has(edge.sourceId) && memberIds.has(edge.targetId)) // 只将当前分支的事实边用于同年排序。
+    orderBucketsByBarycenter(buckets, componentEdges) // 按相邻年份节点重心稳定重排，尽量减少跨年边交叉。
     const largestBucket = Math.max(...[...buckets.values()].map((bucket) => bucket.length), 1) // 根据同年最大节点数预留分支高度。
     const componentHeight = Math.max(132, largestBucket * NODE_ROW_GAP + 44) // 保证小分支和同年密集分支均有可读空间。
     for (const [year, bucket] of buckets) { // 为分支内每个年份列分配稳定纵向行。
@@ -265,7 +280,7 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
         const nodeInDegree = inDegree.get(seed.id) || 0 // 读取当前节点真实被引数量。
         const nodeOutDegree = outDegree.get(seed.id) || 0 // 读取当前节点真实引用数量。
         const radius = Math.min(22, 8 + Math.log1p(nodeInDegree) * 5) // 使用入度对数缩放，避免单节点过大。
-        positionedNodes.push({ ...seed, x: xForYear(year), y: cursorY + 28 + index * NODE_ROW_GAP, radius, inDegree: nodeInDegree, outDegree: nodeOutDegree, community: component, isIsolate: false, showLabel: false }) // 写入主图节点的完整稳定渲染数据。
+        positionedNodes.push({ ...seed, x: xForYear(year), y: cursorY + 28 + index * NODE_ROW_GAP, radius, inDegree: nodeInDegree, outDegree: nodeOutDegree, community: component, isIsolate: false, showLabel: false, labelSide: 'right' }) // 写入主图节点的完整稳定渲染数据。
       })
     }
     cursorY += componentHeight + COMPONENT_GAP // 在下一个引用分支前保留清晰留白。
@@ -276,18 +291,36 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
     isolateSeeds.sort(compareSeed).forEach((seed, index) => { // 使用年份和标题稳定排列孤立论文。
       const column = index % columns // 计算当前论文所在网格列。
       const row = Math.floor(index / columns) // 计算当前论文所在网格行。
-      positionedNodes.push({ ...seed, x: HORIZONTAL_MARGIN + 52 + column * ISOLATE_GRID_GAP, y: gridStartY + 44 + row * 74, radius: 8, inDegree: 0, outDegree: 0, community: -1, isIsolate: true, showLabel: false }) // 写入不参与引用社区颜色的孤立论文节点。
+      positionedNodes.push({ ...seed, x: HORIZONTAL_MARGIN + 52 + column * ISOLATE_GRID_GAP, y: gridStartY + 44 + row * 74, radius: 8, inDegree: 0, outDegree: 0, community: -1, isIsolate: true, showLabel: false, labelSide: column < columns / 2 ? 'left' : 'right' }) // 写入不参与引用社区颜色的孤立论文节点。
     })
     cursorY = gridStartY + Math.ceil(isolateSeeds.length / columns) * 74 + 74 // 扩展画布高度以完整容纳孤立网格。
   }
   const labelIds = new Set([...positionedNodes].filter((node) => !node.isIsolate).sort((left, right) => (right.inDegree + right.outDegree) - (left.inDegree + left.outDegree) || left.title.localeCompare(right.title, 'en')).slice(0, Math.min(10, mainSeeds.length)).map((node) => node.id)) // 仅为最重要的少量节点永久显示标题。
-  for (const node of positionedNodes) node.showLabel = labelIds.has(node.id) // 将标签预算写回节点，其他标题仅在悬浮和侧栏显示。
+  for (const node of positionedNodes) { // 将标签预算和外侧方向写回节点，其他标题仅在悬浮和侧栏显示。
+    node.showLabel = labelIds.has(node.id) // 仅为重要节点永久展示标题。
+    node.labelSide = minYear !== null && maxYear !== null && minYear !== maxYear ? (node.year === minYear ? 'left' : node.year === maxYear ? 'right' : node.x <= width / 2 ? 'left' : 'right') : (node.x <= width / 2 ? 'left' : 'right') // 首末年份固定外置，其余年份也向各自外侧展开。
+  }
   const nodeById = new Map(positionedNodes.map((node) => [node.id, node])) // 建立坐标索引供边路径生成。
+  const sameYearLaneByEdgeId = new Map<string, number>() // 保存同年份真实引用边的稳定独立轨道。
+  const sameYearGroups = new Map<string, VisualEdge[]>() // 按年份列和内部方向分组，避免不同列共享轨道编号。
+  for (const edge of visibleEdges.filter((item) => item.edgeType === 'cites')) { // 只为带箭头的真实引用边分配同年轨道。
+    const source = nodeById.get(edge.sourceId) // 读取已定位的引用方节点。
+    const target = nodeById.get(edge.targetId) // 读取已定位的被引方节点。
+    if (!source || !target || source.year !== target.year || source.x !== target.x) continue // 跨年份边直接使用内部平缓曲线，无需同年轨道。
+    const groupKey = `${source.year ?? 'unknown'}:${source.labelSide}` // 在同一时间列的同一内部侧共享轨道队列。
+    const group = sameYearGroups.get(groupKey) || [] // 读取现有同年边组。
+    group.push(edge) // 加入当前真实引用边。
+    sameYearGroups.set(groupKey, group) // 写回轨道分组。
+  }
+  for (const group of sameYearGroups.values()) { // 为每组同年边分配稳定、互不重叠的轨道序号。
+    group.sort((left, right) => `${left.sourceId}:${left.targetId}`.localeCompare(`${right.sourceId}:${right.targetId}`, 'en')).forEach((edge, index) => sameYearLaneByEdgeId.set(`${edge.edgeType}:${edge.sourceId}:${edge.targetId}`, index)) // 按标识排序避免渲染刷新时轨道跳变。
+  }
   const layoutEdges = visibleEdges.map((edge) => { // 将当前可见事实关系投影为可绘制路径。
     const source = nodeById.get(edge.sourceId) // 读取边起点的已定位节点。
     const target = nodeById.get(edge.targetId) // 读取边终点的已定位节点。
     if (!source || !target) return null // 孤立节点折叠后不应保留指向隐藏节点的边。
-    return { id: `${edge.edgeType}:${edge.sourceId}:${edge.targetId}`, sourceId: edge.sourceId, targetId: edge.targetId, edgeType: edge.edgeType, path: buildEdgePath(source, target, edge.edgeType) } // 保持事实方向并生成避开圆形节点的路径。
+    const edgeId = `${edge.edgeType}:${edge.sourceId}:${edge.targetId}` // 构造与轨道映射一致的稳定边标识。
+    return { id: edgeId, sourceId: edge.sourceId, targetId: edge.targetId, edgeType: edge.edgeType, path: buildEdgePath(source, target, edge.edgeType, sameYearLaneByEdgeId.get(edgeId) || 0) } // 保持事实方向并生成避开标题、圆形和箭头的路径。
   }).filter((edge): edge is CitationLayoutEdge => edge !== null) // 去除被孤立折叠或邻域过滤隐藏的边。
   return { width, height: Math.max(300, cursorY + 28), nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, componentCount: sortedComponents.length, yearTicks } // 返回供 D3 组件直接渲染的完整布局。
 }

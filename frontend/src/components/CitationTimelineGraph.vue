@@ -53,7 +53,7 @@ function shortenTitle(title: string, maxLength = 24): string { // 生成少量�
   return title.length > maxLength ? `${title.slice(0, maxLength).trim()}…` : title // 保持长标题仅在悬浮和侧栏完整展示。
 }
 
-function labelWidth(title: string): number { // 为右侧标题计算足以遮挡路径的稳定标签底板宽度。
+function labelWidth(title: string): number { // 为节点外侧标题计算足以遮挡路径的稳定标签底板宽度。
   return Math.min(184, Math.max(76, shortenTitle(title).length * 6.5 + 16)) // 按小字号英文平均宽度估算，并限制极短或极长标题的占用。
 }
 
@@ -82,19 +82,26 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   svg.attr('viewBox', `0 0 ${currentLayout.width} ${currentLayout.height}`) // 让画布随布局高度扩展并支持响应式缩放。
   svg.attr('aria-label', '本次搜索结果的时间分层引用网络') // 为辅助技术提供图形语义。
 
-  const definitions = svg.append('defs') // 定义仅用于真实引用方向的高对比箭头。
-  definitions.append('marker') // 创建箭头 marker。
-    .attr('id', 'citation-timeline-arrow') // 使用固定标识供当前组件内引用。
-    .attr('viewBox', '0 -5 10 10') // 扩大箭头坐标系以提升同年边终点的可辨识度。
-    .attr('refX', 9) // 将箭头尖端对齐到已避开目标圆形的路径终点。
-    .attr('refY', 0) // 保持箭头垂直居中。
-    .attr('markerWidth', 8) // 使用固定像素的较大箭头，避免在细边上难以辨认。
-    .attr('markerHeight', 8) // 保持箭头长宽一致，避免方向变化时变形。
-    .attr('markerUnits', 'userSpaceOnUse') // 不随边宽缩小，确保普通状态下箭头仍清晰可见。
-    .attr('orient', 'auto') // 让箭头自动沿引用方向旋转。
-    .append('path') // 绘制箭头三角形。
-    .attr('d', 'M0,-4 L9,0 L0,4 Z') // 生成尖端清晰且不遮挡目标节点的箭头形状。
-    .attr('fill', '#2f7598') // 与真实引用边保持一致的深蓝色，提高方向提示对比度。
+  const definitions = svg.append('defs') // 定义真实引用边所需的三种方向箭头。
+  const markerDefinitions = [ // 为默认、高亮和淡化状态分别设置小尺寸箭头颜色。
+    { id: 'citation-timeline-arrow-default', color: '#78a8bd' }, // 默认状态保持细浅但仍可识别方向。
+    { id: 'citation-timeline-arrow-active', color: '#2f7598' }, // 悬浮关联边使用更深颜色强化方向。
+    { id: 'citation-timeline-arrow-muted', color: '#c5d9e3' }, // 非关联边箭头随路径同步淡化。
+  ]
+  for (const markerDefinition of markerDefinitions) { // 逐个创建固定像素尺寸的 SVG marker。
+    definitions.append('marker') // 创建当前状态的箭头 marker。
+      .attr('id', markerDefinition.id) // 使用稳定标识供路径按交互状态引用。
+      .attr('viewBox', '0 -3 7 6') // 使用约七像素的紧凑箭头坐标系。
+      .attr('refX', 7) // 让箭头尖端准确落在已预留间距的路径终点。
+      .attr('refY', 0) // 保持箭头围绕路径中心线对齐。
+      .attr('markerWidth', 7) // 使用七像素固定宽度，避免细边箭头过大。
+      .attr('markerHeight', 7) // 使用七像素固定高度，保持比例一致。
+      .attr('markerUnits', 'userSpaceOnUse') // 不随边宽缩放，确保普通和高亮状态方向一致。
+      .attr('orient', 'auto') // 让箭头沿各自曲线终点切线自动旋转。
+      .append('path') // 绘制紧凑的方向三角形。
+      .attr('d', 'M0,-2.6 L7,0 L0,2.6 Z') // 保持尖端清晰并控制在约七像素范围内。
+      .attr('fill', markerDefinition.color) // 让箭头颜色与当前边状态匹配。
+  }
 
   const yearX = new Map<number, number>() // 汇总每个年份的固定横轴位置。
   for (const node of currentLayout.nodes) { // 遍历主图节点寻找可用年份列。
@@ -114,13 +121,13 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .join('path') // 创建当前状态所需路径。
     .attr('d', (edge) => edge.path) // 使用布局模块计算的避让节点的曲线路径。
     .attr('fill', 'none') // 边不填充任何区域。
-    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : '#2f7598') // 清楚区分版本族虚线和真实引用边，并增强真实引用的颜色对比。
-    .attr('stroke-width', (edge) => isEdgeRelated(edge, activeNodeId) ? 2.8 : 1.4) // 默认保持真实引用可见，悬浮关联边再明显加粗。
+    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : !activeNodeId ? '#78a8bd' : isEdgeRelated(edge, activeNodeId) ? '#2f7598' : '#c5d9e3') // 默认细浅，悬浮时只加深关联引用边。
+    .attr('stroke-width', (edge) => edge.edgeType === 'same_work' ? 1.1 : activeNodeId && isEdgeRelated(edge, activeNodeId) ? 2.3 : 1.15) // 普通边保持细，关联边才明显加粗。
     .attr('stroke-linecap', 'round') // 让曲线路径和箭头连接处更柔和。
     .attr('stroke-linejoin', 'round') // 保持辅助虚线转折处的视觉连续性。
-    .attr('stroke-opacity', (edge) => isEdgeRelated(edge, activeNodeId) ? 0.9 : 0.16) // 未激活时保留足够对比度，交互时仅淡出非关联边。
+    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : !activeNodeId ? 0.58 : isEdgeRelated(edge, activeNodeId) ? 0.96 : 0.14) // 悬浮节点时仅保留其入边和出边，其余关系同步淡化。
     .attr('stroke-dasharray', (edge) => edge.edgeType === 'same_work' ? '5 4' : null) // 版本族只在用户显式开启时显示为黄色虚线。
-    .attr('marker-end', (edge) => edge.edgeType === 'cites' ? 'url(#citation-timeline-arrow)' : null) // 仅真实引用关系带方向箭头。
+    .attr('marker-end', (edge) => edge.edgeType !== 'cites' ? null : !activeNodeId ? 'url(#citation-timeline-arrow-default)' : isEdgeRelated(edge, activeNodeId) ? 'url(#citation-timeline-arrow-active)' : 'url(#citation-timeline-arrow-muted)') // 让箭头颜色与普通、高亮和淡化边状态一致。
 
   const nodes = svg.append('g').attr('class', 'citation-nodes') // 在边之上渲染可交互论文节点。
   const nodeGroups = nodes.selectAll<SVGGElement, CitationLayoutNode>('g') // 绑定布局节点。
@@ -142,22 +149,22 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .attr('stroke', (node) => node.id === selectedNodeId.value ? '#1b4965' : '#3d7895') // 为选中节点提供稳定边框反馈。
     .attr('stroke-width', (node) => node.id === selectedNodeId.value ? 2.7 : 1.5) // 选中节点使用稍粗描边。
   nodeGroups.append('title').text((node) => `${node.title}\n年份：${node.year || '未知'}\n入度：${node.inDegree}，出度：${node.outDegree}${node.memberCount > 1 ? `\n合并版本：${node.memberCount} 篇` : ''}`) // 悬浮时展示完整信息而非永久铺满标题。
-  const labelGroups = nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点创建右侧标签组。
+  const labelGroups = nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点创建位于外侧的标签组。
     .append('g') // 使用独立容器同时承载路径遮挡底板和文字。
-    .attr('transform', (node) => `translate(${node.radius + 8},-9)`) // 将整组固定放在圆圈右侧，并与圆心垂直居中。
+    .attr('transform', (node) => `translate(${node.labelSide === 'left' ? -node.radius - 8 : node.radius + 8},-9)`) // 首末年份标题分别向外放置，其余标题也避开内部边通道。
     .attr('pointer-events', 'none') // 标签组不抢占节点的悬浮与点击事件。
-  labelGroups.append('rect') // 先绘制与画布同色的右侧标签底板，阻断下层引用路径穿过文字。
-    .attr('x', 0) // 让底板从节点右侧间隔处开始，不回压圆圈。
+  labelGroups.append('rect') // 先绘制浅色半透明标签底板，阻断下层引用路径穿过文字。
+    .attr('x', (node) => node.labelSide === 'left' ? -labelWidth(node.title) : 0) // 左侧标题将底板向外展开，右侧标题保持原方向。
     .attr('y', 0) // 让底板围绕节点圆心所在行垂直居中。
     .attr('width', (node) => labelWidth(node.title)) // 按截断后的标题长度提供可读宽度。
     .attr('height', 18) // 为十一像素文字保留上下内边距。
     .attr('rx', 4) // 使用小圆角避免形成生硬矩形。
     .attr('fill', '#fbfdfe') // 与图画布浅色底保持一致，遮住边线但不显得像额外卡片。
-    .attr('fill-opacity', 0.98) // 保持几乎不透明，防止深色箭头透出文字区域。
-  labelGroups.append('text') // 在遮挡底板上绘制右侧短标签文本。
-    .attr('x', 8) // 为文字和底板左边缘留出稳定内边距。
+    .attr('fill-opacity', 0.9) // 保持浅色半透明，同时确保边不会干扰文字阅读。
+  labelGroups.append('text') // 在遮挡底板上绘制向外展开的短标签文本。
+    .attr('x', (node) => node.labelSide === 'left' ? -8 : 8) // 为左右两侧文字分别预留靠近外缘的内边距。
     .attr('y', 13) // 让文字基线位于底板内垂直居中位置。
-    .attr('text-anchor', 'start') // 从圆圈右侧向外展开，明确表达论文标题的归属。
+    .attr('text-anchor', (node) => node.labelSide === 'left' ? 'end' : 'start') // 让标题始终朝时间轴外侧展开，不占用内部边通道。
     .attr('fill', '#31576e') // 使用足够深的阅读颜色。
     .attr('font-size', 11) // 降低标签视觉权重。
     .attr('font-weight', 650) // 仍确保小字号可阅读。
