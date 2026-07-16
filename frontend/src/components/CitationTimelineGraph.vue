@@ -11,6 +11,7 @@ import {
   type CitationLayoutNode,
   type CitationViewMode,
 } from '../utils/citationGraphLayout' // 引入独立的纯数据处理与稳定布局模块。
+import { analyzeCitationGraph, collectCitationAncestors, collectCitationDescendants, filterCitationGraphData, findCitationPaths, type CitationNeighborhood, type CitationPath, type CitationPathResult } from '../utils/citationGraphAnalysis' // 将路径、邻域、筛选和指标保持在独立纯函数模块。
 
 const props = defineProps<{ graph: CitationGraphData }>() // 接收仅来自已保存搜索结果快照的受限图数据。
 const emit = defineEmits<{ (event: 'open-paper', paperId: string): void }>() // 将现有论文详情抽屉的打开行为交回搜索页。
@@ -25,10 +26,30 @@ const viewMode = ref<CitationViewMode>('backbone') // 默认使用研究主干�
 const selectedNodeId = ref<string | null>(null) // 保存点击后在侧栏持续展示的论文节点。
 const hoveredNodeId = ref<string | null>(null) // 保存悬浮节点，以突出其一阶关系。
 const focusedPaperId = ref<string | null>(null) // 保存一阶邻域模式的中心论文标识。
+const yearStart = ref<number | null>(null) // 保存可选前端年份筛选下限。
+const yearEnd = ref<number | null>(null) // 保存可选前端年份筛选上限。
+const selectedSources = ref<string[]>([]) // 保存启用来源筛选后的来源白名单。
+const sourceFilterEnabled = ref(false) // 区分未启用来源筛选与用户主动选择空集合。
+const minimumInDegree = ref(0) // 保存当前结果集内部最小原始入度筛选值。
+const analysisMode = ref<'browse' | 'path' | 'neighborhood'>('browse') // 明确区分普通浏览、路径分析和多层邻域探索。
+const pathStartNodeId = ref<string | null>(null) // 保存路径分析起点视觉节点标识。
+const pathEndNodeId = ref<string | null>(null) // 保存路径分析终点视觉节点标识。
+const pathDirected = ref(true) // 保存是否严格沿真实引用方向查找路径。
+const pathMaxDepth = ref(4) // 保存受控路径查询最大深度。
+const citationPathResult = ref<CitationPathResult | null>(null) // 保存最近一次路径查询的受控结果。
+const activePathIndex = ref(0) // 保存用户当前查看的多条最短路径索引。
+const citationNeighborhood = ref<CitationNeighborhood | null>(null) // 保存最近一次前置或后续多层探索结果。
+const neighborhoodLabel = ref('') // 保存当前多层探索的准确中文方向说明。
 let resizeObserver: ResizeObserver | null = null // 保存容器监听器以便组件卸载时释放。
 let simulation: d3.Simulation<CitationLayoutNode, undefined> | null = null // 保留显式清理边界；当前稳定布局不创建力导向 simulation。
 
-const layout = computed<CitationGraphLayout>(() => buildCitationGraphLayout(props.graph, { // 仅从响应事实数据推导可视化状态。
+const sourceOptions = computed(() => [...new Set(props.graph.nodes.map((node) => node.source).filter(Boolean))].sort((left, right) => left.localeCompare(right, 'en'))) // 基于当前快照提供可审计来源筛选项。
+const filteredGraphResult = computed(() => filterCitationGraphData(props.graph, { yearStart: yearStart.value, yearEnd: yearEnd.value, sources: sourceFilterEnabled.value ? selectedSources.value : undefined, minimumInDegree: minimumInDegree.value, includeIsolates: true })) // 筛选只作用于前端当前快照，不访问后端或网络。
+const activePath = computed<CitationPath | null>(() => citationPathResult.value?.paths[activePathIndex.value] || null) // 读取用户当前选择的最短路径。
+const analysisEdgeIds = computed(() => [...new Set([...(activePath.value?.edgeIds || []), ...(citationNeighborhood.value?.edgeIds || [])])]) // 汇总路径或邻域需要临时展示的真实边。
+const analysisNodeIds = computed(() => new Set([...(activePath.value?.nodeIds || []), ...(citationNeighborhood.value?.levels.flatMap((level) => level.nodeIds) || []), ...(citationNeighborhood.value ? [selectedNodeId.value].filter((nodeId): nodeId is string => Boolean(nodeId)) : [])])) // 汇总需要高亮的路径或邻域节点。
+
+const layout = computed<CitationGraphLayout>(() => buildCitationGraphLayout(filteredGraphResult.value.graph, { // 仅从筛选后的当前快照推导可视化状态。
   width: measuredWidth.value, // 将最新容器宽度传入固定时间轴布局。
   collapseFamilies: collapseFamilies.value, // 应用用户选择的版本族合并状态。
   includeVersionLinks: includeVersionLinks.value, // 应用用户选择的版本族虚线状态。
@@ -36,6 +57,7 @@ const layout = computed<CitationGraphLayout>(() => buildCitationGraphLayout(prop
   focusNodeId: focusedPaperId.value, // 应用一阶邻域过滤状态。
   priorityNodeId: selectedNodeId.value, // 优先保留当前选中论文的直接事实关系。
   viewMode: viewMode.value, // 在纯布局层应用明确的研究主干或完整网络模式。
+  forceCitationEdgeIds: analysisEdgeIds.value, // 路径和邻域分析可临时恢复主干隐藏的真实事实边。
 }))
 
 const nodeById = computed(() => new Map(layout.value.nodes.map((node) => [node.id, node]))) // 建立节点索引以支持侧栏关系列表。
@@ -43,14 +65,78 @@ const selectedNode = computed(() => selectedNodeId.value ? nodeById.value.get(se
 const selectedCites = computed(() => relatedNodes(selectedNode.value, 'outgoing')) // 读取选中论文直接引用的论文列表。
 const selectedCitedBy = computed(() => relatedNodes(selectedNode.value, 'incoming')) // 读取直接引用选中论文的论文列表。
 const hasCitationEdges = computed(() => layout.value.originalCitationEdgeCount > 0) // 判断当前节点范围是否存在可核验的原始真实引用边。
+const graphMetrics = computed(() => analyzeCitationGraph(layout.value.nodes, layout.value.originalCitationEdges)) // 只计算当前筛选结果集内部的结构指标。
 
 function relatedNodes(node: CitationLayoutNode | null, direction: 'incoming' | 'outgoing'): CitationLayoutNode[] { // 根据方向从当前布局读取已可见的相邻论文。
   if (!node) return [] // 未选择论文时不返回关系列表。
-  const relatedIds = layout.value.edges // 遍历布局后的可见关系，以遵守一阶邻域和孤立项的当前范围。
-    .filter((edge) => edge.edgeType === 'cites') // 只把真实引用边计入引用和被引列表。
+  const relatedIds = layout.value.originalCitationEdges // 使用完整原始事实边，避免主干裁剪让侧栏误以为关系不存在。
     .filter((edge) => direction === 'outgoing' ? edge.sourceId === node.id : edge.targetId === node.id) // 按方向筛选直接关系。
     .map((edge) => direction === 'outgoing' ? edge.targetId : edge.sourceId) // 取得另一端节点标识。
   return [...new Set(relatedIds)].map((id) => nodeById.value.get(id)).filter((item): item is CitationLayoutNode => Boolean(item)) // 去重并过滤不可见节点。
+}
+
+function resetAnalysis(): void { // 清除路径或多层探索状态并恢复普通浏览视觉。
+  analysisMode.value = 'browse' // 返回普通浏览模式。
+  pathStartNodeId.value = null // 清除路径起点。
+  pathEndNodeId.value = null // 清除路径终点。
+  citationPathResult.value = null // 清除路径查询结果。
+  activePathIndex.value = 0 // 重置多路径选择索引。
+  citationNeighborhood.value = null // 清除多层邻域结果。
+  neighborhoodLabel.value = '' // 清除邻域方向说明。
+}
+
+function enterPathAnalysis(): void { // 进入明确的两论文路径选择模式。
+  analysisMode.value = 'path' // 切换到路径分析模式。
+  pathStartNodeId.value = selectedNodeId.value // 优先复用当前选中论文作为起点。
+  pathEndNodeId.value = null // 进入模式时要求用户明确选择终点。
+  citationPathResult.value = null // 清除旧路径结果避免混淆。
+  citationNeighborhood.value = null // 路径分析与多层邻域保持独立。
+}
+
+function chooseNode(nodeId: string): void { // 统一处理普通浏览和路径分析模式下的节点选择。
+  selectedNodeId.value = nodeId // 所有模式均保留既有侧栏选择行为。
+  if (analysisMode.value !== 'path') return // 普通浏览和邻域模式不占用点击作为路径端点。
+  if (!pathStartNodeId.value || pathEndNodeId.value) { pathStartNodeId.value = nodeId; pathEndNodeId.value = null; citationPathResult.value = null; activePathIndex.value = 0; return } // 首次或已有完整路径时以当前节点替换起点。
+  if (nodeId !== pathStartNodeId.value) { pathEndNodeId.value = nodeId; citationPathResult.value = null; activePathIndex.value = 0 } // 第二次点击不同节点设置终点。
+}
+
+function findPaths(): void { // 基于当前筛选节点和完整真实事实边执行受控路径查询。
+  if (!pathStartNodeId.value || !pathEndNodeId.value) return // 未选择完整端点时不提交空查询。
+  citationPathResult.value = findCitationPaths(layout.value.nodes, layout.value.originalCitationEdges, pathStartNodeId.value, pathEndNodeId.value, { directed: pathDirected.value, maxDepth: pathMaxDepth.value, maxPaths: 3 }) // 主干模式仍使用完整事实边，避免隐藏边阻断真实路径。
+  activePathIndex.value = 0 // 每次新查询默认展示第一条最短路径。
+  citationNeighborhood.value = null // 路径与邻域结果分开显示。
+}
+
+function swapPathEndpoints(): void { // 交换路径起点和终点以便查看反向引用可达性。
+  const start = pathStartNodeId.value // 暂存当前起点。
+  pathStartNodeId.value = pathEndNodeId.value // 将终点设置为新起点。
+  pathEndNodeId.value = start // 将原起点设置为新终点。
+  citationPathResult.value = null // 交换后必须重新按新方向查询。
+  activePathIndex.value = 0 // 重置多路径索引。
+}
+
+function showNeighborhood(kind: 'ancestors' | 'descendants', depth: number): void { // 展开选中论文的前置或后续真实引用关系。
+  if (!selectedNodeId.value) return // 未选择论文时没有中心节点可探索。
+  analysisMode.value = 'neighborhood' // 进入独立的多层邻域分析模式。
+  citationPathResult.value = null // 清除路径结果，避免两个分析结果混杂。
+  citationNeighborhood.value = kind === 'ancestors' ? collectCitationAncestors(selectedNodeId.value, layout.value.nodes, layout.value.originalCitationEdges, depth) : collectCitationDescendants(selectedNodeId.value, layout.value.nodes, layout.value.originalCitationEdges, depth) // 严格按事实出边或入边展开。
+  neighborhoodLabel.value = kind === 'ancestors' ? '前置工作（沿引用出边）' : '后续引用论文（沿被引入边）' // 明确中文方向语义，避免与时间轴混淆。
+}
+
+function clearFilters(): void { // 恢复当前搜索快照中的全部前端节点。
+  yearStart.value = null // 清除年份下限。
+  yearEnd.value = null // 清除年份上限。
+  selectedSources.value = [] // 清空来源选择缓存。
+  sourceFilterEnabled.value = false // 关闭来源白名单。
+  minimumInDegree.value = 0 // 恢复无最小局部入度限制。
+  selectedNodeId.value = null // 筛选范围变化后安全清理可能无效的选择。
+  focusedPaperId.value = null // 清理可能不再存在的一阶邻域中心。
+  resetAnalysis() // 清理依赖旧可见图的路径和邻域结果。
+}
+
+function toggleSource(source: string): void { // 切换某个来源的前端事实筛选状态。
+  if (!sourceFilterEnabled.value) { selectedSources.value = sourceOptions.value.filter((item) => item !== source); sourceFilterEnabled.value = true; return } // 首次点击从全部来源切换为除当前来源外的显式白名单。
+  selectedSources.value = selectedSources.value.includes(source) ? selectedSources.value.filter((item) => item !== source) : [...selectedSources.value, source].sort((left, right) => left.localeCompare(right, 'en')) // 以稳定顺序更新来源白名单。
 }
 
 function communityColor(community: number, isIsolate: boolean): string { // 为引用分支提供稳定的可区分颜色。
@@ -73,6 +159,9 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   if (!svgNode) return // 组件尚未挂载时无需渲染。
   const currentLayout = layout.value // 固化本次渲染使用的布局快照。
   const activeNodeId = hoveredNodeId.value || selectedNodeId.value // 悬浮优先于点击，以提供即时关系反馈。
+  const activeAnalysisNodeIds = analysisNodeIds.value // 读取路径或邻域分析需要高亮的节点集合。
+  const activeAnalysisEdgeIds = new Set(analysisEdgeIds.value) // 读取路径或邻域分析需要高亮的真实边集合。
+  const analysisActive = activeAnalysisNodeIds.size > 0 // 判断当前是否需要淡化无关关系。
   const svg = d3.select(svgNode) // 将 SVG 交给 D3 做受控 DOM 更新。
   svg.selectAll('*').remove() // 每次按确定性状态完整重绘，避免残留事件监听器和旧元素。
   svg.attr('viewBox', `0 0 ${currentLayout.width} ${currentLayout.height}`) // 让画布随布局高度扩展并支持响应式缩放。
@@ -115,13 +204,13 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .join('path') // 创建当前状态所需路径。
     .attr('d', (edge) => edge.path) // 使用布局模块计算的避让节点的曲线路径。
     .attr('fill', 'none') // 边不填充任何区域。
-    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : !activeNodeId ? '#78a8bd' : isEdgeRelated(edge, activeNodeId) ? '#2f7598' : '#c5d9e3') // 默认细浅，悬浮时只加深关联引用边。
-    .attr('stroke-width', (edge) => edge.edgeType === 'same_work' ? 1.1 : activeNodeId && isEdgeRelated(edge, activeNodeId) ? 2.3 : 1.15) // 普通边保持细，关联边才明显加粗。
+    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : analysisActive && activeAnalysisEdgeIds.has(edge.id) ? '#b24d3c' : !activeNodeId ? '#78a8bd' : isEdgeRelated(edge, activeNodeId) ? '#2f7598' : '#c5d9e3') // 分析路径优先高亮，普通悬浮仍只加深关联引用边。
+    .attr('stroke-width', (edge) => edge.edgeType === 'same_work' ? 1.1 : analysisActive && activeAnalysisEdgeIds.has(edge.id) ? 2.7 : activeNodeId && isEdgeRelated(edge, activeNodeId) ? 2.3 : 1.15) // 分析边使用更粗线宽，其余维持既有视觉层级。
     .attr('stroke-linecap', 'round') // 让曲线路径和箭头连接处更柔和。
     .attr('stroke-linejoin', 'round') // 保持辅助虚线转折处的视觉连续性。
-    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : !activeNodeId ? (viewMode.value === 'backbone' ? 0.22 : 0.12) : isEdgeRelated(edge, activeNodeId) ? 0.96 : 0.05) // 主干默认保持低噪声，完整网络更淡，交互时只强调关联关系。
+    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (analysisActive ? 0.08 : activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : analysisActive ? activeAnalysisEdgeIds.has(edge.id) ? 1 : 0.04 : !activeNodeId ? (viewMode.value === 'backbone' ? 0.22 : 0.12) : isEdgeRelated(edge, activeNodeId) ? 0.96 : 0.05) // 分析模式淡化无关边，默认主干继续保持低噪声。
     .attr('stroke-dasharray', (edge) => edge.edgeType === 'same_work' ? '5 4' : null) // 版本族只在用户显式开启时显示为黄色虚线。
-    .attr('marker-end', (edge) => edge.edgeType !== 'cites' ? null : focusedPaperId.value || (activeNodeId && isEdgeRelated(edge, activeNodeId)) ? 'url(#citation-timeline-arrow-active)' : null) // 默认隐藏箭头，仅在交互关系或一阶邻域模式中显示方向。
+    .attr('marker-end', (edge) => edge.edgeType !== 'cites' ? null : analysisActive && activeAnalysisEdgeIds.has(edge.id) || focusedPaperId.value || (activeNodeId && isEdgeRelated(edge, activeNodeId)) ? 'url(#citation-timeline-arrow-active)' : null) // 路径和邻域边始终显示方向，其余遵守既有按需箭头规则。
 
   const nodes = svg.append('g').attr('class', 'citation-nodes') // 在边之上渲染可交互论文节点。
   const nodeGroups = nodes.selectAll<SVGGElement, CitationLayoutNode>('g') // 绑定布局节点。
@@ -134,16 +223,16 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .style('cursor', 'pointer') // 明确节点可交互。
     .on('mouseenter', (_event, node) => { hoveredNodeId.value = node.id }) // 悬浮时突出一阶引用关系。
     .on('mouseleave', () => { hoveredNodeId.value = null }) // 离开后恢复点击状态或全局状态。
-    .on('click', (_event, node) => { selectedNodeId.value = node.id }) // 点击后更新现有侧栏内容。
-    .on('keydown', (event, node) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectedNodeId.value = node.id } }) // 允许键盘选择节点。
+    .on('click', (_event, node) => { chooseNode(node.id) }) // 点击后保留侧栏行为，并在路径模式中选择端点。
+    .on('keydown', (event, node) => { if (event.key === 'Escape') { resetAnalysis(); return } if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); chooseNode(node.id) } }) // 允许键盘选择节点，并支持 Escape 退出分析模式。
   nodeGroups.append('circle') // 绘制按入度对数缩放的节点。
     .attr('r', (node) => node.radius) // 直接使用布局函数计算的半径。
     .attr('fill', (node) => communityColor(node.community, node.isIsolate)) // 使用引用社区色或孤立中性色。
-    .attr('fill-opacity', (node) => isNodeRelated(node, activeNodeId) ? 0.9 : 0.18) // 非相关节点在交互时明显淡化。
-    .attr('stroke', (node) => node.id === selectedNodeId.value ? '#1b4965' : '#3d7895') // 为选中节点提供稳定边框反馈。
-    .attr('stroke-width', (node) => node.id === selectedNodeId.value ? 2.7 : 1.5) // 选中节点使用稍粗描边。
+    .attr('fill-opacity', (node) => analysisActive ? activeAnalysisNodeIds.has(node.id) ? 0.94 : 0.1 : isNodeRelated(node, activeNodeId) ? 0.9 : 0.18) // 分析模式只突出路径或邻域节点。
+    .attr('stroke', (node) => activePath.value?.nodeIds[0] === node.id ? '#17735d' : activePath.value?.nodeIds[(activePath.value?.nodeIds.length || 1) - 1] === node.id ? '#a2473f' : analysisActive && activeAnalysisNodeIds.has(node.id) ? '#b26a32' : node.id === selectedNodeId.value ? '#1b4965' : '#3d7895') // 使用兼容当前 TypeScript 目标库的索引突出路径终点。
+    .attr('stroke-width', (node) => analysisActive && activeAnalysisNodeIds.has(node.id) || node.id === selectedNodeId.value ? 2.7 : 1.5) // 高亮节点与既有选中节点均保持可读描边。
   nodeGroups.append('title').text((node) => `${node.title}\n年份：${node.year || '未知'}\n入度：${node.inDegree}，出度：${node.outDegree}${node.memberCount > 1 ? `\n合并版本：${node.memberCount} 篇` : ''}`) // 悬浮时展示完整信息而非永久铺满标题。
-  const labelGroups = nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value) // 只为重要或当前交互节点创建位于外侧的标签组。
+  const labelGroups = nodeGroups.filter((node) => node.showLabel || node.id === selectedNodeId.value || node.id === hoveredNodeId.value || activeAnalysisNodeIds.has(node.id)) // 分析路径和邻域节点始终显示标签。
     .append('g') // 使用独立容器同时承载路径遮挡底板和文字。
     .attr('transform', (node) => `translate(${node.labelBox.x - node.x},${node.labelBox.y - node.y})`) // 直接使用纯布局函数从八个候选位置选择的标签矩形。
     .attr('pointer-events', 'none') // 标签组不抢占节点的悬浮与点击事件。
@@ -174,6 +263,7 @@ function toggleFamilies(): void { // 切换版本族合并与单独节点模式�
   if (collapseFamilies.value) includeVersionLinks.value = false // 合并时不再显示已被折叠的同族虚线。
   selectedNodeId.value = null // 避免侧栏保留已不存在的视觉节点。
   focusedPaperId.value = null // 避免用旧标识继续限制新的视图。
+  resetAnalysis() // 版本族视觉标识变化后清理依赖旧节点标识的分析结果。
 }
 
 function setViewMode(nextViewMode: CitationViewMode): void { // 在不修改任何引用事实的前提下切换展示模式。
@@ -218,6 +308,12 @@ watch(collapseFamilies, () => { // 展开模式变更后校正版本族虚线开
   if (collapseFamilies.value) includeVersionLinks.value = false // 合并模式不得同时显示内部版本族边。
 })
 
+watch([yearStart, yearEnd, selectedSources, minimumInDegree], () => { // 用户筛选变化后清理不再属于当前可见图的交互状态。
+  selectedNodeId.value = null // 防止侧栏保留已被筛选隐藏的论文。
+  focusedPaperId.value = null // 防止一阶邻域中心落在不可见范围外。
+  resetAnalysis() // 路径和多层探索必须基于当前可见图重新执行。
+}, { deep: true })
+
 onMounted(async () => { // 组件首次挂载后建立响应式测量与初始渲染。
   updateMeasuredWidth() // 首次读取实际容器尺寸。
   resizeObserver = new ResizeObserver(() => updateMeasuredWidth()) // 容器宽度变化时维持稳定时间层比例。
@@ -247,7 +343,25 @@ onBeforeUnmount(disposeRenderer) // 组件卸载时停止 observer、清空 SVG 
           <span v-if="graph.truncated">节点已由后端裁剪</span>
           <span v-if="!includeIsolates && layout.isolatedCount">另有 {{ layout.isolatedCount }} 篇孤立论文未展开</span>
           <span v-if="collapseFamilies && layout.mergedVersionNodeCount">已合并 {{ layout.mergedVersionNodeCount }} 个版本节点</span>
+          <span v-if="layout.temporarilyRevealedCitationEdgeCount">路径分析临时展示了 {{ layout.temporarilyRevealedCitationEdgeCount }} 条主干模式中隐藏的真实引用边</span>
         </div>
+        <details class="citation-timeline-filter-panel">
+          <summary>事实型筛选与当前结果集概览</summary>
+          <div class="citation-timeline-filters">
+            <label>年份起始<input v-model.number="yearStart" type="number" min="1800" max="2100" placeholder="不限"></label>
+            <label>年份结束<input v-model.number="yearEnd" type="number" min="1800" max="2100" placeholder="不限"></label>
+            <label>最小内部入度<select v-model.number="minimumInDegree"><option :value="0">0</option><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option></select></label>
+            <button type="button" class="citation-timeline-button" @click="clearFilters">清除筛选</button>
+          </div>
+          <div class="citation-timeline-source-filters">
+            <span>来源：</span>
+            <label v-for="source in sourceOptions" :key="source"><input type="checkbox" :checked="!sourceFilterEnabled || selectedSources.includes(source)" @change="toggleSource(source)">{{ source }}</label>
+          </div>
+          <p class="citation-timeline-filter-note">当前显示 {{ layout.nodes.length }} / {{ filteredGraphResult.totalNodeCount }} 篇论文（筛选保留 {{ filteredGraphResult.visibleNodeCount }} 篇）；局部入度仅统计本次搜索结果内部的真实引用。</p>
+          <p class="citation-timeline-filter-note">内部概览：{{ graphMetrics.nodeCount }} 篇论文 · {{ graphMetrics.citationEdgeCount }} 条引用 · {{ graphMetrics.componentCount }} 个弱连通分量 · {{ graphMetrics.isolateCount }} 篇孤立论文 · {{ graphMetrics.earliestYear || '年份未知' }}—{{ graphMetrics.latestYear || '年份未知' }}</p>
+          <p v-if="graphMetrics.maxInDegreeNodeIds.length" class="citation-timeline-filter-note">当前结果集内部入度最高：{{ graphMetrics.maxInDegreeNodeIds.map((id) => nodeById.get(id)?.title || id).join('、') }}</p>
+          <p v-if="graphMetrics.maxOutDegreeNodeIds.length" class="citation-timeline-filter-note">当前结果集内部出度最高：{{ graphMetrics.maxOutDegreeNodeIds.map((id) => nodeById.get(id)?.title || id).join('、') }}</p>
+        </details>
       </div>
       <div class="citation-timeline-actions">
         <button type="button" class="citation-timeline-button" @click="toggleIsolates">
@@ -286,6 +400,42 @@ onBeforeUnmount(disposeRenderer) // 组件卸载时停止 observer、清空 SVG 
           </div>
           <button type="button" class="citation-timeline-primary" @click="openSelectedPaper">查看论文详情</button>
           <button type="button" class="citation-timeline-button" @click="focusSelectedNeighborhood">仅查看一阶邻域</button>
+          <section class="citation-timeline-analysis">
+            <h5>路径分析</h5>
+            <p class="citation-timeline-muted">按引用方向中，A → B 表示 A 引用了 B；忽略方向只用于判断当前结果集的结构连接，不改变引用事实。</p>
+            <button v-if="analysisMode !== 'path'" type="button" class="citation-timeline-button" @click="enterPathAnalysis">以当前论文为起点</button>
+            <template v-else>
+              <p class="citation-timeline-path-status">起点：{{ nodeById.get(pathStartNodeId || '')?.title || '请点击论文' }}<br>终点：{{ nodeById.get(pathEndNodeId || '')?.title || '请点击另一篇论文' }}</p>
+              <label class="citation-timeline-check"><input v-model="pathDirected" type="checkbox">按引用方向</label>
+              <label>最大深度<select v-model.number="pathMaxDepth"><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option><option :value="6">6</option></select></label>
+              <button type="button" class="citation-timeline-button" :disabled="!pathStartNodeId || !pathEndNodeId" @click="findPaths">查找路径</button>
+              <button type="button" class="citation-timeline-button" :disabled="!pathStartNodeId || !pathEndNodeId" @click="swapPathEndpoints">交换起终点</button>
+              <button type="button" class="citation-timeline-button" @click="resetAnalysis">清除路径</button>
+            </template>
+            <template v-if="citationPathResult">
+              <p v-if="!citationPathResult.paths.length" class="citation-timeline-muted">在当前筛选结果和深度范围内未找到真实引用路径。</p>
+              <template v-else>
+                <p class="citation-timeline-path-status">路径 {{ activePathIndex + 1 }} / {{ citationPathResult.paths.length }} · {{ activePath?.length }} 条引用边 · {{ activePath?.nodeIds.length }} 篇论文</p>
+                <button type="button" class="citation-timeline-button" :disabled="activePathIndex === 0" @click="activePathIndex -= 1">上一条</button>
+                <button type="button" class="citation-timeline-button" :disabled="activePathIndex >= citationPathResult.paths.length - 1" @click="activePathIndex += 1">下一条</button>
+                <ol><li v-for="nodeId in activePath?.nodeIds || []" :key="nodeId">{{ nodeById.get(nodeId)?.title || nodeId }}</li></ol>
+              </template>
+            </template>
+          </section>
+          <section class="citation-timeline-analysis">
+            <h5>多层事实引用探索</h5>
+            <p class="citation-timeline-muted">前置工作沿出边展开；后续引用论文沿入边展开。</p>
+            <div class="citation-timeline-depth-actions">
+              <button v-for="depth in [1, 2, 3]" :key="`ancestor-${depth}`" type="button" class="citation-timeline-button" @click="showNeighborhood('ancestors', depth)">{{ depth }} 层前置工作</button>
+              <button v-for="depth in [1, 2, 3]" :key="`descendant-${depth}`" type="button" class="citation-timeline-button" @click="showNeighborhood('descendants', depth)">{{ depth }} 层后续引用</button>
+            </div>
+            <template v-if="citationNeighborhood">
+              <p class="citation-timeline-path-status">{{ neighborhoodLabel }}</p>
+              <p v-if="!citationNeighborhood.levels.length" class="citation-timeline-muted">当前筛选图内没有可继续展开的真实引用关系。</p>
+              <ul><li v-for="level in citationNeighborhood.levels" :key="level.depth">第 {{ level.depth }} 层：{{ level.nodeIds.map((id) => nodeById.get(id)?.title || id).join('、') }}</li></ul>
+              <button type="button" class="citation-timeline-button" @click="resetAnalysis">清除探索</button>
+            </template>
+          </section>
           <section>
             <h5>该论文引用（{{ selectedCites.length }}）</h5>
             <ul>
@@ -321,6 +471,14 @@ onBeforeUnmount(disposeRenderer) // 组件卸载时停止 observer、清空 SVG 
 .citation-timeline-view-button.is-active { border-color: #347292; background: #e4f2f8; color: #1f5a78; box-shadow: inset 0 0 0 1px rgba(52, 114, 146, .12); }
 .citation-timeline-stats { display: flex; flex-wrap: wrap; gap: 5px 8px; margin-top: 8px; color: #617e90; font-size: 11px; line-height: 1.45; }
 .citation-timeline-stats span { border-radius: 99px; padding: 3px 7px; background: #f0f7fa; }
+.citation-timeline-filter-panel { margin-top: 10px; color: #547185; font-size: 12px; }
+.citation-timeline-filter-panel summary { cursor: pointer; font-weight: 750; color: #39657d; }
+.citation-timeline-filters, .citation-timeline-source-filters, .citation-timeline-depth-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 8px; }
+.citation-timeline-filters label, .citation-timeline-source-filters label, .citation-timeline-analysis label { display: inline-flex; align-items: center; gap: 4px; color: #5a7587; font-size: 11px; }
+.citation-timeline-filters input, .citation-timeline-filters select, .citation-timeline-analysis select { width: 66px; border: 1px solid #c9dfe8; border-radius: 5px; padding: 3px 4px; color: #355c73; background: #fff; font: inherit; }
+.citation-timeline-filter-note, .citation-timeline-path-status { margin: 7px 0 0; color: #5d7889; font-size: 11px; line-height: 1.45; }
+.citation-timeline-analysis { margin-top: 16px; padding-top: 10px; border-top: 1px solid #e1edf2; }
+.citation-timeline-analysis .citation-timeline-button { width: auto; margin: 5px 4px 0 0; padding: 5px 7px; }
 .citation-timeline-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .citation-timeline-button, .citation-timeline-primary { border: 1px solid #b8d2df; border-radius: 8px; padding: 7px 10px; background: #f8fcfe; color: #2e637f; font: inherit; font-size: 12px; cursor: pointer; }
 .citation-timeline-primary { border-color: #3f7d9c; background: #3f7d9c; color: #fff; }

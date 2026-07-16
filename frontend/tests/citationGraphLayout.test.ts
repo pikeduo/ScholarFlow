@@ -137,3 +137,12 @@ test('一阶邻域、版本族合并与孤立论文策略继续保留', () => { 
   assert.deepEqual(new Set(result.nodes.map((node) => node.id)), new Set(['family:family', 'paper:middle', 'paper:new'])) // 验证版本族、一阶邻域和孤立节点规则未变化。
   assert.equal(result.mergedVersionNodeCount, 1) // 验证工具栏可区分默认合并的版本节点数量。
 })
+
+test('路径分析可临时恢复研究主干隐藏的真实引用边', () => { // 验证分析显示不会修改完整网络事实集合。
+  const backbone = layout(transitiveGraph) // 默认主干隐藏可传递的 A 到 C 直接引用。
+  const analysis = layout(transitiveGraph, { forceCitationEdgeIds: ['cites:paper:a:paper:c'] }) // 路径分析请求临时显示该事实边。
+  assert.equal(backbone.visibleCitationEdgeCount, 2) // 验证默认主干仍然保持裁剪。
+  assert.equal(analysis.visibleCitationEdgeCount, 3) // 验证分析视图恢复真实路径边。
+  assert.equal(analysis.temporarilyRevealedCitationEdgeCount, 1) // 验证 UI 可准确提示临时恢复数量。
+  assert.equal(analysis.originalCitationEdgeCount, 3) // 验证原始事实边数量始终不变。
+})

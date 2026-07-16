@@ -35,6 +35,7 @@ export interface CitationLayoutOptions { // 描述纯布局函数的可控展示
   viewMode?: CitationViewMode // 指定研究主干或完整网络，缺省保持研究主干。
   maxVisibleEdges?: number // 指定研究主干中可展示真实引用边的全图上限。
   maxOutgoingEdgesPerNode?: number // 指定研究主干中单论文可展示真实引用出边上限。
+  forceCitationEdgeIds?: string[] // 指定分析模式临时恢复的真实引用边稳定标识。
 }
 
 export interface CitationLayoutNode { // 描述可直接交给 D3 渲染的稳定坐标节点。
@@ -97,6 +98,8 @@ export interface CitationGraphLayout { // 描述布局模块输出给 D3 组件�
   originalCitationEdgeCount: number // 返回当前节点范围内的完整真实引用边数量。
   visibleCitationEdgeCount: number // 返回当前视图实际绘制的真实引用边数量。
   hiddenCitationEdgeCount: number // 返回研究主干因视觉筛选隐藏的真实引用边数量。
+  temporarilyRevealedCitationEdgeCount: number // 返回路径或上下游分析临时恢复的主干隐藏事实边数量。
+  originalCitationEdges: VisualEdge[] // 返回当前节点范围内未裁剪的真实引用边，供事实型分析复用。
 }
 
 export interface VisualSeed { // 表示版本族合并后、尚未计算坐标的内部节点。
@@ -736,7 +739,11 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
   const priorityVisualId = options.priorityNodeId ? paperToVisualId.get(options.priorityNodeId) || (seeds.some((seed) => seed.id === options.priorityNodeId) ? options.priorityNodeId : null) : focusedVisualId // 同时兼容论文标识和组件已选中的视觉节点标识。
   const originalCitationEdges = originalVisibleEdges.filter((edge) => edge.edgeType === 'cites') // 主干筛选只处理真实引用边。
   const backboneSelection = selectBackboneEdges(visibleSeeds, originalCitationEdges, { priorityNodeId: priorityVisualId, maxVisibleEdges: options.maxVisibleEdges, maxOutgoingEdgesPerNode: options.maxOutgoingEdgesPerNode }) // 使用纯函数筛选研究主干，不修改原始图数据。
-  const visibleCitationEdges = viewMode === 'full' ? [...originalCitationEdges] : backboneSelection.visibleEdges // 完整网络无条件恢复当前范围内全部真实引用事实。
+  const baseVisibleCitationEdges = viewMode === 'full' ? [...originalCitationEdges] : backboneSelection.visibleEdges // 完整网络无条件恢复当前范围内全部真实引用事实。
+  const baseVisibleEdgeIds = new Set(baseVisibleCitationEdges.map((edge) => visualEdgeId(edge))) // 保存当前视图原本可见的真实引用边标识。
+  const forcedEdgeIds = new Set(options.forceCitationEdgeIds || []) // 接收路径或上下游分析要求临时展示的真实事实边。
+  const temporarilyRevealedCitationEdges = originalCitationEdges.filter((edge) => forcedEdgeIds.has(visualEdgeId(edge)) && !baseVisibleEdgeIds.has(visualEdgeId(edge))) // 仅统计原本被主干隐藏而被分析临时恢复的事实边。
+  const visibleCitationEdges = [...baseVisibleCitationEdges, ...temporarilyRevealedCitationEdges].sort((left, right) => visualEdgeId(left).localeCompare(visualEdgeId(right), 'en')) // 合并当前视图和分析边，并保持稳定顺序。
   const displayEdges = [...visibleCitationEdges, ...originalVisibleEdges.filter((edge) => edge.edgeType === 'same_work')] // 版本族虚线继续遵守既有开关，不参与主干筛选。
   const inDegree = new Map<string, number>(visibleSeeds.map((seed) => [seed.id, 0])) // 初始化当前可见图中的真实引用入度。
   const outDegree = new Map<string, number>(visibleSeeds.map((seed) => [seed.id, 0])) // 初始化当前可见图中的真实引用出度。
@@ -818,5 +825,5 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
   for (const node of positionedNodes) node.labelBox = allLabelBoxes.get(node.id) || { x: node.x, y: node.y, width: 0, height: 0 } // 将纯函数选择的标签矩形写回渲染节点。
   const layoutEdges = routeEdgesAsBezierCurves(positionedNodes, displayEdges) // 默认使用平滑三次贝塞尔曲线，避免长边形成多次正交回折。
   const mergedVersionNodeCount = options.collapseFamilies ? seeds.reduce((count, seed) => count + Math.max(0, seed.memberCount - 1), 0) : 0 // 明确统计因版本族默认合并而未单独显示的论文节点。
-  return { width, height, nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, mergedVersionNodeCount, componentCount: sortedComponents.length, yearTicks, originalCitationEdgeCount: originalCitationEdges.length, visibleCitationEdgeCount: visibleCitationEdges.length, hiddenCitationEdgeCount: viewMode === 'backbone' ? backboneSelection.hiddenEdgeCount : 0 } // 返回当前视图统计，避免组件重新遍历猜测。
+  return { width, height, nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, mergedVersionNodeCount, componentCount: sortedComponents.length, yearTicks, originalCitationEdgeCount: originalCitationEdges.length, visibleCitationEdgeCount: visibleCitationEdges.length, hiddenCitationEdgeCount: viewMode === 'backbone' ? originalCitationEdges.length - visibleCitationEdges.length : 0, temporarilyRevealedCitationEdgeCount: temporarilyRevealedCitationEdges.length, originalCitationEdges: [...originalCitationEdges] } // 返回当前视图统计，避免组件重新遍历猜测。
 }
