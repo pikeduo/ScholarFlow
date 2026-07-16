@@ -1,6 +1,7 @@
 """配置应用与 Uvicorn 同时写入控制台和滚动文件的统一日志。"""
 
 import logging  # 使用 Python 标准日志框架统一处理应用和服务器输出。
+import sys  # 仅在当前解释器内识别 pytest，避免测试污染生产运行日志。
 from collections.abc import Sequence  # 接收可测试的服务器日志器名称集合。
 from logging.handlers import RotatingFileHandler  # 防止日志文件无限增长。
 
@@ -8,13 +9,28 @@ from backend.app.core.config import Settings, settings  # 读取日志目录、�
 
 
 LOG_FILE_NAME = "scholarflow.log"  # 使用稳定文件名便于开发者和诊断工具直接定位。
+TEST_LOG_FILE_NAME = "scholarflow-test.log"  # 将 pytest 的预期故障注入与实际服务日志物理隔离。
 UVICORN_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")  # 覆盖启动、框架异常和 HTTP 访问日志。
+
+
+def resolve_default_log_file_name(is_pytest_process: bool | None = None) -> str:
+    """根据当前执行上下文返回默认日志文件名。
+
+    参数：
+        is_pytest_process：可注入的 pytest 上下文，未提供时从当前解释器模块判断。
+    返回：
+        str：pytest 返回测试专用文件名，其他运行返回实际服务日志文件名。
+    """
+    if is_pytest_process is None:  # 仅在未注入上下文时读取当前解释器状态。
+        is_pytest_process = "pytest" in sys.modules  # pytest 在收集测试模块前已加载到当前解释器。
+    return TEST_LOG_FILE_NAME if is_pytest_process else LOG_FILE_NAME  # 保证两类日志绝不共用同一文件。
 
 
 def configure_logging(
     config: Settings = settings,
     logger_name: str = "scholarflow",
     related_logger_names: Sequence[str] = UVICORN_LOGGER_NAMES,
+    log_file_name: str = LOG_FILE_NAME,
 ) -> logging.Logger:
     """创建应用日志器，并让 Uvicorn 复用相同的控制台和滚动文件处理器。
 
@@ -22,6 +38,7 @@ def configure_logging(
         config：包含日志目录和级别的集中配置，测试可注入隔离实例。
         logger_name：应用日志器名称，默认使用稳定的 scholarflow。
         related_logger_names：需要写入同一文件的服务器日志器名称。
+        log_file_name：当前日志器写入的文件名，默认保留实际服务日志路径。
     返回：
         logging.Logger：已配置控制台、UTF-8 文件和服务器日志转发的应用日志器。
     """
@@ -36,7 +53,7 @@ def configure_logging(
         console_handler.setLevel(log_level)  # 使用与应用一致的输出级别。
         console_handler.setFormatter(formatter)  # 让控制台与日志文件可直接对照。
         file_handler = RotatingFileHandler(  # 创建按体积滚动的本地 UTF-8 日志文件。
-            config.log_dir / LOG_FILE_NAME,  # 将全部后端运行信息写入稳定路径。
+            config.log_dir / log_file_name,  # 将当前执行上下文的后端信息写入独立文件。
             maxBytes=5 * 1024 * 1024,  # 单个日志文件上限为 5 MiB，避免长期运行无限增长。
             backupCount=5,  # 最多保留五个历史文件供近期错误追踪。
             encoding="utf-8",  # 保证 Windows 下中文日志可正确读取。
@@ -69,4 +86,4 @@ def _share_handlers_with_related_loggers(
         related_logger.propagate = False  # 阻止父子日志器同时处理同一消息造成重复行。
 
 
-logger = configure_logging()  # 在 FastAPI 应用导入时接管应用与 Uvicorn 全部后端日志。
+logger = configure_logging(log_file_name=resolve_default_log_file_name())  # pytest 写入测试专用文件，服务运行仍接管正式日志。

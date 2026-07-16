@@ -1,10 +1,23 @@
 """验证应用与服务器日志会同时写入控制台和 UTF-8 滚动文件。"""
 
 import logging  # 构造隔离日志器并在测试后释放处理器。
+from logging.handlers import RotatingFileHandler  # 识别全局滚动文件处理器的实际目标文件。
 from pathlib import Path  # 标注 pytest 临时目录类型。
 
 from backend.app.core.config import Settings  # 构造不读取本地 .env 的隔离日志配置。
-from backend.app.core.logging import LOG_FILE_NAME, configure_logging  # 导入待测统一日志配置入口。
+from backend.app.core.logging import LOG_FILE_NAME, TEST_LOG_FILE_NAME, configure_logging, logger, resolve_default_log_file_name  # 导入待测统一日志配置入口。
+
+
+def test_default_log_file_name_separates_pytest_and_service_contexts() -> None:
+    """pytest 与实际服务必须选择不同的默认日志文件名。"""
+    assert resolve_default_log_file_name(is_pytest_process=True) == TEST_LOG_FILE_NAME  # 验证测试上下文只写入测试专用文件。
+    assert resolve_default_log_file_name(is_pytest_process=False) == LOG_FILE_NAME  # 验证服务上下文继续使用稳定正式日志文件。
+
+
+def test_module_logger_uses_test_log_file_under_pytest() -> None:
+    """pytest 导入的全局应用日志器不得占用实际服务日志文件。"""
+    file_names = {Path(handler.baseFilename).name for handler in logger.handlers if isinstance(handler, RotatingFileHandler)}  # 收集全局日志器所有滚动文件目标。
+    assert file_names == {TEST_LOG_FILE_NAME}  # 验证测试过程只会写入独立的测试日志文件。
 
 
 def test_configure_logging_saves_application_and_server_messages(tmp_path: Path) -> None:
