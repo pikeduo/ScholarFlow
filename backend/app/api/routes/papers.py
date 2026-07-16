@@ -11,6 +11,7 @@ from backend.app.api.routes.library import get_database_session  # 复用请求�
 from backend.app.core.logging import logger  # 记录存储边界异常的完整堆栈。
 from backend.app.models.paper import PaperRecord  # 返回统一的规范化论文领域契约。
 from backend.app.models.paper_translation import PaperTranslationResponse  # 返回稳定的中文翻译响应。
+from backend.app.services.saved_paper_resolver import SavedPaperResolver  # 统一搜索快照优先、文献库回退的只读解析规则。
 from backend.app.services.search_run_store import SearchRunStateStore, SearchRunStoreError  # 隔离 SQLite 访问并映射公共错误。
 from backend.app.repositories.library import LibraryRepository  # 从用户明确收藏的本地论文快照补充详情和翻译读取边界。
 from backend.app.services.paper_translation_store import PaperTranslationStore, PaperTranslationStoreError, SqlitePaperTranslationStore  # 通过 SQLite 缓存跨浏览器复用字段级译文。
@@ -36,12 +37,6 @@ def get_library_paper_repository(session: Annotated[Session, Depends(get_databas
     return LibraryRepository(session)  # 复用文献库既有身份与 JSON 快照边界。
 
 
-def _read_saved_paper(paper_id: str, state_store: SearchRunStateStore, library_repository: LibraryRepository) -> PaperRecord | None:
-    """优先读取搜索结果快照，未命中时读取用户已收藏的同一论文快照。"""
-    paper = state_store.get_paper(paper_id)  # 搜索结果仍是详情读取的首选事实来源。
-    return paper if paper is not None else library_repository.find_paper(paper_id)  # 仅在搜索快照不存在时回退至本地文献库，不调用外部来源。
-
-
 @router.get("/detail", response_model=PaperRecord, status_code=status.HTTP_200_OK, summary="读取已保存论文详情")
 def get_paper_detail(
     paper_id: Annotated[str, Query(min_length=1)],
@@ -62,7 +57,7 @@ def get_paper_detail(
     if not normalized_paper_id:  # 防止空路径参数进入 SQLite 扫描。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="论文详情不存在或尚未保存")  # 保持未知标识的稳定公共语义。
     try:  # 将 SQLite 与 JSON 解析异常隔离在服务边界后处理。
-        paper = _read_saved_paper(normalized_paper_id, state_store, library_repository)  # 读取搜索或用户已收藏的本地快照，绝不触发外部学术来源。
+        paper = SavedPaperResolver(state_store, library_repository).get_paper(normalized_paper_id)  # 统一读取搜索优先、文献库回退的本地快照，绝不触发外部学术来源。
     except SearchRunStoreError:  # 不将数据库路径、SQL 或快照正文泄露给客户端。
         logger.exception("论文详情读取接口失败：论文=%s", normalized_paper_id)  # 只记录安全内部标识和堆栈。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="论文详情暂时不可用，请稍后重试") from None  # 返回可重试的公共提示。
@@ -112,7 +107,7 @@ async def translate_paper(
     if not normalized_paper_id:  # 空标识不可能对应已保存论文。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="论文详情不存在或尚未保存")  # 复用论文资源的稳定不存在语义。
     try:  # 先读取已保存论文，禁止前端提交任意文本给模型。
-        paper = _read_saved_paper(normalized_paper_id, state_store, library_repository)  # 只从搜索或已收藏的 SQLite 快照读取公开元数据。
+        paper = SavedPaperResolver(state_store, library_repository).get_paper(normalized_paper_id)  # 只从统一解析的搜索或已收藏 SQLite 快照读取公开元数据。
     except SearchRunStoreError:  # 不向客户端暴露数据库路径、SQL 或快照正文。
         logger.exception("论文翻译读取接口失败：论文=%s", normalized_paper_id)  # 仅记录稳定内部标识和受控堆栈。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="论文翻译暂时不可用，请稍后重试") from None  # 返回可重试公共错误。
