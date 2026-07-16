@@ -1,3 +1,5 @@
+import { requestApiJson } from './apiClient.js' // 复用无业务语义的 HTTP、错误结构和 JSON 解析边界。
+
 /** 表示个人文献库请求失败且可安全展示的公共错误。 */
 export class LibraryApiError extends Error { // 继承标准错误供页面统一捕获。
   constructor(message, status = null) { // 接收展示消息和可选 HTTP 状态码。
@@ -99,30 +101,5 @@ export const normalizeTags = normalizeKeywords // 避免仅因命名升级破坏
 
 /** 执行文献库 HTTP 请求并统一解析公共错误。 */
 async function requestLibrary(path, options, fetchImpl, apiBaseUrl, allowEmpty = false) { // 复用所有文献库请求的网络边界。
-  if (typeof fetchImpl !== 'function') throw new LibraryApiError('当前环境不支持网络请求') // 为旧环境提供明确错误。
-  let response // 保存网络响应供状态处理。
-  try { // 将断网和代理故障转换为安全消息。
-    response = await fetchImpl(`${apiBaseUrl}${path}`, { // 调用版本化后端端点。
-      ...options, // 保留调用方提供的方法和正文。
-      headers: options.body ? { 'Content-Type': 'application/json' } : undefined, // 仅在有 JSON 正文时声明内容类型。
-    })
-  } catch { // 不暴露浏览器底层网络异常。
-    throw new LibraryApiError('无法连接文献库服务，请确认后端已启动') // 返回可操作提示。
-  }
-  if (!response.ok) { // 非成功响应不得进入页面数据流。
-    let message = response.status === 404 ? '文献库记录不存在' : '文献库服务暂时不可用，请稍后重试' // 提供状态相关默认消息。
-    try { // 优先读取后端已净化的公共错误。
-      const errorBody = await response.json() // 解析 FastAPI 错误响应。
-      if (typeof errorBody.detail === 'string') message = errorBody.detail // 只接受安全字符串字段。
-    } catch { // 非 JSON 响应保持默认说明。
-      // 无需展示代理页面或内部响应正文。
-    }
-    throw new LibraryApiError(message, response.status) // 携带状态码供页面决定刷新策略。
-  }
-  if (allowEmpty || response.status === 204) return null // 删除成功时不尝试解析空正文。
-  try { // 将成功状态的无效 JSON 转换为稳定错误。
-    return await response.json() // 返回后端领域响应。
-  } catch { // 避免页面因代理返回空正文而崩溃。
-    throw new LibraryApiError('文献库服务返回了无法解析的结果') // 提示用户重试。
-  }
+  return requestApiJson(path, { ...options, headers: options.body ? { 'Content-Type': 'application/json' } : undefined }, { fetchImpl, apiBaseUrl, ErrorType: LibraryApiError, networkMessage: '无法连接文献库服务，请确认后端已启动', unavailableMessage: '文献库服务暂时不可用，请稍后重试', notFoundMessage: '文献库记录不存在', unsupportedNetworkMessage: '当前环境不支持网络请求', allowEmpty, invalidJsonMessage: '文献库服务返回了无法解析的结果' }) // 保留文献库既有错误文案与 204 语义，仅下沉重复 HTTP 处理。
 }
