@@ -4,12 +4,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import PaperResultCard from '../components/PaperResultCard.vue' // 展示单篇证据化论文结果。
 import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 在搜索页和文献库统一展示论文详情与字段翻译。
 import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // 在搜索页和文献库统一展示事实型论文比较。
+import PaperComparisonToolbar from '../components/PaperComparisonToolbar.vue' // 复用两页共有的比较数量与操作工具栏。
 import QueryIntentPanel from '../components/QueryIntentPanel.vue' // 展示并编辑后端真实查询计划。
 import CitationTimelineGraph from '../components/CitationTimelineGraph.vue' // 以时间分层方式展示当前结果集内的真实引用关系。
 import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' // 将搜索结果保存到个人文献库。
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量、路线与网页发现翻译。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
 import { resolveSearchPageJump } from '../utils/searchResults.js' // 严格校验用户输入的目标页码。
+import { usePaperComparison } from '../composables/usePaperComparison.js' // 统一管理二至五篇论文比较交互。
+import { usePaperDetail } from '../composables/usePaperDetail.js' // 统一管理论文详情读取交互。
 
 const examples = [ // 提供可直接填入搜索框的复杂查询示例。
   '近五年使用大语言模型进行多变量时间序列预测，并在 ETT 数据集上实验的论文，排除综述', // 覆盖方法、任务、数据集、年份和排除条件。
@@ -38,13 +41,8 @@ const showAdvanced = ref(false) // 控制高级约束面板展开状态。
 const savedPaperIds = ref(new Set()) // 保存当前页面已成功收藏的论文 ID。
 const savingPaperIds = ref(new Set()) // 保存收藏请求中的论文 ID，防止重复点击。
 const libraryMessage = ref({ text: '', tone: 'success' }) // 保存收藏操作反馈。
-const detailPaper = ref(null) // 保存从 SQLite 读取的当前论文详情。
-const detailLoading = ref(false) // 标记详情读取请求是否进行中。
-const detailError = ref('') // 保存详情读取的安全公共错误。
-const comparisonPaperIds = ref([]) // 保存当前搜索结果中用户选择的二至五篇论文标识。
-const comparisonResult = ref(null) // 保存后端返回的事实型固定列对比结果。
-const comparisonLoading = ref(false) // 标记比较接口是否正在读取已保存论文。
-const comparisonError = ref('') // 保存比较接口的安全公共错误。
+const { detailPaper, detailLoading, detailError, openPaperDetail, closePaperDetail } = usePaperDetail({ getPaperDetail, getErrorMessage: (error) => error instanceof SearchApiError ? error.message : '读取论文详情时出现未知错误，请稍后重试' }) // 复用详情清理、错误转换和快速切换请求防护。
+const { comparisonPaperIds, comparisonResult, comparisonLoading, comparisonError, togglePaperComparison, openPaperComparison, clearPaperComparison, closePaperComparison, isPaperSelected, isPaperSelectionDisabled } = usePaperComparison({ comparePapers, getErrorMessage: (error) => error instanceof SearchApiError ? error.message : '读取论文比较结果时出现未知错误，请稍后重试' }) // 复用比较选择上限、顺序、请求和关闭语义。
 const citationGraph = ref(null) // 保存当前结果集合内受限引用图的已验证节点与事实边。
 const citationGraphLoading = ref(false) // 标记引用图快照读取状态，避免重复点击触发并发请求。
 const citationGraphError = ref('') // 保存引用图读取的安全公共错误并在弹层中展示。
@@ -106,7 +104,6 @@ const planningMeta = computed(() => ({ // 将后端查询规划观测字段映�
 }))
 const availableResultSources = computed(() => [...new Set((result.value?.papers || []).map((paper) => paper.source).filter(Boolean))]) // 基于同次最终结果生成可选来源，避免写死供应商名称。
 const paperPagination = computed(() => resultPageData.value) // 仅消费服务端从同次 SQLite 快照返回的当前结果页。
-const selectedComparisonPapers = computed(() => (result.value?.papers || []).filter((paper) => comparisonPaperIds.value.includes(paper.paper_id))) // 始终从当前同次最终结果恢复比较选择，不信任前端副本。
 watch(() => [resultFilters.source, resultFilters.relevance, resultFilters.yearStart, resultFilters.yearEnd, resultSort.value], () => { // 任意筛选或排序变化时回到第一页避免越界空页。
   resultPage.value = 1 // 保持筛选后的首屏结果可见。
   resultPageJumpInput.value = '1' // 筛选变化时同步将待跳转页码恢复为首页。
@@ -129,9 +126,7 @@ watch(() => result.value?.run_state?.run_id, () => { // 新搜索或恢复到另
   resultPage.value = 1 // 回到结果第一页。
   resultPageJumpInput.value = '1' // 同步重置页码输入框。
   resultPageJumpError.value = '' // 清除旧结果遗留的跳页校验提示。
-  comparisonPaperIds.value = [] // 新运行结果不能复用旧运行的论文选择。
-  comparisonResult.value = null // 清除旧结果可能对应的比较列。
-  comparisonError.value = '' // 清除旧运行比较错误。
+  clearPaperComparison() // 新运行结果不能复用旧运行的比较选择或旧事实结果。
   citationGraph.value = null // 清除旧运行的关系图数据。
   citationGraphError.value = '' // 清除旧运行图谱错误。
   technicalRoutes.value = null // 清除旧运行路线集合。
@@ -542,70 +537,6 @@ async function savePaper(paper) { // 将单篇搜索结果去重保存到个人�
   }
 }
 
-async function openPaperDetail(paper) { // 按用户点击只读读取详情，避免卡片渲染时批量请求。
-  detailPaper.value = null // 清除上一条详情，防止旧内容在加载期间误导用户。
-  detailError.value = '' // 清除上一条详情错误。
-  detailLoading.value = true // 展示详情抽屉的读取中状态。
-  try { // 统一处理 API 客户端的公共错误。
-    detailPaper.value = await getPaperDetail(paper.paper_id) // 仅读取 SQLite 保存的规范化论文记录。
-  } catch (error) { // 不展示底层网络或持久化细节。
-    detailError.value = error instanceof SearchApiError ? error.message : '读取论文详情时出现未知错误，请稍后重试' // 提供可安全展示的失败说明。
-  } finally { // 无论成功失败都结束加载状态。
-    detailLoading.value = false // 恢复抽屉中的操作状态。
-  }
-}
-
-function closePaperDetail() { // 关闭详情抽屉并释放当前展示数据。
-  detailPaper.value = null // 不在页面内长期保留论文详情副本。
-  detailError.value = '' // 清除可能存在的错误提示。
-  detailLoading.value = false // 防御关闭时遗留的加载状态。
-}
-
-function togglePaperComparison(paper) { // 将当前论文加入或移出最多五篇的比较集合。
-  const index = comparisonPaperIds.value.indexOf(paper.paper_id) // 查找当前论文是否已经被选择。
-  if (index >= 0) { // 已选择时允许用户取消。
-    comparisonPaperIds.value.splice(index, 1) // 原地移除以保持 Vue 响应式更新。
-    comparisonResult.value = null // 选择改变后旧比较列不再可信。
-    comparisonError.value = '' // 清除旧比较失败提示。
-    return // 不继续执行新增上限判断。
-  }
-  if (comparisonPaperIds.value.length >= 5) { // 固定比较列最多五篇，避免界面和语义边界扩张。
-    comparisonError.value = '一次最多比较 5 篇论文' // 提供明确可操作的前端提示。
-    return // 阻止第六篇进入无效状态。
-  }
-  comparisonPaperIds.value.push(paper.paper_id) // 保持用户点击顺序作为后端和前端列顺序。
-  comparisonResult.value = null // 新增论文后必须重新读取可信对比事实。
-  comparisonError.value = '' // 清除可能存在的旧错误。
-}
-
-function clearPaperComparison() { // 清空当前小集合选择并关闭已生成的比较结果。
-  comparisonPaperIds.value = [] // 移除所有已选择标识。
-  comparisonResult.value = null // 关闭对比弹层。
-  comparisonError.value = '' // 清除提示。
-}
-
-async function openPaperComparison() { // 请求后端按选择顺序读取 SQLite 事实并生成固定列。
-  if (comparisonPaperIds.value.length < 2) { // 两篇以下不具备比较意义。
-    comparisonError.value = '请至少选择 2 篇论文进行比较' // 指引用户完成最小选择。
-    return // 不发起无效请求。
-  }
-  comparisonLoading.value = true // 显示比较读取中状态。
-  comparisonError.value = '' // 清除上次失败信息。
-  try { // 将客户端公共错误映射为页面提示。
-    comparisonResult.value = await comparePapers(comparisonPaperIds.value) // 仅读取已保存论文事实，不调用外部来源。
-  } catch (error) { // 不展示持久化或网络底层细节。
-    comparisonError.value = error instanceof SearchApiError ? error.message : '读取论文比较结果时出现未知错误，请稍后重试' // 保持用户可理解的失败边界。
-  } finally { // 无论成功失败都结束加载状态。
-    comparisonLoading.value = false // 恢复比较操作按钮。
-  }
-}
-
-function closePaperComparison() { // 关闭比较弹层而保留选择，方便用户调整后再次比较。
-  comparisonResult.value = null // 关闭事实型固定列展示。
-  comparisonError.value = '' // 清除抽层错误信息。
-  comparisonLoading.value = false // 防御关闭时遗留加载状态。
-}
-
 async function openCitationGraph() { // 读取当前最终结果内可验证的引用和可选版本族事实。
   const paperIds = (result.value?.papers || []).map((paper) => paper.paper_id).filter(Boolean) // 只提交当前同次搜索的稳定论文标识。
   if (!paperIds.length) { // 无搜索结果时不能生成空图。
@@ -831,10 +762,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
         <p>{{ resultPageLoading ? '正在读取已保存的筛选结果…' : `筛选后 ${paperPagination.total} 篇，第 ${paperPagination.page} / ${paperPagination.total_pages} 页` }}</p>
       </section>
       <p v-if="resultPageError" class="comparison-message" role="alert">{{ resultPageError }}</p>
-      <section class="comparison-toolbar" aria-label="论文比较选择">
-        <div><strong>论文比较</strong><span>{{ `已选择 ${comparisonPaperIds.length} / 5 篇` }}</span></div>
-        <div><button type="button" :disabled="comparisonPaperIds.length < 2 || comparisonLoading" @click="openPaperComparison">{{ comparisonLoading ? '正在整理比较…' : `比较 ${comparisonPaperIds.length} 篇` }}</button><button v-if="comparisonPaperIds.length" type="button" class="comparison-clear" @click="clearPaperComparison">清空</button></div>
-      </section>
+      <PaperComparisonToolbar :selected-count="comparisonPaperIds.length" :loading="comparisonLoading" :compare-label="`比较 ${comparisonPaperIds.length} 篇`" loading-label="正在整理比较…" :show-title="true" :show-clear-when-empty="false" :disable-clear-when-loading="false" @compare="openPaperComparison" @clear="clearPaperComparison" />
       <p v-if="comparisonError && !comparisonResult" class="comparison-message" role="alert">{{ comparisonError }}</p>
       <section v-if="result.papers.length" class="citation-toolbar" aria-label="受限引用网络">
         <div><strong>受限引用网络</strong><span>仅展示本次已保存结果集合内的引用与版本关系。</span></div>
@@ -842,7 +770,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       </section>
       <p v-if="libraryMessage.text" :class="['library-message', `is-${libraryMessage.tone}`]" role="status">{{ libraryMessage.text }}</p>
       <div v-if="paperPagination.items.length" ref="paperListElement" class="paper-list">
-        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :query-keywords="queryKeywords" :rank="(paperPagination.page - 1) * paperPagination.page_size + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="comparisonPaperIds.includes(paper.paper_id)" :comparison-disabled="comparisonPaperIds.length >= 5" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
+        <PaperResultCard v-for="(paper, index) in paperPagination.items" :key="paper.paper_id" :paper="paper" :query-keywords="queryKeywords" :rank="(paperPagination.page - 1) * paperPagination.page_size + index + 1" :saved="savedPaperIds.has(paper.paper_id)" :saving="savingPaperIds.has(paper.paper_id)" :comparison-selected="isPaperSelected(paper)" :comparison-disabled="isPaperSelectionDisabled(paper)" @save="savePaper" @detail="openPaperDetail" @compare="togglePaperComparison" />
       </div>
       <div v-else class="empty-state">
         <strong>{{ result.papers.length ? '没有论文符合当前筛选条件' : '暂未找到满足全部条件的论文' }}</strong>
@@ -1900,57 +1828,6 @@ textarea::placeholder { /* 设置查询示例占位。 */
 .library-message.is-error { /* 标记收藏请求失败。 */
   color: #9b3c36; /* 使用克制红色文字。 */
   background: #fff0ee; /* 使用浅红背景。 */
-}
-
-.comparison-toolbar { /* 将小集合论文比较控制保持在搜索结果上下文内。 */
-  display: flex; /* 横向排列选择摘要和操作。 */
-  align-items: center; /* 垂直对齐内容。 */
-  justify-content: space-between; /* 分置统计与按钮。 */
-  gap: 1rem; /* 避免窄屏内容相贴。 */
-  padding: 0.8rem 0.9rem; /* 提供紧凑但可点击的留白。 */
-  border: 1px solid #d7e4ea; /* 与筛选区形成同层级边界。 */
-  border-radius: 0.8rem; /* 保持页面控件圆角一致。 */
-  background: #f8fbfc; /* 使用轻量背景区别于论文卡。 */
-}
-
-.comparison-toolbar > div { /* 组合比较标题或按钮组。 */
-  display: flex; /* 横向组织内部内容。 */
-  align-items: center; /* 对齐文字和按钮。 */
-  flex-wrap: wrap; /* 窄屏允许换行。 */
-  gap: 0.6rem; /* 保持内容可扫读。 */
-}
-
-.comparison-toolbar strong { /* 突出比较功能名称。 */
-  color: #31566e; /* 使用中层级蓝色。 */
-  font-size: 0.76rem; /* 保持为辅助操作。 */
-}
-
-.comparison-toolbar span, .comparison-message { /* 显示选择数量或输入边界提示。 */
-  color: #718496; /* 使用辅助文字色。 */
-  font-size: 0.7rem; /* 控制提示层级。 */
-}
-
-.comparison-toolbar button { /* 设置比较与清空按钮。 */
-  padding: 0.45rem 0.7rem; /* 提供稳定点击区域。 */
-  border: 1px solid #b8ccdc; /* 使用品牌蓝灰边框。 */
-  border-radius: 0.55rem; /* 与搜索页其他按钮协调。 */
-  color: #2e6f95; /* 使用品牌强调色。 */
-  background: #f3f8fb; /* 使用浅蓝背景。 */
-  cursor: pointer; /* 明确可点击状态。 */
-  font: inherit; /* 继承页面字体。 */
-  font-size: 0.68rem; /* 控制操作密度。 */
-  font-weight: 800; /* 提升可发现性。 */
-}
-
-.comparison-toolbar button:disabled { /* 两篇以下或读取中不能执行比较。 */
-  cursor: default; /* 弱化无效操作。 */
-  opacity: 0.5; /* 清晰表达禁用状态。 */
-}
-
-.comparison-toolbar button.comparison-clear { /* 清空操作保持次级视觉。 */
-  border-color: transparent; /* 移除次级操作边界。 */
-  color: #718496; /* 使用辅助文字色。 */
-  background: transparent; /* 减少视觉竞争。 */
 }
 
 .comparison-message { /* 显示选择或读取失败的安全提示。 */

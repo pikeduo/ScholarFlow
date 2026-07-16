@@ -4,8 +4,11 @@ import { onMounted, reactive, ref } from 'vue' // 管理筛选、编辑草稿和
 import PaperResultCard from '../components/PaperResultCard.vue' // 复用搜索页论文卡片保持两处阅读体验一致。
 import PaperDetailDrawer from '../components/PaperDetailDrawer.vue' // 复用搜索页详情抽屉、翻译和 DOI 访问入口。
 import PaperComparisonDialog from '../components/PaperComparisonDialog.vue' // 复用搜索页事实型论文比较弹层。
+import PaperComparisonToolbar from '../components/PaperComparisonToolbar.vue' // 复用搜索页与文献库共有的比较操作工具栏。
 import { deleteLibraryItem, LibraryApiError, listLibraryItems, normalizeKeywords, searchLibraryItemsSemantically, updateLibraryItem } from '../services/libraryApi.js' // 调用个人文献库稳定 API。
 import { comparePapers, getPaperDetail, SearchApiError } from '../services/searchApi.js' // 读取用户已收藏论文的本地详情快照与事实型比较结果。
+import { usePaperComparison } from '../composables/usePaperComparison.js' // 统一管理二至五篇论文比较交互。
+import { usePaperDetail } from '../composables/usePaperDetail.js' // 统一管理论文详情读取交互。
 
 const items = ref([]) // 保存当前筛选条件下的收藏记录。
 const total = ref(0) // 保存后端返回的筛选结果总数。
@@ -22,13 +25,8 @@ const semanticQuery = ref('') // 保存用户输入的文献库自然语言检�
 const semanticMode = ref(false) // 标记当前列表是否来自语义检索而非普通筛选。
 const semanticScores = reactive({}) // 按收藏 ID 保存后端返回的语义相似度。
 const drafts = reactive({}) // 按 item_id 保存关键词、备注和阅读状态编辑草稿。
-const detailPaper = ref(null) // 保存当前文献库卡片请求的论文详情。
-const detailLoading = ref(false) // 标记详情快照读取状态。
-const detailError = ref('') // 保存详情读取的安全公共错误。
-const comparisonPaperIds = ref([]) // 保存文献库当前选择的二至五篇论文标识。
-const comparisonResult = ref(null) // 保存后端按用户选择顺序返回的事实型比较结果。
-const comparisonLoading = ref(false) // 标记比较接口读取状态。
-const comparisonError = ref('') // 保存比较操作的安全公共错误。
+const { detailPaper, detailLoading, detailError, openPaperDetail, closePaperDetail } = usePaperDetail({ getPaperDetail, getErrorMessage: (error) => error instanceof SearchApiError ? error.message : '读取论文详情时出现未知错误，请稍后重试' }) // 复用详情清理、错误转换和快速切换请求防护。
+const { comparisonPaperIds, comparisonResult, comparisonLoading, comparisonError, togglePaperComparison, openPaperComparison, clearPaperComparison, closePaperComparison, removePaperComparison, isPaperSelected, isPaperSelectionDisabled } = usePaperComparison({ comparePapers, getErrorMessage: (error) => error instanceof SearchApiError ? error.message : '读取论文比较结果时出现未知错误，请稍后重试' }) // 复用比较选择上限、顺序、请求和关闭语义。
 
 const statusLabels = { unread: '未读', reading: '阅读中', read: '已读' } // 将后端稳定枚举映射为右侧收藏管理区的中文状态。
 
@@ -119,70 +117,6 @@ function formatSemanticScore(itemId) { // 将零到一分数转换为用户易�
   return typeof score === 'number' ? `${Math.round(score * 100)}%` : '—' // 防御部分响应或编辑后缺失分数。
 }
 
-async function openPaperDetail(paper) { // 按用户点击读取搜索或文献库中的本地论文快照。
-  detailPaper.value = null // 清除上一条详情，避免加载期间显示旧论文。
-  detailError.value = '' // 清除上一条详情读取错误。
-  detailLoading.value = true // 展示统一详情抽屉的加载状态。
-  try { // 只请求后端已保存快照，绝不从浏览器直接访问学术来源。
-    detailPaper.value = await getPaperDetail(paper.paper_id) // 后端会优先搜索快照并回退到文献库快照。
-  } catch (error) { // 将客户端公共错误显示在抽屉中。
-    detailError.value = error instanceof SearchApiError ? error.message : '读取论文详情时出现未知错误，请稍后重试' // 不展示网络或存储内部细节。
-  } finally { // 无论成功失败都结束当前读取状态。
-    detailLoading.value = false // 恢复详情抽屉可关闭状态。
-  }
-}
-
-function closePaperDetail() { // 关闭复用详情抽屉并释放当前论文副本。
-  detailPaper.value = null // 避免在文献库页面长期保留详情内容。
-  detailError.value = '' // 清除已关闭抽屉的旧错误。
-  detailLoading.value = false // 防御关闭时遗留的加载状态。
-}
-
-function togglePaperComparison(paper) { // 将当前文献库论文加入或移出最多五篇的比较集合。
-  const index = comparisonPaperIds.value.indexOf(paper.paper_id) // 查找当前论文是否已被选择。
-  if (index >= 0) { // 已选择时允许用户再次点击取消。
-    comparisonPaperIds.value.splice(index, 1) // 保持原有选择顺序并移除当前论文。
-    comparisonResult.value = null // 选择变化后旧固定列结果不再可信。
-    comparisonError.value = '' // 清除旧比较提示。
-    return // 不继续执行新增上限判断。
-  }
-  if (comparisonPaperIds.value.length >= 5) { // 对齐后端二至五篇的最大数量边界。
-    comparisonError.value = '一次最多比较 5 篇论文' // 提供可操作的选择上限提示。
-    return // 阻止第六篇进入无效状态。
-  }
-  comparisonPaperIds.value.push(paper.paper_id) // 按用户点击顺序保存固定列顺序。
-  comparisonResult.value = null // 新增论文后必须重新读取可信事实。
-  comparisonError.value = '' // 清除可能存在的旧错误。
-}
-
-async function openPaperComparison() { // 请求后端比较搜索或文献库中的已保存事实。
-  if (comparisonPaperIds.value.length < 2) { // 两篇以下不具备比较意义。
-    comparisonError.value = '请至少选择 2 篇论文进行比较' // 指引用户完成最小选择。
-    return // 不发起无效请求。
-  }
-  comparisonLoading.value = true // 打开统一比较弹层的加载状态。
-  comparisonError.value = '' // 清除上次失败信息。
-  try { // 只读取 SQLite 搜索或收藏快照，绝不调用外部来源。
-    comparisonResult.value = await comparePapers(comparisonPaperIds.value) // 保持用户选择顺序生成事实型固定列。
-  } catch (error) { // 将客户端公共错误显示在比较弹层。
-    comparisonError.value = error instanceof SearchApiError ? error.message : '读取论文比较结果时出现未知错误，请稍后重试' // 不展示存储或网络内部细节。
-  } finally { // 无论成功失败都结束比较加载状态。
-    comparisonLoading.value = false // 恢复页面比较操作。
-  }
-}
-
-function clearPaperComparison() { // 清空当前比较选择并关闭已生成的结果。
-  comparisonPaperIds.value = [] // 移除所有已选论文标识。
-  comparisonResult.value = null // 关闭事实型固定列结果。
-  comparisonError.value = '' // 清除比较提示。
-}
-
-function closePaperComparison() { // 关闭比较弹层但保留当前选择方便继续调整。
-  comparisonResult.value = null // 清除当前结果面板。
-  comparisonError.value = '' // 清除抽屉错误状态。
-  comparisonLoading.value = false // 防御关闭时遗留加载状态。
-}
-
 async function saveChanges(item) { // 提交单条收藏的用户属性修改。
   if (busyItemId.value) return // 防止并发修改或删除。
   const draft = drafts[item.item_id] // 读取对应编辑草稿。
@@ -210,9 +144,7 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
     await deleteLibraryItem(item.item_id) // 请求后端原子删除记录。
     items.value = items.value.filter((candidate) => candidate.item_id !== item.item_id) // 从当前列表移除已删除记录。
     total.value = Math.max(0, total.value - 1) // 同步当前筛选结果数量。
-    const comparisonIndex = comparisonPaperIds.value.indexOf(item.paper.paper_id) // 查找已删除论文是否属于当前比较集合。
-    if (comparisonIndex >= 0) comparisonPaperIds.value.splice(comparisonIndex, 1) // 删除收藏时同步移除无效比较选择。
-    comparisonResult.value = null // 收藏集合变化后关闭可能包含已删除论文的旧对比结果。
+    removePaperComparison(item.paper) // 删除收藏时同步移除无效比较选择并使旧结果失效。
     delete semanticScores[item.item_id] // 同步移除已删除收藏的语义分数。
     delete drafts[item.item_id] // 清理不再使用的编辑草稿。
     message.value = { text: '收藏已从文献库删除', tone: 'success' } // 提示删除完成。
@@ -251,7 +183,7 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
         <button type="submit" :disabled="loading || semanticLoading">{{ semanticLoading ? '正在检索…' : '语义检索' }}</button>
         <button class="secondary" type="button" :disabled="loading || semanticLoading || (!semanticMode && !semanticQuery)" @click="clearSemanticSearch">恢复列表</button>
       </form>
-      <div class="comparison-toolbar"><span>已选 {{ comparisonPaperIds.length }} / 5 篇用于比较</span><button type="button" :disabled="comparisonLoading || comparisonPaperIds.length < 2" @click="openPaperComparison">{{ comparisonLoading ? '正在比较…' : '比较已选论文' }}</button><button class="secondary" type="button" :disabled="comparisonLoading || !comparisonPaperIds.length" @click="clearPaperComparison">清空选择</button></div>
+      <PaperComparisonToolbar :selected-count="comparisonPaperIds.length" :loading="comparisonLoading" compare-label="比较已选论文" loading-label="正在比较…" @compare="openPaperComparison" @clear="clearPaperComparison" />
     </section>
 
     <main class="library-content">
@@ -262,7 +194,7 @@ async function removeItem(item) { // 删除用户明确选择的收藏记录。
       <div v-else class="library-list">
         <section v-for="(item, index) in items" :key="item.item_id" class="library-card">
           <PaperResultCard :paper="item.paper" :rank="index + 1" :keywords="item.keywords" :show-score="false" :show-search-actions="false" @detail="openPaperDetail">
-            <template #actions><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" :class="['library-detail-button', { 'is-selected': comparisonPaperIds.includes(item.paper.paper_id) }]" :disabled="comparisonPaperIds.length >= 5 && !comparisonPaperIds.includes(item.paper.paper_id)" @click="togglePaperComparison(item.paper)">{{ comparisonPaperIds.includes(item.paper.paper_id) ? '已加入比较' : '加入比较' }}</button><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button><button class="library-delete-card-button" type="button" :disabled="Boolean(busyItemId)" @click="removeItem(item)">删除收藏</button></template>
+            <template #actions><span v-if="semanticMode" class="semantic-score">语义相似度 {{ formatSemanticScore(item.item_id) }}</span><button type="button" :class="['library-detail-button', { 'is-selected': isPaperSelected(item.paper) }]" :disabled="isPaperSelectionDisabled(item.paper)" @click="togglePaperComparison(item.paper)">{{ isPaperSelected(item.paper) ? '已加入比较' : '加入比较' }}</button><button type="button" class="library-detail-button" @click="openPaperDetail(item.paper)">查看详情</button><button class="library-delete-card-button" type="button" :disabled="Boolean(busyItemId)" @click="removeItem(item)">删除收藏</button></template>
           </PaperResultCard>
           <form v-if="drafts[item.item_id]" class="item-editor" @submit.prevent="saveChanges(item)">
             <header class="item-editor-header"><strong>收藏信息</strong><span>{{ statusLabels[drafts[item.item_id].readingStatus] }}</span></header>
@@ -303,8 +235,6 @@ h1 { margin: 0; color: #17324d; font-family: Georgia, "Noto Serif SC", serif; fo
 .keyword-filter.is-selected small { color: #2e6f95; background: #fff; } /* 在选中状态保持数量文字可读。 */
 .keyword-empty { margin: 0.6rem 0 0; color: #8295a4; font-size: 0.7rem; } /* 为尚无来源关键词的收藏提供说明。 */
 .semantic-panel { display: grid; grid-template-columns: minmax(12rem, 1fr) auto auto; gap: 0.75rem; align-items: end; padding: 0 1rem 1rem; border: 1px solid #d8e4eb; border-top: 0; border-radius: 0 0 1rem 1rem; background: rgba(245, 250, 252, 0.9); } /* 在同一关键词和阅读状态范围内提供自然语言入口。 */
-.comparison-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.85rem; color: #536b7f; font-size: 0.72rem; } /* 在文献库首屏固定展示当前比较选择和操作。 */
-.comparison-toolbar span { margin-right: auto; } /* 让选择数量与操作按钮保持明确视觉分组。 */
 label { display: grid; gap: 0.35rem; color: #536b7f; font-size: 0.68rem; font-weight: 800; } /* 统一编辑字段标签。 */
 input, select, textarea { width: 100%; padding: 0.65rem 0.7rem; border: 1px solid #cedce5; border-radius: 0.58rem; color: #29465d; background: #fbfdfe; font: inherit; font-size: 0.72rem; } /* 保持筛选与编辑控件一致。 */
 textarea { resize: vertical; line-height: 1.55; } /* 允许按备注长度调整高度。 */
