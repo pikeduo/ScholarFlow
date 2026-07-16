@@ -40,7 +40,7 @@ class FakeQueryPlanningService:
     async def plan(self, request: object) -> QueryPlanningResult:
         """返回不访问 DeepSeek 的固定查询计划及调用统计。"""
         intent = QueryIntent(original_query="中文查询", normalized_query="vision language model medical report generation", query_language="zh", research_topics=["vision-language model"], tasks=["medical report generation"], target_paper_count=20, source_recall_count=50)  # 构造英文检索计划。
-        return QueryPlanningResult(query_intent=intent, model_name="deepseek-v4-flash", prompt_tokens=120, completion_tokens=80, duration_ms=450)  # 构造固定观测数据。
+        return QueryPlanningResult(query_intent=intent, model_name="deepseek-v4-flash", prompt_tokens=120, completion_tokens=80, estimated_cost_cny=0.0042, peak_pricing_applied=True, duration_ms=450)  # 构造固定观测数据和已冻结费用。
 
 
 class FakeMultiRoundSearchController:
@@ -207,6 +207,7 @@ def test_natural_multi_round_search_attaches_query_planning_statistics(api_clien
     """自然语言多轮入口应先规划意图，再回传规划模型、Token 与耗时统计。"""
     app.dependency_overrides[get_query_planning_service] = lambda: FakeQueryPlanningService()  # 注入不访问 DeepSeek 的规划替身。
     app.dependency_overrides[get_multi_round_search_controller] = lambda: FakeMultiRoundSearchController(result=_build_multi_round_result())  # 注入不访问来源的控制器替身。
+    app.dependency_overrides[get_search_run_state_store] = lambda: FakeSearchRunStateStore()  # 注入无副作用存储以验证最终费用快照被保存。
 
     response = api_client.post("/api/v1/search/natural-multi-round", json={"query": "检索视觉语言模型在医学影像报告生成中的研究"})  # 提交自然语言搜索请求。
 
@@ -216,6 +217,8 @@ def test_natural_multi_round_search_attaches_query_planning_statistics(api_clien
     assert payload["query_planning_prompt_tokens"] == 120 and payload["query_planning_completion_tokens"] == 80  # 验证回显 Query Agent Token 用量。
     assert payload["query_planning_duration_ms"] == 450  # 验证回显 Query Agent 耗时。
     assert payload["run_state"]["token_usage"] == 200  # 验证规划 Token 已纳入本次运行总量。
+    assert payload["run_state"]["estimated_cost_cny"] == 0.0042  # 验证规划阶段已发生的费用纳入运行快照。
+    assert payload["run_state"]["peak_pricing_applied"] is True  # 验证工作时间两倍费率标记能随运行结果回显。
 
 
 def test_multi_round_search_endpoint_hides_unexpected_controller_error(api_client: TestClient) -> None:

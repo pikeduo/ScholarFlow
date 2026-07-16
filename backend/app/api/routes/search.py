@@ -18,7 +18,7 @@ from backend.app.adapters.tavily import TavilyClient  # 装配仅用于独立网
 from backend.app.core.logging import logger  # 记录服务不可用时的完整错误堆栈。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 声明多源检索的稳定融合响应模型。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 声明多轮搜索的稳定运行状态和最终结果响应模型。
-from backend.app.models.natural_search import NaturalSearchRequest  # 接收前端自然语言问题和显式约束。
+from backend.app.models.natural_search import NaturalSearchRequest, QueryPlanningResult  # 接收前端自然语言问题、显式约束与已发生调用的用量。
 from backend.app.models.query import QuerySchema  # 接收 FastAPI 自动校验的结构化检索请求。
 from backend.app.models.query_intent import QueryIntent  # 接收已规划完成的多源检索意图。
 from backend.app.models.search import SearchResult  # 声明稳定的成功响应模型。
@@ -221,7 +221,7 @@ async def stream_natural_multi_round_search_events(
     except QueryPlanningError:  # 适配层已净化密钥、URL 和供应商原始响应。
         logger.exception("自然语言 SSE 查询规划失败")  # 记录受控堆栈而不记录用户完整问题。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="查询理解服务暂时不可用，请稍后重试") from None  # 返回稳定公共错误。
-    return _create_multi_round_sse_response(planning_result.query_intent, controller, state_store, started_at=started_at)  # 使用同一流式控制器路径避免重复执行查询。
+    return _create_multi_round_sse_response(planning_result.query_intent, controller, state_store, started_at=started_at, query_planning_result=planning_result)  # 使用同一流式控制器路径避免重复执行查询，并持久化已发生的规划费用。
 
 
 @router.get("/runs", response_model=SearchRunHistoryPage, status_code=status.HTTP_200_OK, summary="读取本地搜索运行历史")
@@ -430,6 +430,7 @@ async def search_natural_multi_round(
     request: NaturalSearchRequest,
     planner: Annotated[QueryPlanningService, Depends(get_query_planning_service)],
     controller: Annotated[MultiRoundSearchController, Depends(get_multi_round_search_controller)],
+    state_store: Annotated[SearchRunStateStore, Depends(get_search_run_state_store)],
 ) -> MultiRoundSearchResult:
     """先生成 QueryIntent，再执行多轮搜索并附加规划用量，供前端展示完整过程。
 
@@ -453,17 +454,27 @@ async def search_natural_multi_round(
     except Exception:  # 隔离控制器装配或未预期内部错误。
         logger.exception("多轮自然语言检索接口调用失败")  # 仅记录受控堆栈，不记录完整原始查询。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="多轮论文检索服务暂时不可用，请稍后重试") from None  # 返回稳定服务不可用响应。
-    updated_state = result.run_state.model_copy(update={"token_usage": result.run_state.token_usage + planning_result.prompt_tokens + planning_result.completion_tokens})  # 将 Query Agent 用量纳入运行总 Token 统计。
-    return result.model_copy(  # 保持直接意图重搜零规划开销，同时自然入口回显规划统计。
-        update={
-            "run_state": updated_state,
-            "query_intent": planning_result.query_intent,
-            "query_planning_model_name": planning_result.model_name,
-            "query_planning_prompt_tokens": planning_result.prompt_tokens,
-            "query_planning_completion_tokens": planning_result.completion_tokens,
-            "query_planning_duration_ms": planning_result.duration_ms,
-        }
-    )
+    result = _apply_query_planning_usage(result, planning_result)  # 将 Query Agent 的已发生 Token 和费用纳入同次运行快照。
+    try:  # 直接响应也要让后续用量读取接口看到同一份最终快照。
+        state_store.save_result(result)  # 仅保存本请求已得到的结果，不触发新的来源或模型调用。
+    except SearchRunStoreError:  # 保存失败不改变已完成搜索的可用响应边界。
+        logger.exception("自然语言多轮搜索最终结果持久化降级：运行=%s", result.run_state.run_id)  # 记录运行标识与完整堆栈供排查。
+    return result  # 保持直接意图重搜零规划开销，同时自然入口回显规划统计。
+
+
+def _apply_query_planning_usage(result: MultiRoundSearchResult, planning_result: QueryPlanningResult | None) -> MultiRoundSearchResult:
+    """将自然语言规划阶段已经发生的 Token 和费用合并到同次多轮运行结果。
+
+    参数：
+        result：控制器完成后生成、尚未补入 Query Agent 用量的运行结果。
+        planning_result：自然语言入口已成功得到的规划统计；直接意图重搜时为 ``None``。
+    返回：
+        MultiRoundSearchResult：费用、峰时标记和规划审计字段均已更新的结果。
+    """
+    if planning_result is None:  # 编辑后的 QueryIntent 重搜不调用 Query Agent，保持控制器原始统计。
+        return result  # 避免为没有发生的调用制造零值审计记录。
+    updated_state = result.run_state.model_copy(update={"token_usage": result.run_state.token_usage + planning_result.prompt_tokens + planning_result.completion_tokens, "estimated_cost_cny": round(result.run_state.estimated_cost_cny + planning_result.estimated_cost_cny, 8), "peak_pricing_applied": result.run_state.peak_pricing_applied or planning_result.peak_pricing_applied})  # 将规划调用的实际 usage 及调用时费率合并为运行总计。
+    return result.model_copy(update={"run_state": updated_state, "query_intent": planning_result.query_intent, "query_planning_model_name": planning_result.model_name, "query_planning_prompt_tokens": planning_result.prompt_tokens, "query_planning_completion_tokens": planning_result.completion_tokens, "query_planning_duration_ms": planning_result.duration_ms})  # 回显已有规划审计字段，保持响应契约稳定。
 
 
 def _encode_sse_event(event: SearchProgressEvent) -> str:
@@ -472,13 +483,14 @@ def _encode_sse_event(event: SearchProgressEvent) -> str:
     return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {payload}\n\n"  # 按 EventSource 可解析的 id、event 和 data 行返回。
 
 
-def _create_multi_round_sse_response(query: QueryIntent, controller: MultiRoundSearchController, state_store: SearchRunStateStore, *, started_at: float) -> StreamingResponse:
+def _create_multi_round_sse_response(query: QueryIntent, controller: MultiRoundSearchController, state_store: SearchRunStateStore, *, started_at: float, query_planning_result: QueryPlanningResult | None = None) -> StreamingResponse:
     """构造执行同次多轮检索、持久化结果并实时发送轻量事件的 SSE 响应。"""
     publisher = InMemorySearchRunEventPublisher()  # 为当前 HTTP 连接创建独立且有界的事件队列。
 
     async def run_and_store_result() -> MultiRoundSearchResult:
         """运行控制器并在完成后保存完整结果，前端可按 run_id 一次读取。"""
         result = await controller.run(query, event_publisher=publisher, started_at=started_at)  # 执行一次真实多轮搜索并发布进度事件。
+        result = _apply_query_planning_usage(result, query_planning_result)  # 将 SSE 前已完成的 Query Agent 用量写入同次最终结果。
         try:  # 结果保存失败不应删除已完成运行状态或终态事件。
             state_store.save_result(result)  # 将完整最终结果与轻量状态分离持久化。
         except SearchRunStoreError:  # 不向 SSE 客户端暴露数据库路径、SQL 或内部异常。

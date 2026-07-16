@@ -11,6 +11,7 @@ from backend.app.core.config import Settings, settings  # 从集中配置读取�
 from backend.app.models.coverage import CoverageReport  # 向模型提供已验证的覆盖缺口。
 from backend.app.models.paper import PaperRecord  # 仅提供高相关候选的公开元数据摘要。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 复用可直接交给来源适配器的子查询契约。
+from backend.app.core.deepseek_pricing import estimate_deepseek_cost_or_zero  # 从无服务聚合副作用的基础模块读取费用估算，避免循环导入。
 
 
 class SearchStrategyError(RuntimeError):
@@ -26,6 +27,8 @@ class SearchStrategyProposal:
     model_name: str  # 保存实际或配置的模型名称。
     prompt_tokens: int  # 保存供应商返回的输入 Token 数。
     completion_tokens: int  # 保存供应商返回的输出 Token 数。
+    estimated_cost_cny: float = 0.0  # 保存本次策略调用基于实际 usage 的人民币估算费用。
+    peak_pricing_applied: bool = False  # 标记本次策略调用是否应用工作时间两倍费率。
 
 
 class SearchStrategyClient(Protocol):
@@ -79,7 +82,11 @@ class DeepSeekSearchStrategyClient:
         usage = response_data.get("usage") if isinstance(response_data, dict) else {}  # 安全读取可选供应商用量。
         usage_data = usage if isinstance(usage, dict) else {}  # 缺失用量时保持稳定零值。
         model_name = response_data.get("model") if isinstance(response_data, dict) else None  # 优先记录实际响应模型。
-        return SearchStrategyProposal(subqueries=payload.subqueries, reason=payload.reason.strip(), model_name=model_name if isinstance(model_name, str) else self._config.deepseek_model, prompt_tokens=_safe_token_count(usage_data.get("prompt_tokens")), completion_tokens=_safe_token_count(usage_data.get("completion_tokens")))  # 返回供应商无关提案和审计统计。
+        resolved_model_name = model_name if isinstance(model_name, str) else self._config.deepseek_model  # 统一实际响应与配置回退后的模型名。
+        prompt_tokens = _safe_token_count(usage_data.get("prompt_tokens"))  # 提取供应商报告的完整输入 Token 数。
+        completion_tokens = _safe_token_count(usage_data.get("completion_tokens"))  # 提取供应商报告的完整输出 Token 数。
+        cost_estimate = estimate_deepseek_cost_or_zero(resolved_model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, prompt_cache_hit_tokens=_safe_token_count(usage_data.get("prompt_cache_hit_tokens")), prompt_cache_miss_tokens=_safe_token_count(usage_data.get("prompt_cache_miss_tokens")))  # 依据当前调用时刻与缓存 usage 固化费用。
+        return SearchStrategyProposal(subqueries=payload.subqueries, reason=payload.reason.strip(), model_name=resolved_model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, estimated_cost_cny=cost_estimate.cost_cny, peak_pricing_applied=cost_estimate.peak_pricing_applied)  # 返回供应商无关提案、审计统计与费用。
 
 
 _SYSTEM_PROMPT = """你是科研论文检索的下一轮策略 Agent。只输出 JSON，不输出 Markdown 或思维过程。根据给定 QueryIntent、已完成的覆盖缺口、已找到论文的公开标题/摘要片段和已执行检索式，生成最多两条简洁英文子查询。不得放宽年份、must_include 或 exclude；不得捏造数据集、论文或引用；不得重复已执行检索式。输出格式：{\"subqueries\":[{\"query\":\"...\",\"language\":\"en\",\"purpose\":\"method|dataset|citation\"}],\"reason\":\"简短中文理由\"}。"""  # 定义严格的事实、约束和输出边界。

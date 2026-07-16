@@ -32,6 +32,8 @@ class MultiSourceRecallResult(BaseModel):
         llm_model_name：实际或配置使用的 LLM 名称。
         llm_prompt_tokens：本次 LLM 精排输入 Token 数量。
         llm_completion_tokens：本次 LLM 精排输出 Token 数量。
+        llm_estimated_cost_cny：本次 LLM 精排按实际 usage 记录的人民币费用估算。
+        llm_peak_pricing_applied：本次 LLM 精排是否使用工作时间两倍费率。
         work_family_count：融合结果中可识别版本族的唯一数量。
         coverage_report：当前最终候选的覆盖缺口、边际收益与后续继续建议。
     """
@@ -61,5 +63,7 @@ class MultiSourceRecallResult(BaseModel):
     llm_model_name: str | None = None  # 保存实际或配置使用的 LLM 名称供运行审计。
     llm_prompt_tokens: int = Field(default=0, ge=0)  # 保存本阶段输入 Token 数量。
     llm_completion_tokens: int = Field(default=0, ge=0)  # 保存本阶段输出 Token 数量。
+    llm_estimated_cost_cny: float = Field(default=0, ge=0)  # 保存本阶段按实际 usage 计算的人民币费用估算。
+    llm_peak_pricing_applied: bool = False  # 保存本阶段是否至少一次命中工作时间两倍费率。
     work_family_count: int = Field(default=0, ge=0)  # 保存融合论文中唯一版本族标识的数量。
     coverage_report: CoverageReport | None = None  # 保存可供前端展示且供后续多轮控制器消费的本轮报告。

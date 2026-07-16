@@ -23,3 +23,5 @@ class QueryEvolutionResult(BaseModel):
     strategy_model_name: str | None = None  # 保存实际执行策略的模型名称供用量审计。
     strategy_prompt_tokens: int = Field(default=0, ge=0)  # 保存本轮策略模型输入 Token。
     strategy_completion_tokens: int = Field(default=0, ge=0)  # 保存本轮策略模型输出 Token。
+    strategy_estimated_cost_cny: float = Field(default=0.0, ge=0.0)  # 保存本轮策略模型按实际 usage 计算的人民币估算费用。
+    strategy_peak_pricing_applied: bool = False  # 标记本轮策略模型是否应用工作时间两倍费率。

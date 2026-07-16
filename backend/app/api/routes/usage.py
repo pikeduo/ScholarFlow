@@ -36,10 +36,12 @@ def get_search_usage(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="搜索运行不存在",
         )
-    return SearchRunUsage(  # 只投影快照已有的观测字段，不进行费用或 Token 推算。
+    return SearchRunUsage(  # 只投影快照已有的观测字段，不重新执行费用或 Token 推算。
         run_id=state.run_id,
         api_call_count=state.api_call_count,
         token_usage=state.token_usage,
+        estimated_cost_cny=state.estimated_cost_cny,
+        peak_pricing_applied=state.peak_pricing_applied,
         latency_ms=state.latency_ms,
         cache_hits=state.cache_hits,
         current_round=state.current_round,

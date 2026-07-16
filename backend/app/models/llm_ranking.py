@@ -27,6 +27,8 @@ class LlmAssessmentBatch(BaseModel):
     model_name: str = Field(min_length=1)  # 保存实际响应声明的模型名称便于成本审计。
     prompt_tokens: int = Field(default=0, ge=0)  # 保存供应商报告的输入 Token 数量。
     completion_tokens: int = Field(default=0, ge=0)  # 保存供应商报告的输出 Token 数量。
+    estimated_cost_cny: float = Field(default=0.0, ge=0.0)  # 保存本次供应商 usage 对应的人民币费用估算。
+    peak_pricing_applied: bool = False  # 标记本次调用是否采用工作时间两倍费率。
 
 
 class LlmRankingResult(BaseModel):
@@ -39,4 +41,6 @@ class LlmRankingResult(BaseModel):
     model_name: str = Field(min_length=1)  # 保存配置或实际使用的 LLM 名称。
     prompt_tokens: int = Field(default=0, ge=0)  # 保存本阶段输入 Token 数量。
     completion_tokens: int = Field(default=0, ge=0)  # 保存本阶段输出 Token 数量。
+    estimated_cost_cny: float = Field(default=0.0, ge=0.0)  # 保存全部成功核验批次累计的人民币费用估算。
+    peak_pricing_applied: bool = False  # 标记任一成功核验批次是否应用了峰时费率。
     ranking_error: str | None = None  # 保存不含密钥、响应正文和内部路径的安全降级摘要。

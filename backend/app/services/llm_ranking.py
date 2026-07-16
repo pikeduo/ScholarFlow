@@ -39,6 +39,8 @@ class LlmPaperReranker:
         assessment_by_id: dict[str, LlmPaperAssessment] = {}  # 去除未知 ID 和重复模型输出。
         prompt_tokens = 0  # 累计每个成功核验批次的输入 Token 用量。
         completion_tokens = 0  # 累计每个成功核验批次的输出 Token 用量。
+        estimated_cost_cny = 0.0  # 累计每个成功核验批次已按调用时价格冻结的人民币费用估算。
+        peak_pricing_applied = False  # 记录任一成功批次是否落在工作时间两倍费率窗口。
         model_name = self._model_name  # 在未成功调用时仍返回可观测的配置模型名。
         failed_batch_count = 0  # 统计降级为上游排序的失败小批次数。
         batches = list(_split_batches(papers, self._batch_size))  # 先按受控上限切分，避免单次发送全部候选。
@@ -52,6 +54,8 @@ class LlmPaperReranker:
             model_name = batch.model_name  # 记录最后一次成功响应的实际模型标识。
             prompt_tokens += batch.prompt_tokens  # 聚合已成功批次的输入 Token。
             completion_tokens += batch.completion_tokens  # 聚合已成功批次的输出 Token。
+            estimated_cost_cny += batch.estimated_cost_cny  # 仅累计供应商成功返回 usage 的批次费用。
+            peak_pricing_applied = peak_pricing_applied or batch.peak_pricing_applied  # 任一批次峰时即保留审计标记。
             for assessment in batch.assessments:  # 逐项合并每个小批次的结构化核验结果。
                 if assessment.paper_id in paper_by_id and assessment.paper_id not in assessment_by_id:  # 仅接受原候选集合中首个同 ID 输出。
                     assessment_by_id[assessment.paper_id] = assessment  # 忽略模型虚构 ID 和重复项。
@@ -94,6 +98,8 @@ class LlmPaperReranker:
             model_name=model_name,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            estimated_cost_cny=round(estimated_cost_cny, 8),
+            peak_pricing_applied=peak_pricing_applied,
             ranking_error="LLM 精排部分批次不可用，未核验论文已沿用上游排序" if failed_batch_count else None,
         )
         logger.info("LLM 精排完成：输入=%d，批次=%d，失败批次=%d，约束淘汰=%d，截断=%d，最终=%d，输入Token=%d，输出Token=%d", result.input_count, len(batches), failed_batch_count, result.rejected_count, result.truncated_count, len(result.papers), result.prompt_tokens, result.completion_tokens)  # 只记录数量与用量统计。

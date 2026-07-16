@@ -36,4 +36,6 @@ class QueryPlanningResult(BaseModel):
     model_name: str | None = None  # 保存供应商实际返回的模型名称供审计。
     prompt_tokens: int = Field(default=0, ge=0)  # 保存查询规划输入 Token 数量。
     completion_tokens: int = Field(default=0, ge=0)  # 保存查询规划输出 Token 数量。
+    estimated_cost_cny: float = Field(default=0.0, ge=0.0)  # 保存查询规划按供应商实际 usage 计算的人民币估算费用。
+    peak_pricing_applied: bool = False  # 标记查询规划是否应用工作时间两倍费率。
     duration_ms: int = Field(default=0, ge=0)  # 保存从发起请求到完成解析的毫秒耗时。

@@ -33,7 +33,7 @@ class LlmQueryEvolutionService:
         updated_intent = query.model_copy(update={"subqueries": [*query.subqueries, *generated]})  # 不修改输入并保留原硬约束和计划。
         warnings = fallback_result.warnings if approved else [*fallback_result.warnings, "LLM 搜索策略未生成可执行新查询，已使用规则化查询演化"]  # 让用户可区分模型建议与回退。
         logger.info("LLM 搜索策略完成：提案=%d，可执行=%d，候选数=%d，输入Token=%d，输出Token=%d", len(proposal.subqueries), len(approved), len(papers), proposal.prompt_tokens, proposal.completion_tokens)  # 记录可审计成本统计而不记录论文或查询正文。
-        return QueryEvolutionResult(query_intent=updated_intent, generated_subqueries=generated, skipped_gap_count=fallback_result.skipped_gap_count, warnings=warnings, strategy_reason=proposal.reason or None, strategy_model_name=proposal.model_name, strategy_prompt_tokens=proposal.prompt_tokens, strategy_completion_tokens=proposal.completion_tokens)  # 返回兼容既有工作流并补充策略审计信息。
+        return QueryEvolutionResult(query_intent=updated_intent, generated_subqueries=generated, skipped_gap_count=fallback_result.skipped_gap_count, warnings=warnings, strategy_reason=proposal.reason or None, strategy_model_name=proposal.model_name, strategy_prompt_tokens=proposal.prompt_tokens, strategy_completion_tokens=proposal.completion_tokens, strategy_estimated_cost_cny=proposal.estimated_cost_cny, strategy_peak_pricing_applied=proposal.peak_pricing_applied)  # 返回兼容既有工作流并补充策略审计信息。
 
     @staticmethod
     def _approve_subqueries(query: QueryIntent, proposals: list[QuerySubquery], executed_subqueries: list[str]) -> list[QuerySubquery]:

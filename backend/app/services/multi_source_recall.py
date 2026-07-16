@@ -125,6 +125,8 @@ class MultiSourceRecallCoordinator:
             llm_model_name=llm_result.model_name,  # 返回实际或配置模型名供成本审计。
             llm_prompt_tokens=llm_result.prompt_tokens,  # 返回本阶段输入 Token 统计。
             llm_completion_tokens=llm_result.completion_tokens,  # 返回本阶段输出 Token 统计。
+            llm_estimated_cost_cny=llm_result.estimated_cost_cny,  # 返回本阶段依据供应商 usage 计算的人民币费用估算。
+            llm_peak_pricing_applied=llm_result.peak_pricing_applied,  # 返回本阶段是否命中工作时间两倍费率。
             work_family_count=filter_result.work_family_count,  # 返回最终候选中可识别版本族的唯一数量。
             coverage_report=coverage_report,  # 返回不触发额外检索的本轮覆盖缺口与继续建议。
         )

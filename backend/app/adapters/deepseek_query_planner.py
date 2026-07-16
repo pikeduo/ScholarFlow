@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator  # 先�
 from backend.app.core.config import Settings, settings  # 读取集中 DeepSeek 配置和召回上限。
 from backend.app.models.natural_search import NaturalSearchRequest, QueryPlanningResult  # 接收自然语言请求并返回带用量的规划结果。
 from backend.app.models.query_intent import PaperType, QueryIntent, QueryLanguage, QuerySubquery  # 构造完整领域契约。
+from backend.app.core.deepseek_pricing import estimate_deepseek_cost_or_zero  # 从无服务聚合副作用的基础模块读取费用估算，避免循环导入。
 
 
 class QueryPlanningError(RuntimeError):
@@ -172,12 +173,18 @@ class DeepSeekQueryPlanningClient:
         usage = response_data.get("usage") if isinstance(response_data, dict) else None  # 安全读取供应商可选用量对象。
         usage_data = usage if isinstance(usage, dict) else {}  # 缺少用量时使用零值保持接口稳定。
         model_name = response_data.get("model") if isinstance(response_data, dict) else None  # 读取实际响应模型而非假定配置值。
+        resolved_model_name = model_name if isinstance(model_name, str) else self._config.deepseek_model  # 统一响应与配置回退后的模型名。
+        prompt_tokens = _safe_token_count(usage_data.get("prompt_tokens"))  # 提取供应商报告的完整输入 Token 数。
+        completion_tokens = _safe_token_count(usage_data.get("completion_tokens"))  # 提取供应商报告的完整输出 Token 数。
+        cost_estimate = estimate_deepseek_cost_or_zero(resolved_model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, prompt_cache_hit_tokens=_safe_token_count(usage_data.get("prompt_cache_hit_tokens")), prompt_cache_miss_tokens=_safe_token_count(usage_data.get("prompt_cache_miss_tokens")))  # 依据当前调用时刻与缓存 usage 固化费用。
         duration_ms = max(0, round((perf_counter() - started_at) * 1000))  # 转换为便于日志和前端展示的毫秒数。
         return QueryPlanningResult(  # 将意图和观测数据作为一个原子结果返回服务层。
             query_intent=intent,  # 保存可直接进入多源协调器的计划。
-            model_name=model_name if isinstance(model_name, str) else self._config.deepseek_model,  # 响应缺失时回退到配置模型名。
-            prompt_tokens=_safe_token_count(usage_data.get("prompt_tokens")),  # 非法或缺失计数安全归零。
-            completion_tokens=_safe_token_count(usage_data.get("completion_tokens")),  # 非法或缺失计数安全归零。
+            model_name=resolved_model_name,  # 响应缺失时回退到配置模型名。
+            prompt_tokens=prompt_tokens,  # 非法或缺失计数安全归零。
+            completion_tokens=completion_tokens,  # 非法或缺失计数安全归零。
+            estimated_cost_cny=cost_estimate.cost_cny,  # 保存基于供应商 usage 的人民币估算费用。
+            peak_pricing_applied=cost_estimate.peak_pricing_applied,  # 保存工作时间两倍费率审计标记。
             duration_ms=duration_ms,  # 保存完整请求与解析耗时。
         )
 

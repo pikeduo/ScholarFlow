@@ -320,7 +320,7 @@ export async function getTechnicalRoutes(paperIds, fetchImpl = globalThis.fetch,
   return routes // 返回关键词事实路线。
 }
 
-/** 按运行标识读取已保存的实际用量，不触发新的检索或计费。 */
+/** 按运行标识读取已保存的事实型综合报告，不触发新的检索或模型调用。 */
 export async function getSearchRunSynthesis(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页按运行标识读取事实型综合报告。
   const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要读取综合报告的搜索运行标识') // 阻止无效标识进入只读网络层。
@@ -329,12 +329,12 @@ export async function getSearchRunSynthesis(runId, fetchImpl = globalThis.fetch,
   return synthesis // 返回已通过最小契约校验的同次报告。
 }
 
-/** 按运行标识读取已保存的实际用量，不触发新的检索或计费。 */
+/** 按运行标识读取已保存的实际用量，不触发新的检索或重新计费。 */
 export async function getSearchRunUsage(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读用量请求。
   const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要读取用量的搜索运行标识') // 阻止向后端发起无效资源请求。
   const usage = await requestSearchJson(`/api/v1/usage/${encodeURIComponent(normalizedRunId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索用量，请确认后端已启动', '搜索用量数据无法解析') // 仅传递运行标识并统一处理网络、HTTP 和 JSON 错误。
-  if (!usage || typeof usage.run_id !== 'string' || typeof usage.api_call_count !== 'number' || typeof usage.token_usage !== 'number' || typeof usage.latency_ms !== 'number' || typeof usage.cache_hits !== 'number' || !Array.isArray(usage.selected_sources)) throw new SearchApiError('搜索用量数据不完整') // 防止不完整响应误导用户。
+  if (!usage || typeof usage.run_id !== 'string' || typeof usage.api_call_count !== 'number' || typeof usage.token_usage !== 'number' || typeof usage.estimated_cost_cny !== 'number' || typeof usage.peak_pricing_applied !== 'boolean' || typeof usage.cost_is_estimate !== 'boolean' || typeof usage.latency_ms !== 'number' || typeof usage.cache_hits !== 'number' || !Array.isArray(usage.selected_sources)) throw new SearchApiError('搜索用量数据不完整') // 防止不完整响应误导用户。
   return usage // 返回同次运行的真实观测数据。
 }
 

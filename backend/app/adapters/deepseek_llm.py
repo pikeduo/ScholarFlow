@@ -10,6 +10,7 @@ from backend.app.core.config import Settings, settings  # 从集中配置读取�
 from backend.app.models.llm_ranking import LlmAssessmentBatch, LlmPaperAssessment  # 返回供应商无关的结构化核验契约。
 from backend.app.models.paper import PaperRecord  # 接收 Cross Encoder 截断后的论文候选。
 from backend.app.models.query_intent import QueryIntent  # 接收统一查询意图及其硬软约束。
+from backend.app.core.deepseek_pricing import estimate_deepseek_cost_or_zero  # 从无服务聚合副作用的基础模块读取费用估算，避免循环导入。
 
 
 class LlmAssessmentError(RuntimeError):
@@ -75,11 +76,16 @@ class DeepSeekPaperAssessmentClient:
             payload = _parse_assessment_payload(content)  # 严格校验固定 assessments JSON 对象，并仅修复可判定的模型转义瑕疵。
             usage = response_data.get("usage") or {}  # 兼容供应商未返回 Token 统计的情况。
             model_name = str(response_data.get("model") or self._config.deepseek_model)  # 优先记录实际响应模型。
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)  # 保存供应商报告的完整输入 Token 数量。
+            completion_tokens = int(usage.get("completion_tokens") or 0)  # 保存供应商报告的完整输出 Token 数量。
+            cost_estimate = estimate_deepseek_cost_or_zero(model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, prompt_cache_hit_tokens=int(usage.get("prompt_cache_hit_tokens") or 0), prompt_cache_miss_tokens=int(usage.get("prompt_cache_miss_tokens") or 0))  # 在响应仍保留缓存 usage 时计算费用。
             return LlmAssessmentBatch(  # 转换为供应商无关批次供服务层处理证据和排序。
                 assessments=payload.assessments,  # 返回已通过字段范围校验的逐篇结果。
                 model_name=model_name,  # 保存实际或配置模型名。
-                prompt_tokens=int(usage.get("prompt_tokens") or 0),  # 缺失统计时安全回退为零。
-                completion_tokens=int(usage.get("completion_tokens") or 0),  # 缺失统计时安全回退为零。
+                prompt_tokens=prompt_tokens,  # 缺失统计时安全回退为零。
+                completion_tokens=completion_tokens,  # 缺失统计时安全回退为零。
+                estimated_cost_cny=cost_estimate.cost_cny,  # 将实际 usage 的人民币估算交给运行快照累计。
+                peak_pricing_applied=cost_estimate.peak_pricing_applied,  # 保留工作时间两倍费率审计标记。
             )
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:  # 覆盖缺字段、空选择和模型 JSON 不合法。
             raise LlmAssessmentError("DeepSeek 返回了无效的论文核验结果") from exc  # 不泄露可能包含用户查询的响应正文。
