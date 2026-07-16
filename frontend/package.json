@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/apiClient.test.js tests/searchApi.test.js tests/libraryApi.test.js tests/duration.test.js tests/doi.test.js tests/paperDetailComposable.test.js tests/paperComparisonComposable.test.js tests/paperComparisonToolbar.test.js",
+    "test": "node --test tests/apiClient.test.js tests/terms.test.js tests/searchApi.test.js tests/libraryApi.test.js tests/duration.test.js tests/doi.test.js tests/paperDetailComposable.test.js tests/paperComparisonComposable.test.js tests/paperComparisonToolbar.test.js",
     "test:graph": "tsx --test tests/citationGraphLayout.test.ts",
     "typecheck:graph": "vue-tsc --noEmit -p tsconfig.citation-graph.json"
   },

@@ -1,4 +1,5 @@
 import { requestApiJson } from './apiClient.js' // 复用无业务语义的 HTTP、错误结构和 JSON 解析边界。
+import { deduplicateTerms, splitAndDeduplicateTerms } from '../utils/terms.js' // 复用关键词文本与数组输入的共同去重规则。
 
 /** 表示个人文献库请求失败且可安全展示的公共错误。 */
 export class LibraryApiError extends Error { // 继承标准错误供页面统一捕获。
@@ -86,14 +87,7 @@ export async function deleteLibraryItem(itemId, fetchImpl = globalThis.fetch, ap
 
 /** 清理关键词并执行大小写无关去重。 */
 export function normalizeKeywords(keywords) { // 接收关键词数组或逗号分隔文本。
-  const values = Array.isArray(keywords) ? keywords : String(keywords || '').split(/[,，\n]/) // 同时支持表单文本和数组。
-  const seen = new Set() // 保存大小写无关比较键。
-  return values.map((tag) => String(tag).trim()).filter((tag) => { // 清除空白并保留首次有效标签。
-    const key = tag.toLocaleLowerCase() // 生成稳定比较键。
-    if (!tag || seen.has(key)) return false // 跳过空值和重复项。
-    seen.add(key) // 标记当前标签已接受。
-    return true // 保留首次显示形式。
-  })
+  return Array.isArray(keywords) ? deduplicateTerms(keywords) : splitAndDeduplicateTerms(keywords) // 数组元素保持原样，文本输入才按分隔符拆分。
 }
 
 /** 兼容旧页面或插件对标签工具函数的导入，新增调用应使用关键词名称。 */

@@ -1,4 +1,5 @@
 import { requestApiResponse } from './apiClient.js' // 复用无业务语义的 HTTP 与安全错误解析边界。
+import { splitAndDeduplicateTerms } from '../utils/terms.js' // 复用自由文本词项的分隔与去重规则。
 
 /** 表示多源搜索请求或响应无法完成的公共前端错误。 */
 export class SearchApiError extends Error { // 继承标准错误以便页面统一捕获。
@@ -18,16 +19,7 @@ async function requestSearchResponse(path, options, fetchImpl, apiBaseUrl, netwo
 
 /** 将逗号或换行分隔的用户条件转换为去重后的字符串列表。 */
 export function splitTerms(value) { // 接收表单中的自由文本条件。
-  const seen = new Set() // 记录大小写无关的已出现词项。
-  return String(value || '') // 将空值安全转换为空字符串。
-    .split(/[,，\n]/) // 同时支持中英文逗号与换行。
-    .map((term) => term.trim()) // 清除每个词项首尾空白。
-    .filter((term) => { // 移除空值和重复条件。
-      const key = term.toLocaleLowerCase() // 使用大小写无关键比较英文条件。
-      if (!term || seen.has(key)) return false // 跳过无效或重复词项。
-      seen.add(key) // 标记当前词项已接受。
-      return true // 保留首次出现的有效条件。
-    })
+  return splitAndDeduplicateTerms(value) // 保留搜索条件原有的文本分隔、首次词形和大小写无关去重语义。
 }
 
 /** 根据查询字符粗略判断后端 QueryIntent 所需语言枚举。 */

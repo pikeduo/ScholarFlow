@@ -11,6 +11,7 @@ import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' //
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量、路线与网页发现翻译。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
 import { resolveSearchPageJump } from '../utils/searchResults.js' // 严格校验用户输入的目标页码。
+import { deduplicateTerms } from '../utils/terms.js' // 复用卡片关键词的大小写无关去重与展示上限规则。
 import { usePaperComparison } from '../composables/usePaperComparison.js' // 统一管理二至五篇论文比较交互。
 import { usePaperDetail } from '../composables/usePaperDetail.js' // 统一管理论文详情读取交互。
 
@@ -170,8 +171,7 @@ function buildQueryKeywords(intent) { // 将 Query Agent 已解析的核心术�
     ...(intent?.must_include || []), // 保留用户明确要求的硬约束术语。
     ...(intent?.should_include || []), // 保留用户明确偏好的软约束术语。
   ]
-  const seen = new Set() // 使用大小写无关键跨字段去重。
-  return values.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 8) // 限制最多八个词，保持卡片元数据紧凑。
+  return deduplicateTerms(values, 8) // 限制最多八个正向检索词，保持卡片元数据紧凑。
 }
 
 function discoveryTranslationKey(item, field) { // 为当前运行内的网页发现标题或摘要片段生成独立界面状态键。

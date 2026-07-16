@@ -3,6 +3,7 @@ import { computed, ref, useSlots } from 'vue' // 派生卡片信息、插槽和�
 
 import { SearchApiError, translatePaperToChinese } from '../services/searchApi.js' // 仅在用户展开摘要后请求后端 DeepSeek 翻译。
 import { buildDoiUrl, buildPublicPdfUrl } from '../utils/doi.js' // 将 DOI 和来源明确提供的公开 PDF 链接规范化。
+import { deduplicateTerms } from '../utils/terms.js' // 复用关键词展示的大小写无关去重与数量限制。
 
 const props = defineProps({ // 声明论文和列表序号输入。
   paper: { type: Object, required: true }, // 接收后端 PaperRecord。
@@ -43,13 +44,11 @@ const sources = computed(() => { // 优先展示完整多源溯源列表。
 const doiUrl = computed(() => buildDoiUrl(props.paper.doi)) // 仅为符合 DOI 格式的论文渲染固定 doi.org 链接。
 const publicPdfUrl = computed(() => buildPublicPdfUrl(props.paper.open_access_url)) // 仅为来源明确提供的公开 PDF 渲染独立按钮。
 const displayQueryKeywords = computed(() => { // 展示本次查询解析提取的主题、方法、任务和数据集关键词。
-  const seen = new Set() // 保存大小写无关去重键，避免同一术语在多种解析字段中重复。
-  return props.queryKeywords.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 8) // 保留最多八个查询词，避免遮挡论文来源信息。
+  return deduplicateTerms(props.queryKeywords, 8) // 保留最多八个查询词，避免遮挡论文来源信息。
 })
 const displayPaperKeywords = computed(() => { // 优先展示用户维护关键词，并补充来源返回的论文关键词。
   const values = [...props.keywords, ...(props.paper.keywords || [])] // 合并两个关键词来源供文献库和搜索页共用。
-  const seen = new Set() // 保存大小写无关去重键。
-  return values.map((value) => String(value || '').trim()).filter((value) => { const key = value.toLocaleLowerCase(); if (!value || seen.has(key)) return false; seen.add(key); return true }).slice(0, 12) // 保留最多十二个可扫读关键词。
+  return deduplicateTerms(values, 12) // 保留最多十二个可扫读关键词。
 })
 const hasCustomActions = computed(() => Boolean(slots.actions)) // 判断文献库是否注入编辑或删除操作。
 
