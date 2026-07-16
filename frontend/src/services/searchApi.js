@@ -1,4 +1,4 @@
-import { requestApiResponse } from './apiClient.js' // 复用无业务语义的 HTTP 与安全错误解析边界。
+import { requestApiJson, requestApiResponse } from './apiClient.js' // 复用无业务语义的 HTTP、JSON 与安全错误解析边界。
 import { splitAndDeduplicateTerms } from '../utils/terms.js' // 复用自由文本词项的分隔与去重规则。
 
 /** 表示多源搜索请求或响应无法完成的公共前端错误。 */
@@ -15,6 +15,11 @@ const DEFAULT_API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL || '').replace(
 /** 执行搜索域请求并保留搜索页既有错误类型和场景化网络提示。 */
 async function requestSearchResponse(path, options, fetchImpl, apiBaseUrl, networkMessage, unsupportedNetworkMessage) { // 不处理成功正文，以免改变各搜索资源的独立字段契约。
   return requestApiResponse(path, options, { fetchImpl, apiBaseUrl, ErrorType: SearchApiError, networkMessage, unavailableMessage: '论文检索暂时不可用，请稍后重试', unsupportedNetworkMessage }) // 统一 FastAPI detail、标准 error.message、状态码和网络错误边界。
+}
+
+/** 执行普通搜索 JSON 请求，并保留各资源自己的协议解析提示。 */
+async function requestSearchJson(path, options, fetchImpl, apiBaseUrl, networkMessage, invalidJsonMessage, unsupportedNetworkMessage) { // SSE 与严格无正文删除请求不经过此路径。
+  return requestApiJson(path, options, { fetchImpl, apiBaseUrl, ErrorType: SearchApiError, networkMessage, unavailableMessage: '论文检索暂时不可用，请稍后重试', unsupportedNetworkMessage, invalidJsonMessage }) // 统一网络、HTTP 状态和成功 JSON 解析，领域契约仍留在调用处。
 }
 
 /** 将逗号或换行分隔的用户条件转换为去重后的字符串列表。 */
@@ -136,15 +141,9 @@ export async function streamSearchWithIntent(intent, onEvent, fetchImpl = global
 
 /** 提交统一搜索请求并校验 MultiRoundSearchResult 最小契约。 */
 async function postSearch(path, requestBody, fetchImpl, apiBaseUrl) { // 复用自然入口和直接意图入口的错误边界。
-  const response = await requestSearchResponse(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) }, fetchImpl, apiBaseUrl, '无法连接检索服务，请确认后端已启动', '当前环境不支持网络请求') // 统一提交请求的网络和 HTTP 错误边界。
-  try { // 防止成功状态携带无效 JSON 时页面崩溃。
-    const result = await response.json() // 解析后端稳定 MultiRoundSearchResult。
-    if (!result || !Array.isArray(result.papers) || typeof result.run_state !== 'object' || typeof result.query_intent !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 验证页面渲染依赖的多轮状态和可编辑意图。
-    return result // 返回已通过最小契约检查的结果。
-  } catch (error) { // 将响应解析失败转换为统一错误。
-    if (error instanceof SearchApiError) throw error // 保留本地最小契约检查给出的明确消息。
-    throw new SearchApiError('检索服务返回了无法解析的结果') // 提示用户重试且不泄露原始正文。
-  }
+  const result = await requestSearchJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) }, fetchImpl, apiBaseUrl, '无法连接检索服务，请确认后端已启动', '检索服务返回了无法解析的结果', '当前环境不支持网络请求') // 统一提交请求的网络、HTTP 和成功 JSON 解析边界。
+  if (!result || !Array.isArray(result.papers) || typeof result.run_state !== 'object' || typeof result.query_intent !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 验证页面渲染依赖的多轮状态和可编辑意图。
+  return result // 返回已通过最小契约检查的结果。
 }
 
 /** 使用 fetch ReadableStream 解析 POST SSE，并在完成事件后读取同次最终结果。 */
@@ -184,15 +183,9 @@ async function streamSearch(path, requestBody, onEvent, fetchImpl, apiBaseUrl) {
 export async function getSearchRunState(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读恢复请求。
   const normalizedRunId = String(runId || '').trim() // 规范化 URL 传入的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要恢复的搜索运行标识') // 防止请求无效资源路径。
-  const response = await requestSearchResponse(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取已保存的搜索运行，请确认后端已启动') // 仅读取已持久化快照并统一处理网络、HTTP 错误。
-  try { // 校验页面恢复进度所需的最小状态契约。
-    const state = await response.json() // 解析 SearchRunState JSON。
-    if (!state || typeof state.run_id !== 'string' || typeof state.status !== 'string' || typeof state.query_intent !== 'object') throw new SearchApiError('已保存的搜索运行状态不完整') // 避免页面按无效快照恢复。
-    return state // 返回轻量快照，论文集合仍由结果接口独立读取。
-  } catch (error) { // 统一处理 JSON 或状态契约异常。
-    if (error instanceof SearchApiError) throw error // 保留明确的恢复错误消息。
-    throw new SearchApiError('已保存的搜索运行状态无法解析') // 不展示原始响应内容。
-  }
+  const state = await requestSearchJson(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取已保存的搜索运行，请确认后端已启动', '已保存的搜索运行状态无法解析') // 仅读取已持久化快照并统一处理网络、HTTP 和 JSON 错误。
+  if (!state || typeof state.run_id !== 'string' || typeof state.status !== 'string' || typeof state.query_intent !== 'object') throw new SearchApiError('已保存的搜索运行状态不完整') // 避免页面按无效快照恢复。
+  return state // 返回轻量快照，论文集合仍由结果接口独立读取。
 }
 
 /** 恢复一次搜索运行：始终读取状态，终态再读取同次最终结果。 */
@@ -212,15 +205,9 @@ export async function restoreSearchRun(runId, fetchImpl = globalThis.fetch, apiB
 export async function getSearchRunResult(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 接收已由服务端生成的稳定运行标识。
   const normalizedRunId = String(runId || '').trim() // 规范化 URL 或 SSE 提供的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要读取的搜索运行标识') // 防止请求无效结果资源路径。
-  const response = await requestSearchResponse(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/result`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '检索已完成但无法读取最终结果，请稍后重试') // 仅读取同次运行结果并统一处理网络、HTTP 错误。
-  try { // 校验最终结果仍符合页面依赖的多轮响应契约。
-    const result = await response.json() // 解析完成结果 JSON。
-    if (!result || !Array.isArray(result.papers) || typeof result.run_state !== 'object' || typeof result.query_intent !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 防止页面渲染不完整持久化数据。
-    return result // 返回同次多轮搜索得到的完整论文结果。
-  } catch (error) { // 将 JSON 或契约错误转换为统一提示。
-    if (error instanceof SearchApiError) throw error // 保留明确字段缺失错误。
-    throw new SearchApiError('检索服务返回了无法解析的结果') // 避免展示原始响应文本。
-  }
+  const result = await requestSearchJson(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/result`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '检索已完成但无法读取最终结果，请稍后重试', '检索服务返回了无法解析的结果') // 仅读取同次运行结果并统一处理网络、HTTP 和 JSON 错误。
+  if (!result || !Array.isArray(result.papers) || typeof result.run_state !== 'object' || typeof result.query_intent !== 'object') throw new SearchApiError('检索服务返回了不完整的结果') // 防止页面渲染不完整持久化数据。
+  return result // 返回同次多轮搜索得到的完整论文结果。
 }
 
 /** 按条件分页读取已保存搜索结果，不重新执行多源检索。 */
@@ -239,30 +226,18 @@ export async function getSearchRunPapers(runId, options = {}, fetchImpl = global
   if (relevance && relevance !== 'all') params.set('relevance', relevance) // 仅在用户实际筛选时传递核验状态。
   if (yearStart) params.set('year_start', yearStart) // 将非空年份下界交给后端统一校验。
   if (yearEnd) params.set('year_end', yearEnd) // 将非空年份上界交给后端统一校验。
-  const response = await requestSearchResponse(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/papers?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取已保存的搜索结果，请确认后端已启动') // 仅读取同次持久化结果并统一处理网络、HTTP 错误。
-  try { // 校验结果列表与分页控件所依赖的最小契约。
-    const resultPage = await response.json() // 解析服务端筛选、排序后的结果页。
-    if (!resultPage || typeof resultPage.run_id !== 'string' || !Array.isArray(resultPage.items) || typeof resultPage.total !== 'number' || typeof resultPage.page !== 'number' || typeof resultPage.page_size !== 'number' || typeof resultPage.total_pages !== 'number') throw new SearchApiError('搜索结果分页数据不完整') // 防止页面以损坏元数据渲染。
-    return resultPage // 返回服务端唯一事实源的当前页结果。
-  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
-    if (error instanceof SearchApiError) throw error // 保留可直接展示的业务错误。
-    throw new SearchApiError('搜索结果分页数据无法解析') // 不展示原始响应正文。
-  }
+  const resultPage = await requestSearchJson(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/papers?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取已保存的搜索结果，请确认后端已启动', '搜索结果分页数据无法解析') // 仅读取同次持久化结果并统一处理网络、HTTP 和 JSON 错误。
+  if (!resultPage || typeof resultPage.run_id !== 'string' || !Array.isArray(resultPage.items) || typeof resultPage.total !== 'number' || typeof resultPage.page !== 'number' || typeof resultPage.page_size !== 'number' || typeof resultPage.total_pages !== 'number') throw new SearchApiError('搜索结果分页数据不完整') // 防止页面以损坏元数据渲染。
+  return resultPage // 返回服务端唯一事实源的当前页结果。
 }
 
 /** 读取包含搜索问题但不含论文内容的本地搜索运行历史。 */
 export async function listSearchRuns(limit = 10, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页和测试复用受控历史读取请求。
   const normalizedLimit = Number(limit) // 规范化调用方提供的历史数量上限。
   if (!Number.isInteger(normalizedLimit) || normalizedLimit < 1 || normalizedLimit > 50) throw new SearchApiError('搜索历史数量上限必须在 1 至 50 之间') // 保持与后端查询参数边界一致。
-  const response = await requestSearchResponse(`/api/v1/search/runs?limit=${normalizedLimit}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索运行历史，请确认后端已启动') // 只读取本地索引并统一处理网络、HTTP 错误。
-  try { // 校验历史抽屉所需的最小索引契约。
-    const history = await response.json() // 解析包含本地搜索问题的历史响应。
-    if (!history || !Array.isArray(history.items) || typeof history.limit !== 'number' || history.items.some((item) => typeof item?.run_id !== 'string' || typeof item.query_text !== 'string' || typeof item.status !== 'string' || typeof item.result_ready !== 'boolean')) throw new SearchApiError('搜索运行历史数据不完整') // 防止页面渲染损坏索引。
-    return history // 返回由服务端排序的有限历史列表。
-  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
-    if (error instanceof SearchApiError) throw error // 保留明确业务错误。
-    throw new SearchApiError('搜索运行历史数据无法解析') // 不展示原始响应正文。
-  }
+  const history = await requestSearchJson(`/api/v1/search/runs?limit=${normalizedLimit}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索运行历史，请确认后端已启动', '搜索运行历史数据无法解析') // 只读取本地索引并统一处理网络、HTTP 和 JSON 错误。
+  if (!history || !Array.isArray(history.items) || typeof history.limit !== 'number' || history.items.some((item) => typeof item?.run_id !== 'string' || typeof item.query_text !== 'string' || typeof item.status !== 'string' || typeof item.result_ready !== 'boolean')) throw new SearchApiError('搜索运行历史数据不完整') // 防止页面渲染损坏索引。
+  return history // 返回由服务端排序的有限历史列表。
 }
 
 /** 删除用户确认的终态本地搜索运行及同次完整结果快照。 */
@@ -277,15 +252,9 @@ export async function deleteSearchRun(runId, fetchImpl = globalThis.fetch, apiBa
 export async function getPaperDetail(paperId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读详情请求。
   const normalizedPaperId = String(paperId || '').trim() // 规范化卡片提供的内部论文标识。
   if (!normalizedPaperId) throw new SearchApiError('缺少需要读取详情的论文标识') // 防止向后端发起无效资源请求。
-  const response = await requestSearchResponse(`/api/v1/papers/detail?paper_id=${encodeURIComponent(normalizedPaperId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取论文详情，请确认后端已启动') // 使用查询参数读取 SQLite 快照并统一处理网络、HTTP 错误。
-  try { // 校验详情抽屉渲染依赖的最小论文契约。
-    const paper = await response.json() // 解析后端返回的 PaperRecord JSON。
-    if (!paper || typeof paper.paper_id !== 'string' || typeof paper.title !== 'string' || typeof paper.source !== 'string') throw new SearchApiError('论文详情数据不完整') // 防止页面渲染损坏的历史快照。
-    return paper // 返回完整且已校验的详情记录。
-  } catch (error) { // 将 JSON 或契约问题转为统一安全提示。
-    if (error instanceof SearchApiError) throw error // 保留明确的字段缺失错误。
-    throw new SearchApiError('论文详情无法解析') // 避免展示原始响应正文。
-  }
+  const paper = await requestSearchJson(`/api/v1/papers/detail?paper_id=${encodeURIComponent(normalizedPaperId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取论文详情，请确认后端已启动', '论文详情无法解析') // 使用查询参数读取 SQLite 快照并统一处理网络、HTTP 和 JSON 错误。
+  if (!paper || typeof paper.paper_id !== 'string' || typeof paper.title !== 'string' || typeof paper.source !== 'string') throw new SearchApiError('论文详情数据不完整') // 防止页面渲染损坏的历史快照。
+  return paper // 返回完整且已校验的详情记录。
 }
 
 /** 按用户操作翻译 SQLite 已保存论文的标题与摘要，不向浏览器暴露 DeepSeek 密钥。 */
@@ -293,15 +262,9 @@ export async function translatePaperToChinese(paperId, field, fetchImpl = global
   const normalizedPaperId = String(paperId || '').trim() // 规范化论文卡片提供的稳定内部标识。
   if (!normalizedPaperId) throw new SearchApiError('缺少需要翻译的论文标识') // 阻止无效标识触发后端模型调用。
   if (!['title', 'abstract'].includes(field)) throw new SearchApiError('翻译字段仅支持标题或摘要') // 防止前端请求超出后端允许范围的文本字段。
-  const response = await requestSearchResponse(`/api/v1/papers/translation/${field}?paper_id=${encodeURIComponent(normalizedPaperId)}`, { method: 'POST', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法翻译论文，请确认后端已启动') // 使用查询参数请求翻译并统一处理网络、HTTP 错误。
-  try { // 校验卡片渲染中文标题和摘要所需的最小响应契约。
-    const translation = await response.json() // 解析后端返回的按需翻译响应。
-    if (!translation || translation.field !== field || typeof translation.paper_id !== 'string' || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('论文翻译数据不完整') // 防止损坏响应覆盖原始论文文本。
-    return translation // 返回经过最小校验的中文翻译。
-  } catch (error) { // 将 JSON 解析或字段错误映射为稳定前端错误。
-    if (error instanceof SearchApiError) throw error // 保留明确的响应契约错误。
-    throw new SearchApiError('论文翻译无法解析') // 不展示服务端原始响应正文。
-  }
+  const translation = await requestSearchJson(`/api/v1/papers/translation/${field}?paper_id=${encodeURIComponent(normalizedPaperId)}`, { method: 'POST', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法翻译论文，请确认后端已启动', '论文翻译无法解析') // 使用查询参数请求翻译并统一处理网络、HTTP 和 JSON 错误。
+  if (!translation || translation.field !== field || typeof translation.paper_id !== 'string' || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('论文翻译数据不完整') // 防止损坏响应覆盖原始论文文本。
+  return translation // 返回经过最小校验的中文翻译。
 }
 
 /** 按用户操作翻译同次已保存补充网页发现的标题或摘要片段，不向浏览器暴露 DeepSeek 密钥或正文提交入口。 */
@@ -312,15 +275,9 @@ export async function translateDiscoveryToChinese(runId, url, field, fetchImpl =
   if (!normalizedUrl) throw new SearchApiError('缺少需要翻译的网页发现地址') // 阻止空地址进入后端快照查找。
   if (!['title', 'snippet'].includes(field)) throw new SearchApiError('翻译字段仅支持标题或摘要片段') // 防止前端请求超出后端允许范围的文本字段。
   const params = new URLSearchParams({ run_id: normalizedRunId, url: normalizedUrl }) // 仅提交运行标识和 URL，绝不提交或伪造网页正文。
-  const response = await requestSearchResponse(`/api/v1/discoveries/translation/${field}?${params.toString()}`, { method: 'POST', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法翻译网页发现，请确认后端已启动') // 后端只读同次快照，并统一处理网络、HTTP 错误。
-  try { // 校验卡片渲染中文标题和摘要片段所需的最小响应契约。
-    const translation = await response.json() // 解析后端返回的按需翻译响应。
-    if (!translation || translation.field !== field || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('网页发现翻译数据不完整') // 防止损坏响应覆盖原始网页发现文本。
-    return translation // 返回经过最小校验的中文翻译。
-  } catch (error) { // 将 JSON 解析或字段错误映射为稳定前端错误。
-    if (error instanceof SearchApiError) throw error // 保留明确的响应契约错误。
-    throw new SearchApiError('网页发现翻译无法解析') // 不展示服务端原始响应正文。
-  }
+  const translation = await requestSearchJson(`/api/v1/discoveries/translation/${field}?${params.toString()}`, { method: 'POST', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法翻译网页发现，请确认后端已启动', '网页发现翻译无法解析') // 后端只读同次快照，并统一处理网络、HTTP 和 JSON 错误。
+  if (!translation || translation.field !== field || typeof translation.text_zh !== 'string' || typeof translation.model_name !== 'string') throw new SearchApiError('网页发现翻译数据不完整') // 防止损坏响应覆盖原始网页发现文本。
+  return translation // 返回经过最小校验的中文翻译。
 }
 
 /** 比较二至五篇 SQLite 已保存论文，不触发外部来源或 PDF 读取。 */
@@ -329,15 +286,9 @@ export async function comparePapers(paperIds, fetchImpl = globalThis.fetch, apiB
   const normalizedIds = paperIds.map((paperId) => String(paperId || '').trim()) // 规范化卡片提供的内部论文标识。
   if (normalizedIds.length < 2 || normalizedIds.length > 5 || normalizedIds.some((paperId) => !paperId)) throw new SearchApiError('请选择 2 至 5 篇论文进行比较') // 保持前端与后端相同的小集合边界。
   if (new Set(normalizedIds).size !== normalizedIds.length) throw new SearchApiError('比较论文不能重复') // 防止同一论文占据多个固定列。
-  const response = await requestSearchResponse('/api/v1/compare', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ paper_ids: normalizedIds }) }, fetchImpl, apiBaseUrl, '无法读取论文比较结果，请确认后端已启动') // 仅提交内部标识，并统一处理网络、HTTP 错误。
-  try { // 校验固定列对比所需的最小响应契约。
-    const comparison = await response.json() // 解析后端事实型对比结果。
-    if (!comparison || !Array.isArray(comparison.items) || comparison.items.length !== normalizedIds.length || comparison.items.some((item) => typeof item?.paper_id !== 'string' || typeof item.title !== 'string')) throw new SearchApiError('论文比较结果不完整') // 防止页面渲染不可靠列。
-    return comparison // 返回按用户选择顺序排列的详情列。
-  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
-    if (error instanceof SearchApiError) throw error // 保留明确的业务提示。
-    throw new SearchApiError('论文比较结果无法解析') // 不展示原始响应正文。
-  }
+  const comparison = await requestSearchJson('/api/v1/compare', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ paper_ids: normalizedIds }) }, fetchImpl, apiBaseUrl, '无法读取论文比较结果，请确认后端已启动', '论文比较结果无法解析') // 仅提交内部标识，并统一处理网络、HTTP 和 JSON 错误。
+  if (!comparison || !Array.isArray(comparison.items) || comparison.items.length !== normalizedIds.length || comparison.items.some((item) => typeof item?.paper_id !== 'string' || typeof item.title !== 'string')) throw new SearchApiError('论文比较结果不完整') // 防止页面渲染不可靠列。
+  return comparison // 返回按用户选择顺序排列的详情列。
 }
 
 /** 读取当前已保存论文集合的受限引用图，不调用外部引文来源。 */
@@ -353,15 +304,9 @@ export async function getCitationGraph(paperIds, fetchImpl = globalThis.fetch, a
   const searchParams = new URLSearchParams({ max_nodes: String(normalizedMaxNodes) }) // 构建可安全编码的只读查询参数。
   for (const paperId of normalizedIds) searchParams.append('paper_ids', paperId) // 使用重复参数传递稳定论文标识列表。
   for (const edgeType of normalizedEdgeTypes) searchParams.append('edge_types', edgeType) // 仅在页面需要版本族辅助信息时显式请求。
-  const response = await requestSearchResponse(`/api/v1/graph/citations?${searchParams.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取引用图，请确认后端已启动') // 仅读取 SQLite 已保存关系并统一处理网络、HTTP 错误。
-  try { // 校验图谱面板依赖的最小节点与边契约。
-    const graph = await response.json() // 解析后端受限图响应。
-    if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || typeof graph.truncated !== 'boolean') throw new SearchApiError('引用图数据不完整') // 防止页面渲染损坏关系数据。
-    return graph // 返回不含外部扩展的内部事实图。
-  } catch (error) { // 将 JSON 或契约错误转换为统一安全提示。
-    if (error instanceof SearchApiError) throw error // 保留明确业务提示。
-    throw new SearchApiError('引用图数据无法解析') // 不展示原始响应正文。
-  }
+  const graph = await requestSearchJson(`/api/v1/graph/citations?${searchParams.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取引用图，请确认后端已启动', '引用图数据无法解析') // 仅读取 SQLite 已保存关系并统一处理网络、HTTP 和 JSON 错误。
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || typeof graph.truncated !== 'boolean') throw new SearchApiError('引用图数据不完整') // 防止页面渲染损坏关系数据。
+  return graph // 返回不含外部扩展的内部事实图。
 }
 
 /** 读取当前已保存论文的关键词事实路线，不调用模型或外部来源。 */
@@ -370,8 +315,7 @@ export async function getTechnicalRoutes(paperIds, fetchImpl = globalThis.fetch,
   if (!normalizedIds.length || normalizedIds.length > 50 || normalizedIds.some((paperId) => !paperId) || new Set(normalizedIds).size !== normalizedIds.length) throw new SearchApiError('请选择 1 至 50 篇不重复论文生成技术路线') // 保持受限路线边界。
   const params = new URLSearchParams() // 构建安全编码查询参数。
   for (const paperId of normalizedIds) params.append('paper_ids', paperId) // 仅提交稳定标识，不传递前端关键词事实。
-  const response = await requestSearchResponse(`/api/v1/routes?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取技术路线，请确认后端已启动') // 仅读取已保存路线并统一处理网络、HTTP 错误。
-  const routes = await response.json() // 解析路线响应。
+  const routes = await requestSearchJson(`/api/v1/routes?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取技术路线，请确认后端已启动', '技术路线数据无法解析') // 仅读取已保存路线并统一处理网络、HTTP 和 JSON 错误。
   if (!routes || !Array.isArray(routes.routes)) throw new SearchApiError('技术路线数据不完整') // 校验页面依赖的最小契约。
   return routes // 返回关键词事实路线。
 }
@@ -380,30 +324,18 @@ export async function getTechnicalRoutes(paperIds, fetchImpl = globalThis.fetch,
 export async function getSearchRunSynthesis(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许搜索页按运行标识读取事实型综合报告。
   const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要读取综合报告的搜索运行标识') // 阻止无效标识进入只读网络层。
-  const response = await requestSearchResponse(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/synthesis`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索综合报告，请确认后端已启动') // 仅读取同次汇总事实并统一处理网络、HTTP 错误。
-  try { // 校验报告面板实际依赖的最小响应契约。
-    const synthesis = await response.json() // 解析由后端模型序列化的事实型报告。
-    if (!synthesis || typeof synthesis.run_id !== 'string' || typeof synthesis.final_paper_count !== 'number' || !Array.isArray(synthesis.sources) || !Array.isArray(synthesis.top_keywords) || !Array.isArray(synthesis.coverage_gaps) || !Array.isArray(synthesis.findings) || !Array.isArray(synthesis.follow_up_suggestions)) throw new SearchApiError('搜索综合报告数据不完整') // 阻止页面渲染不可靠或跨运行响应。
-    return synthesis // 返回已通过最小契约校验的同次报告。
-  } catch (error) { // 将 JSON 或字段错误转为统一公共提示。
-    if (error instanceof SearchApiError) throw error // 保留可操作的契约错误。
-    throw new SearchApiError('搜索综合报告无法解析') // 不显示服务端原始响应正文。
-  }
+  const synthesis = await requestSearchJson(`/api/v1/search/runs/${encodeURIComponent(normalizedRunId)}/synthesis`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索综合报告，请确认后端已启动', '搜索综合报告无法解析') // 仅读取同次汇总事实并统一处理网络、HTTP 和 JSON 错误。
+  if (!synthesis || typeof synthesis.run_id !== 'string' || typeof synthesis.final_paper_count !== 'number' || !Array.isArray(synthesis.sources) || !Array.isArray(synthesis.top_keywords) || !Array.isArray(synthesis.coverage_gaps) || !Array.isArray(synthesis.findings) || !Array.isArray(synthesis.follow_up_suggestions)) throw new SearchApiError('搜索综合报告数据不完整') // 阻止页面渲染不可靠或跨运行响应。
+  return synthesis // 返回已通过最小契约校验的同次报告。
 }
 
 /** 按运行标识读取已保存的实际用量，不触发新的检索或计费。 */
 export async function getSearchRunUsage(runId, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_API_BASE_URL) { // 允许页面和测试复用只读用量请求。
   const normalizedRunId = String(runId || '').trim() // 规范化 SSE、URL 或结果快照提供的运行标识。
   if (!normalizedRunId) throw new SearchApiError('缺少需要读取用量的搜索运行标识') // 阻止向后端发起无效资源请求。
-  const response = await requestSearchResponse(`/api/v1/usage/${encodeURIComponent(normalizedRunId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索用量，请确认后端已启动') // 仅传递运行标识并统一处理网络、HTTP 错误。
-  try { // 校验搜索页展示所依赖的最小统计字段。
-    const usage = await response.json() // 解析由后端模型序列化的只读快照。
-    if (!usage || typeof usage.run_id !== 'string' || typeof usage.api_call_count !== 'number' || typeof usage.token_usage !== 'number' || typeof usage.latency_ms !== 'number' || typeof usage.cache_hits !== 'number' || !Array.isArray(usage.selected_sources)) throw new SearchApiError('搜索用量数据不完整') // 防止不完整响应误导用户。
-    return usage // 返回同次运行的真实观测数据。
-  } catch (error) { // 将 JSON 解析或契约错误转换为统一安全提示。
-    if (error instanceof SearchApiError) throw error // 保留可直接展示的业务错误。
-    throw new SearchApiError('搜索用量数据无法解析') // 不展示代理页或内部响应正文。
-  }
+  const usage = await requestSearchJson(`/api/v1/usage/${encodeURIComponent(normalizedRunId)}`, { method: 'GET', headers: { Accept: 'application/json' } }, fetchImpl, apiBaseUrl, '无法读取搜索用量，请确认后端已启动', '搜索用量数据无法解析') // 仅传递运行标识并统一处理网络、HTTP 和 JSON 错误。
+  if (!usage || typeof usage.run_id !== 'string' || typeof usage.api_call_count !== 'number' || typeof usage.token_usage !== 'number' || typeof usage.latency_ms !== 'number' || typeof usage.cache_hits !== 'number' || !Array.isArray(usage.selected_sources)) throw new SearchApiError('搜索用量数据不完整') // 防止不完整响应误导用户。
+  return usage // 返回同次运行的真实观测数据。
 }
 
 /** 将 SSE 单帧解析为已净化的事件 data JSON。 */

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict' // 使用 Node 内置严格断言验证请求契约。
 import test from 'node:test' // 使用零依赖内置测试运行器声明用例。
 
-import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、两类翻译、详情、综合报告、比较、图谱、分页、历史、用量与运行恢复入口。
+import { SearchApiError, comparePapers, createQueryIntent, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, searchPapers, searchWithIntent, splitTerms, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese, translatePaperToChinese, validateQueryIntent } from '../src/services/searchApi.js' // 导入待测纯函数、REST、SSE、两类翻译、详情、综合报告、比较、图谱、路线、分页、历史、用量与运行恢复入口。
 import { filterSearchPapers, paginateSearchPapers, resolveSearchPageJump } from '../src/utils/searchResults.js' // 导入结果页本地筛选与分页纯函数。
 
 const baseForm = { // 构造可复用于各用例的最小搜索表单。
@@ -279,6 +279,12 @@ test('getCitationGraph 仅显式请求可审计的版本族辅助边', async () 
 
   assert.equal(capturedUrl, 'http://test.local/api/v1/graph/citations?max_nodes=30&paper_ids=paper-1&edge_types=cites&edge_types=same_work') // 验证关系类型不会默认混入请求。
   await assert.rejects(() => getCitationGraph(['paper-1'], fetchStub, 'http://test.local', 30, ['semantic_similar']), /关系类型只能是 cites 或 same_work/) // 验证拒绝推断关系类型。
+})
+
+test('getTechnicalRoutes 将成功状态的无效 JSON 转换为 SearchApiError', async () => { // 锁定普通 JSON 入口不再泄露原始解析异常。
+  const fetchStub = async () => ({ ok: true, status: 200, json: async () => { throw new Error('invalid json') } }) // 模拟网关返回无法解析的成功正文。
+
+  await assert.rejects(() => getTechnicalRoutes(['paper-1'], fetchStub, 'http://test.local'), (error) => error instanceof SearchApiError && error.message === '技术路线数据无法解析') // 验证领域错误类型和既定安全提示保持稳定。
 })
 
 test('getSearchRunUsage 读取同次运行快照并拒绝缺失运行标识', async () => { // 验证用量入口不触发新的搜索或重新计算统计。
