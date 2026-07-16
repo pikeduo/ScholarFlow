@@ -5,7 +5,7 @@ from collections.abc import Sequence  # 标注测试替身接收的批量标识�
 import pytest  # 验证存储异常不被服务层改写。
 
 from backend.app.models.paper import PaperRecord  # 构造无需外部服务的规范化论文事实。
-from backend.app.services.saved_paper_resolver import SavedPaperResolver  # 覆盖统一解析服务的公开行为。
+from backend.app.services.saved_paper_resolver import SavedPaperResolver, SavedPaperScope  # 覆盖统一解析服务的公开行为和显式读取范围。
 from backend.app.services.search_run_store import SearchRunStoreError  # 模拟搜索快照存储的稳定错误边界。
 
 
@@ -68,6 +68,14 @@ def test_get_paper_falls_back_to_library_after_search_snapshot_miss() -> None:
     result = SavedPaperResolver(FakeSearchRunStore(), library).get_paper("paper-1")  # 执行搜索未命中后的统一回退。
     assert result == library_paper  # 锁定回退返回原始收藏快照而不伪造论文事实。
     assert library.requested_ids == ["paper-1"]  # 锁定只对搜索未命中的标识发起一次回退查询。
+
+
+def test_search_only_scope_never_reads_library_fallback() -> None:
+    """引用图和技术路线使用搜索专用范围时不得读取用户收藏快照。"""
+    library = FakeLibraryRepository([_paper("paper-1", "不应读取的收藏论文")])  # 构造若范围错误便会被命中的收藏记录。
+    result = SavedPaperResolver(FakeSearchRunStore(), library).get_papers(["paper-1"], scope=SavedPaperScope.SEARCH_ONLY)  # 使用搜索专用范围读取未命中论文。
+    assert result == []  # 锁定未命中不被收藏快照填充。
+    assert library.requested_ids == []  # 锁定搜索专用范围不会访问文献库。
 
 
 def test_get_paper_propagates_search_storage_error_without_library_fallback() -> None:

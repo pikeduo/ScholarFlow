@@ -12,6 +12,7 @@ from backend.app.services.query_planning import QueryPlanningService  # 对外�
 from backend.app.services.query_evolution import QueryEvolutionService  # 对外导出覆盖缺口驱动的查询演化服务。
 from backend.app.services.llm_query_evolution import LlmQueryEvolutionService  # 对外导出 LLM 优先且可降级的查询演化服务。
 from backend.app.services.search_synthesis import SearchSynthesisService  # 对外导出只读事实型搜索综合报告服务。
+from backend.app.services.resource_translation import ResourceTranslationService  # 对外导出受控资源的字段级译文执行服务。
 from backend.app.services.saved_paper_resolver import SavedPaperResolver  # 对外导出搜索快照优先的已保存论文统一解析服务。
 from backend.app.services.semantic_ranking import SemanticRanker  # 对外导出 BGE-M3 语义粗排服务。
 from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore  # 对外导出可替换的搜索运行状态存储边界。
@@ -22,4 +23,4 @@ from backend.app.services.library_vector_index import LibraryVectorIndexResult, 
 from backend.app.services.library_semantic_search import LibrarySemanticSearchService  # 对外导出文献库自然语言语义检索服务。
 from backend.app.services.source_router import SourceRouter  # 对外导出动态来源路由服务。
 
-__all__ = ["BuiltText", "CoverageGapAnalyzer", "CrossEncoderReranker", "EmbeddingBatch", "EmbeddingService", "EmbeddingServiceConfig", "EmbeddingServiceError", "InMemorySearchRunEventPublisher", "LibrarySemanticSearchService", "LibraryVectorIndexResult", "LibraryVectorIndexer", "LlmPaperReranker", "LlmQueryEvolutionService", "MultiRoundSearchController", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryEvolutionService", "QueryPlanningService", "SavedPaperResolver", "SearchRunEventPublisher", "SearchRunStateStore", "SearchSynthesisService", "SemanticRanker", "SourceRouter", "SqliteSearchRunStateStore"]  # 限制服务包的公共接口。
+__all__ = ["BuiltText", "CoverageGapAnalyzer", "CrossEncoderReranker", "EmbeddingBatch", "EmbeddingService", "EmbeddingServiceConfig", "EmbeddingServiceError", "InMemorySearchRunEventPublisher", "LibrarySemanticSearchService", "LibraryVectorIndexResult", "LibraryVectorIndexer", "LlmPaperReranker", "LlmQueryEvolutionService", "MultiRoundSearchController", "MultiSourcePaperFilter", "MultiSourceRecallCoordinator", "PaperFusionService", "PaperTextBuilder", "PaperTextBuilderError", "QueryEvolutionService", "QueryPlanningService", "ResourceTranslationService", "SavedPaperResolver", "SearchRunEventPublisher", "SearchRunStateStore", "SearchSynthesisService", "SemanticRanker", "SourceRouter", "SqliteSearchRunStateStore"]  # 限制服务包的公共接口。

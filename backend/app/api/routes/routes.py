@@ -8,6 +8,7 @@ from backend.app.api.routes.search import get_search_run_state_store  # 复用�
 from backend.app.core.logging import logger  # 记录存储异常而不输出论文内容。
 from backend.app.models.technical_routes import TechnicalRoutesResponse  # 声明稳定路线响应契约。
 from backend.app.services.search_run_store import SearchRunStateStore, SearchRunStoreError  # 隔离持久化读取边界。
+from backend.app.services.saved_paper_resolver import SavedPaperResolver, SavedPaperScope  # 复用显式搜索快照范围的批量读取和顺序重排。
 from backend.app.services.technical_routes import TechnicalRouteService  # 构建关键词事实路线。
 
 
@@ -21,7 +22,7 @@ def get_technical_routes(paper_ids: Annotated[list[str], Query(min_length=1, max
     if any(not paper_id for paper_id in normalized_ids) or len(set(normalized_ids)) != len(normalized_ids):  # 阻止空标识或重复节点进入路线读取。
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="技术路线论文标识不能为空且不能重复")  # 保持公共输入错误边界。
     try:  # 将 SQLite 和快照解析错误映射为服务错误。
-        papers = state_store.get_papers(normalized_ids)  # 仅读取已保存最终结果，不调用来源或模型。
+        papers = SavedPaperResolver(state_store).get_papers(normalized_ids, scope=SavedPaperScope.SEARCH_ONLY)  # 仅读取已保存最终结果，不调用来源、文献库或模型。
     except SearchRunStoreError:  # 不泄露底层存储细节。
         logger.exception("技术路线读取接口失败：数量=%s", len(normalized_ids))  # 仅记录请求数量和完整堆栈。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="技术路线数据暂时不可用，请稍后重试") from None  # 返回可重试公共提示。

@@ -10,7 +10,8 @@ from backend.app.api.routes.search import get_search_run_state_store  # 复用 S
 from backend.app.api.routes.papers import get_paper_translation_store  # 复用论文翻译的 SQLite 缓存服务，避免创建第二套缓存基础设施。
 from backend.app.core.logging import logger  # 记录不含网页正文的完整受控堆栈。
 from backend.app.models.discovery import SupplementalDiscoveryItem  # 保持网页发现与论文领域对象严格隔离。
-from backend.app.services.paper_translation_store import PaperTranslationStore, PaperTranslationStoreError  # 复用统一字段级译文缓存服务。
+from backend.app.services.paper_translation_store import PaperTranslationStore  # 复用统一字段级译文缓存服务。
+from backend.app.services.resource_translation import ResourceTranslationService  # 统一执行缓存命中、模型调用和缓存降级流程。
 from backend.app.services.search_run_store import SearchRunStateStore, SearchRunStoreError  # 隔离搜索快照读取边界。
 
 
@@ -64,21 +65,9 @@ async def translate_discovery(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"网页发现{field_label}暂缺，无法翻译")  # 明确字段缺失而不误报其他字段。
     discovery_id = _discovery_cache_id(discovery)  # 生成网页发现专用前缀的稳定缓存键，不参与论文身份处理。
     cache_field = "title" if field == "title" else "abstract"  # 将网页摘要片段映射到既有摘要缓存槽位，保持两个字段独立。
-    try:  # 先检查当前原文版本的 SQLite 缓存，命中时禁止调用 DeepSeek。
-        cached_translation = translation_store.get(discovery_id, cache_field, source_text)  # 复用论文缓存表的资源键、字段和原文哈希组合。
-    except PaperTranslationStoreError:  # 缓存故障不应阻塞用户主动翻译，应安全降级到模型调用。
-        logger.exception("网页发现译文缓存读取失败，将直接调用翻译服务：发现=%s，字段=%s", discovery_id, field)  # 不记录标题、摘要片段或缓存正文。
-        cached_translation = None  # 继续使用受控翻译适配器生成当前字段译文。
-    if cached_translation is not None:  # 当前原文完全匹配的持久化译文可直接复用。
-        return {"field": field, "text_zh": cached_translation.text_zh, "model_name": cached_translation.model_name}  # 将缓存结果映射回网页发现自身字段名。
     try:  # 将真实模型异常转换为稳定 HTTP 语义。
-        translated = await translation_client.translate_text(discovery_id, cache_field, source_text)  # 直接复用与论文相同的模型客户端和字段级调用。
+        translated = await ResourceTranslationService(translation_store).translate(discovery_id, cache_field, source_text, lambda: translation_client.translate_text(discovery_id, cache_field, source_text))  # 统一缓存命中、模型调用和写入降级，仍只翻译当前字段。
     except PaperTranslationError as exc:  # 配置、网络和模型输出错误均已在适配器净化。
         logger.exception("网页发现翻译调用失败：发现=%s，字段=%s", discovery_id, field)  # 记录完整受控堆栈但不记录网页正文。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from None  # 返回可重试且不泄露内部信息的公共提示。
-    try:  # 模型成功后保存译文，供后续页面和浏览器复用。
-        saved_translation = translation_store.save(translated, source_text)  # 只写入当前字段和当前原文版本的既有缓存表。
-        return {"field": field, "text_zh": saved_translation.text_zh, "model_name": saved_translation.model_name}  # 对前端保持网页发现字段名和轻量响应。
-    except PaperTranslationStoreError:  # 缓存故障不应丢弃已成功生成的可展示译文。
-        logger.exception("网页发现译文缓存写入失败，将返回本次翻译结果：发现=%s，字段=%s", discovery_id, field)  # 不记录原文或译文内容。
-        return {"field": field, "text_zh": translated.text_zh, "model_name": translated.model_name}  # 保持模型调用成功的用户体验，同时下次请求会重新翻译。
+    return {"field": field, "text_zh": translated.text_zh, "model_name": translated.model_name}  # 对前端保持网页发现字段名、轻量响应和摘要片段映射。

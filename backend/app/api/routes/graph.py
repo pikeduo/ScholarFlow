@@ -8,6 +8,7 @@ from backend.app.api.routes.search import get_search_run_state_store  # 复用�
 from backend.app.core.logging import logger  # 记录存储边界异常但不输出论文内容。
 from backend.app.models.citation_graph import CitationGraphResponse, GraphEdgeType  # 声明受限图响应契约。
 from backend.app.services.citation_graph import CitationGraphService  # 构建纯事实型图数据。
+from backend.app.services.saved_paper_resolver import SavedPaperResolver, SavedPaperScope  # 复用显式搜索快照范围的批量读取和顺序重排。
 from backend.app.services.search_run_store import SearchRunStateStore, SearchRunStoreError  # 隔离持久化读取并映射安全错误。
 
 
@@ -37,7 +38,7 @@ def get_citation_graph(
     if any(not paper_id for paper_id in normalized_ids) or len(set(normalized_ids)) != len(normalized_ids):  # 空值或重复值会破坏图节点稳定性。
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="图谱论文标识不能为空且不能重复")  # 在读取 SQLite 前返回明确输入边界。
     try:  # 将 SQLite 和历史快照解析故障隔离为公共服务错误。
-        papers = state_store.get_papers(normalized_ids)  # 仅读取已保存最终结果，不调用来源或 PDF。
+        papers = SavedPaperResolver(state_store).get_papers(normalized_ids, scope=SavedPaperScope.SEARCH_ONLY)  # 仅读取已保存最终结果，不调用来源、文献库或 PDF。
     except SearchRunStoreError:  # 不泄露 SQL、路径或快照正文。
         logger.exception("引用图读取接口失败：数量=%s", len(normalized_ids))  # 仅记录节点请求数量与完整堆栈。
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="引用图数据暂时不可用，请稍后重试") from None  # 返回可重试的公共提示。
