@@ -9,6 +9,7 @@ import {
   type CitationGraphLayout,
   type CitationLayoutEdge,
   type CitationLayoutNode,
+  type CitationViewMode,
 } from '../utils/citationGraphLayout' // 引入独立的纯数据处理与稳定布局模块。
 
 const props = defineProps<{ graph: CitationGraphData }>() // 接收仅来自已保存搜索结果快照的受限图数据。
@@ -20,6 +21,7 @@ const measuredWidth = ref(900) // 保存容器宽度，供纯布局函数产生�
 const collapseFamilies = ref(true) // 默认把同一版本族合并为一个工作节点。
 const includeVersionLinks = ref(false) // 展开版本族后才允许显示黄色虚线事实关系。
 const includeIsolates = ref(false) // 默认折叠无引用关系的论文，避免干扰主图。
+const viewMode = ref<CitationViewMode>('backbone') // 默认使用研究主干，完整网络由用户主动切换。
 const selectedNodeId = ref<string | null>(null) // 保存点击后在侧栏持续展示的论文节点。
 const hoveredNodeId = ref<string | null>(null) // 保存悬浮节点，以突出其一阶关系。
 const focusedPaperId = ref<string | null>(null) // 保存一阶邻域模式的中心论文标识。
@@ -32,13 +34,15 @@ const layout = computed<CitationGraphLayout>(() => buildCitationGraphLayout(prop
   includeVersionLinks: includeVersionLinks.value, // 应用用户选择的版本族虚线状态。
   includeIsolates: includeIsolates.value, // 应用用户选择的孤立论文展开状态。
   focusNodeId: focusedPaperId.value, // 应用一阶邻域过滤状态。
+  priorityNodeId: selectedNodeId.value, // 优先保留当前选中论文的直接事实关系。
+  viewMode: viewMode.value, // 在纯布局层应用明确的研究主干或完整网络模式。
 }))
 
 const nodeById = computed(() => new Map(layout.value.nodes.map((node) => [node.id, node]))) // 建立节点索引以支持侧栏关系列表。
 const selectedNode = computed(() => selectedNodeId.value ? nodeById.value.get(selectedNodeId.value) || null : null) // 读取当前被点击的节点。
 const selectedCites = computed(() => relatedNodes(selectedNode.value, 'outgoing')) // 读取选中论文直接引用的论文列表。
 const selectedCitedBy = computed(() => relatedNodes(selectedNode.value, 'incoming')) // 读取直接引用选中论文的论文列表。
-const hasCitationEdges = computed(() => layout.value.edges.some((edge) => edge.edgeType === 'cites')) // 判断是否存在可展示的真实引用边。
+const hasCitationEdges = computed(() => layout.value.originalCitationEdgeCount > 0) // 判断当前节点范围是否存在可核验的原始真实引用边。
 
 function relatedNodes(node: CitationLayoutNode | null, direction: 'incoming' | 'outgoing'): CitationLayoutNode[] { // 根据方向从当前布局读取已可见的相邻论文。
   if (!node) return [] // 未选择论文时不返回关系列表。
@@ -75,10 +79,8 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   svg.attr('aria-label', '本次搜索结果的时间分层引用网络') // 为辅助技术提供图形语义。
 
   const definitions = svg.append('defs') // 定义真实引用边所需的三种方向箭头。
-  const markerDefinitions = [ // 为默认、高亮和淡化状态分别设置小尺寸箭头颜色。
-    { id: 'citation-timeline-arrow-default', color: '#78a8bd' }, // 默认状态保持细浅但仍可识别方向。
-    { id: 'citation-timeline-arrow-active', color: '#2f7598' }, // 悬浮关联边使用更深颜色强化方向。
-    { id: 'citation-timeline-arrow-muted', color: '#c5d9e3' }, // 非关联边箭头随路径同步淡化。
+  const markerDefinitions = [ // 仅定义交互激活时使用的引用方向箭头。
+    { id: 'citation-timeline-arrow-active', color: '#2f7598' }, // 悬浮、选中或一阶邻域模式使用深色箭头强化方向。
   ]
   for (const markerDefinition of markerDefinitions) { // 逐个创建固定像素尺寸的 SVG marker。
     definitions.append('marker') // 创建当前状态的箭头 marker。
@@ -117,9 +119,9 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .attr('stroke-width', (edge) => edge.edgeType === 'same_work' ? 1.1 : activeNodeId && isEdgeRelated(edge, activeNodeId) ? 2.3 : 1.15) // 普通边保持细，关联边才明显加粗。
     .attr('stroke-linecap', 'round') // 让曲线路径和箭头连接处更柔和。
     .attr('stroke-linejoin', 'round') // 保持辅助虚线转折处的视觉连续性。
-    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : !activeNodeId ? 0.58 : isEdgeRelated(edge, activeNodeId) ? 0.96 : 0.14) // 悬浮节点时仅保留其入边和出边，其余关系同步淡化。
+    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : !activeNodeId ? (viewMode.value === 'backbone' ? 0.22 : 0.12) : isEdgeRelated(edge, activeNodeId) ? 0.96 : 0.05) // 主干默认保持低噪声，完整网络更淡，交互时只强调关联关系。
     .attr('stroke-dasharray', (edge) => edge.edgeType === 'same_work' ? '5 4' : null) // 版本族只在用户显式开启时显示为黄色虚线。
-    .attr('marker-end', (edge) => edge.edgeType !== 'cites' ? null : !activeNodeId ? 'url(#citation-timeline-arrow-default)' : isEdgeRelated(edge, activeNodeId) ? 'url(#citation-timeline-arrow-active)' : 'url(#citation-timeline-arrow-muted)') // 让箭头颜色与普通、高亮和淡化边状态一致。
+    .attr('marker-end', (edge) => edge.edgeType !== 'cites' ? null : focusedPaperId.value || (activeNodeId && isEdgeRelated(edge, activeNodeId)) ? 'url(#citation-timeline-arrow-active)' : null) // 默认隐藏箭头，仅在交互关系或一阶邻域模式中显示方向。
 
   const nodes = svg.append('g').attr('class', 'citation-nodes') // 在边之上渲染可交互论文节点。
   const nodeGroups = nodes.selectAll<SVGGElement, CitationLayoutNode>('g') // 绑定布局节点。
@@ -172,6 +174,10 @@ function toggleFamilies(): void { // 切换版本族合并与单独节点模式�
   if (collapseFamilies.value) includeVersionLinks.value = false // 合并时不再显示已被折叠的同族虚线。
   selectedNodeId.value = null // 避免侧栏保留已不存在的视觉节点。
   focusedPaperId.value = null // 避免用旧标识继续限制新的视图。
+}
+
+function setViewMode(nextViewMode: CitationViewMode): void { // 在不修改任何引用事实的前提下切换展示模式。
+  viewMode.value = nextViewMode // 由纯布局函数重新计算当前视图的可见边和统计信息。
 }
 
 function resetGlobalNetwork(): void { // 返回所有引用分支的全局网络。
@@ -229,6 +235,19 @@ onBeforeUnmount(disposeRenderer) // 组件卸载时停止 observer、清空 SVG 
       <div>
         <strong>时间分层引用网络</strong>
         <p>A → B 表示论文 A 引用了论文 B；横轴按发表年份从旧到新。</p>
+        <div class="citation-timeline-view-switch" role="group" aria-label="引用网络视图">
+          <span>视图：</span>
+          <button type="button" :class="['citation-timeline-view-button', { 'is-active': viewMode === 'backbone' }]" :aria-pressed="viewMode === 'backbone'" @click="setViewMode('backbone')">研究主干</button>
+          <button type="button" :class="['citation-timeline-view-button', { 'is-active': viewMode === 'full' }]" :aria-pressed="viewMode === 'full'" @click="setViewMode('full')">完整网络</button>
+        </div>
+        <div class="citation-timeline-stats" aria-live="polite">
+          <span v-if="viewMode === 'full'">当前显示全部 {{ layout.visibleCitationEdgeCount }} 条内部引用关系</span>
+          <span v-else>当前显示：{{ layout.nodes.length }} 篇论文 · {{ layout.visibleCitationEdgeCount }} 条引用</span>
+          <span v-if="viewMode === 'backbone' && layout.hiddenCitationEdgeCount">主干模式隐藏 {{ layout.hiddenCitationEdgeCount }} 条次要显示关系</span>
+          <span v-if="graph.truncated">节点已由后端裁剪</span>
+          <span v-if="!includeIsolates && layout.isolatedCount">另有 {{ layout.isolatedCount }} 篇孤立论文未展开</span>
+          <span v-if="collapseFamilies && layout.mergedVersionNodeCount">已合并 {{ layout.mergedVersionNodeCount }} 个版本节点</span>
+        </div>
       </div>
       <div class="citation-timeline-actions">
         <button type="button" class="citation-timeline-button" @click="toggleIsolates">
@@ -259,8 +278,10 @@ onBeforeUnmount(disposeRenderer) // 组件卸载时停止 observer、清空 SVG 
           <h4>{{ selectedNode.title }}</h4>
           <p>{{ selectedNode.year || '年份未知' }} · {{ selectedNode.source }}</p>
           <div class="citation-timeline-metrics">
-            <span>入度 {{ selectedNode.inDegree }}</span>
-            <span>出度 {{ selectedNode.outDegree }}</span>
+            <span>原始入度 {{ selectedNode.inDegree }}</span>
+            <span>原始出度 {{ selectedNode.outDegree }}</span>
+            <span v-if="viewMode === 'backbone'">当前入度 {{ selectedNode.displayInDegree }}</span>
+            <span v-if="viewMode === 'backbone'">当前出度 {{ selectedNode.displayOutDegree }}</span>
             <span v-if="selectedNode.memberCount > 1">合并版本 {{ selectedNode.memberCount }}</span>
           </div>
           <button type="button" class="citation-timeline-primary" @click="openSelectedPaper">查看论文详情</button>
@@ -295,6 +316,11 @@ onBeforeUnmount(disposeRenderer) // 组件卸载时停止 observer、清空 SVG 
 .citation-timeline-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .citation-timeline-toolbar strong { font-size: 16px; }
 .citation-timeline-toolbar p { margin: 4px 0 0; color: #658096; font-size: 13px; }
+.citation-timeline-view-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; color: #587489; font-size: 12px; font-weight: 700; }
+.citation-timeline-view-button { border: 1px solid #c3dbe6; border-radius: 7px; padding: 5px 8px; background: #f8fcfe; color: #47718a; font: inherit; font-size: 12px; cursor: pointer; }
+.citation-timeline-view-button.is-active { border-color: #347292; background: #e4f2f8; color: #1f5a78; box-shadow: inset 0 0 0 1px rgba(52, 114, 146, .12); }
+.citation-timeline-stats { display: flex; flex-wrap: wrap; gap: 5px 8px; margin-top: 8px; color: #617e90; font-size: 11px; line-height: 1.45; }
+.citation-timeline-stats span { border-radius: 99px; padding: 3px 7px; background: #f0f7fa; }
 .citation-timeline-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .citation-timeline-button, .citation-timeline-primary { border: 1px solid #b8d2df; border-radius: 8px; padding: 7px 10px; background: #f8fcfe; color: #2e637f; font: inherit; font-size: 12px; cursor: pointer; }
 .citation-timeline-primary { border-color: #3f7d9c; background: #3f7d9c; color: #fff; }

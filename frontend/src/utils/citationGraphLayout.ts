@@ -1,6 +1,7 @@
 /** 计算不依赖随机力导向的时间分层引用图布局。 */
 
 export type CitationEdgeType = 'cites' | 'same_work' // 限制前端只识别后端已审计的两类关系。
+export type CitationViewMode = 'backbone' | 'full' // 明确区分降噪研究主干与完整事实网络视图。
 
 export interface CitationGraphApiNode { // 描述后端引用图接口返回的最小论文节点。
   paper_id: string // 保存稳定论文标识。
@@ -29,7 +30,11 @@ export interface CitationLayoutOptions { // 描述纯布局函数的可控展示
   collapseFamilies: boolean // 指定是否默认把同一版本族合并为一个节点。
   includeVersionLinks: boolean // 指定展开版本族时是否绘制可关闭的黄色虚线。
   focusNodeId?: string | null // 指定仅查看某论文的一阶邻域。
+  priorityNodeId?: string | null // 指定需要优先保留直接关系的当前选中论文。
   includeIsolates: boolean // 指定是否将孤立节点加入底部网格。
+  viewMode?: CitationViewMode // 指定研究主干或完整网络，缺省保持研究主干。
+  maxVisibleEdges?: number // 指定研究主干中可展示真实引用边的全图上限。
+  maxOutgoingEdgesPerNode?: number // 指定研究主干中单论文可展示真实引用出边上限。
 }
 
 export interface CitationLayoutNode { // 描述可直接交给 D3 渲染的稳定坐标节点。
@@ -46,6 +51,8 @@ export interface CitationLayoutNode { // 描述可直接交给 D3 渲染的稳�
   radius: number // 保存按入度对数缩放后的节点半径。
   inDegree: number // 保存当前可见真实引用入度。
   outDegree: number // 保存当前可见真实引用出度。
+  displayInDegree: number // 保存当前视图实际展示的真实引用入度。
+  displayOutDegree: number // 保存当前视图实际展示的真实引用出度。
   community: number // 保存弱连通分量编号作为颜色分类。
   isIsolate: boolean // 标记无入边无出边的默认折叠论文。
   showLabel: boolean // 标记是否永久显示短标题。
@@ -58,8 +65,8 @@ export interface CitationLayoutEdge { // 描述可直接绘制为 SVG 路径的�
   sourceId: string // 保存视觉起点节点标识。
   targetId: string // 保存视觉终点节点标识。
   edgeType: CitationEdgeType // 保持引用与版本族的视觉边界。
-  path: string // 保存避开节点、标签和年份标题的圆角分段路径。
-  points: LayoutPoint[] // 保存用于测试和箭头末端切线的实际路由点。
+  path: string // 保存确定性的平滑三次贝塞尔路径。
+  points: LayoutPoint[] // 保存贝塞尔端点和控制点，供测试与箭头末端切线使用。
   sourcePort: NodePortName // 保存动态选择的源节点连接端口。
   targetPort: NodePortName // 保存动态选择的目标节点连接端口。
 }
@@ -84,11 +91,15 @@ export interface CitationGraphLayout { // 描述布局模块输出给 D3 组件�
   nodes: CitationLayoutNode[] // 返回当前主图及可选孤立节点。
   edges: CitationLayoutEdge[] // 返回当前可见节点间的关系路径。
   isolatedCount: number // 返回默认折叠的孤立论文数量。
+  mergedVersionNodeCount: number // 返回默认合并到版本族节点的额外论文数量。
   componentCount: number // 返回弱连通引用分支数量。
   yearTicks: number[] // 返回用于绘制稳定时间列的可信年份。
+  originalCitationEdgeCount: number // 返回当前节点范围内的完整真实引用边数量。
+  visibleCitationEdgeCount: number // 返回当前视图实际绘制的真实引用边数量。
+  hiddenCitationEdgeCount: number // 返回研究主干因视觉筛选隐藏的真实引用边数量。
 }
 
-interface VisualSeed { // 表示版本族合并后、尚未计算坐标的内部节点。
+export interface VisualSeed { // 表示版本族合并后、尚未计算坐标的内部节点。
   id: string // 保存视觉节点标识。
   paperIds: string[] // 保存该节点包含的论文标识。
   title: string // 保存稳定代表标题。
@@ -99,7 +110,7 @@ interface VisualSeed { // 表示版本族合并后、尚未计算坐标的内部
   memberCount: number // 保存成员数量。
 }
 
-interface VisualEdge { // 表示映射到视觉节点后的内部关系边。
+export interface VisualEdge { // 表示映射到视觉节点后的内部关系边。
   sourceId: string // 保存视觉起点标识。
   targetId: string // 保存视觉终点标识。
   edgeType: CitationEdgeType // 保存事实关系类型。
@@ -163,6 +174,147 @@ function buildVisualEdges(edges: CitationGraphApiEdge[], paperToVisualId: Map<st
   return visualEdges // 返回过滤后的视觉关系集合。
 }
 
+export interface BackboneEdgeOptions { // 描述研究主干筛选的确定性视觉裁剪边界。
+  priorityNodeId?: string | null // 指定选中或聚焦论文对应的视觉节点标识。
+  maxVisibleEdges?: number // 指定全图最多保留多少条真实引用边。
+  maxOutgoingEdgesPerNode?: number // 指定每个引用方最多保留多少条真实引用出边。
+}
+
+export interface BackboneEdgeSelection { // 描述研究主干筛选输出，不改变任何原始关系事实。
+  visibleEdges: VisualEdge[] // 保存当前实际需要绘制的真实引用边。
+  hiddenEdgeCount: number // 保存因传递约简或显示上限隐藏的真实引用边数量。
+}
+
+const DEFAULT_MAX_VISIBLE_EDGES = 28 // 为默认研究主干设置可读的全图真实引用边上限。
+const DEFAULT_MAX_OUTGOING_EDGES = 3 // 为默认研究主干设置单篇论文可展示的真实引用出边上限。
+
+/** 生成稳定关系键，避免输入数组顺序影响筛选和路径方向。 */
+function visualEdgeId(edge: VisualEdge): string { // 接收已映射到视觉节点的事实边。
+  return `${edge.edgeType}:${edge.sourceId}:${edge.targetId}` // 使用边类型和两端稳定标识构成唯一键。
+}
+
+/** 使用确定性 Tarjan 遍历标识强连通分量，供主干约简保守处理循环关系。 */
+function findStrongComponents(nodes: VisualSeed[], edges: VisualEdge[]): Map<string, number> { // 返回节点到稳定强连通分量编号的映射。
+  const adjacency = new Map<string, string[]>() // 建立仅含真实引用关系的有向邻接表。
+  for (const node of nodes) adjacency.set(node.id, []) // 先为全部节点创建空邻接数组。
+  for (const edge of edges) adjacency.get(edge.sourceId)?.push(edge.targetId) // 写入真实引用方向，不推断反向关系。
+  for (const targets of adjacency.values()) targets.sort((left, right) => left.localeCompare(right, 'en')) // 固定邻接访问顺序，避免结果随输入抖动。
+  const indices = new Map<string, number>() // 保存每个节点首次访问序号。
+  const lowLinks = new Map<string, number>() // 保存 Tarjan 回溯时的最小可达序号。
+  const stack: string[] = [] // 保存当前深度优先搜索路径。
+  const inStack = new Set<string>() // 快速判断节点是否仍位于当前搜索栈。
+  const components = new Map<string, number>() // 累积最终节点到分量编号的映射。
+  let visitIndex = 0 // 记录下一个确定性访问序号。
+  let componentIndex = 0 // 记录下一个确定性分量编号。
+  const visit = (nodeId: string): void => { // 深度遍历当前节点并在必要时收敛一个强连通分量。
+    indices.set(nodeId, visitIndex) // 写入当前节点首次访问序号。
+    lowLinks.set(nodeId, visitIndex) // 初始低链接等于首次访问序号。
+    visitIndex += 1 // 为下一节点递增序号。
+    stack.push(nodeId) // 将当前节点压入活动搜索栈。
+    inStack.add(nodeId) // 标记当前节点仍可参与本分量回边。
+    for (const targetId of adjacency.get(nodeId) || []) { // 依稳定顺序扩展全部真实引用邻居。
+      if (!indices.has(targetId)) { // 尚未访问的邻居继续深度遍历。
+        visit(targetId) // 递归处理该邻居。
+        lowLinks.set(nodeId, Math.min(lowLinks.get(nodeId) || 0, lowLinks.get(targetId) || 0)) // 汇总子树能够回到的最低序号。
+      } else if (inStack.has(targetId)) { // 栈内邻居表示当前分量的有效回边。
+        lowLinks.set(nodeId, Math.min(lowLinks.get(nodeId) || 0, indices.get(targetId) || 0)) // 用回边起点更新最低序号。
+      }
+    }
+    if (lowLinks.get(nodeId) !== indices.get(nodeId)) return // 非分量根节点等待上层收敛。
+    while (stack.length) { // 从栈顶依次弹出当前强连通分量成员。
+      const memberId = stack.pop() as string // 当前循环已确认栈非空，安全读取成员标识。
+      inStack.delete(memberId) // 成员离开活动搜索栈。
+      components.set(memberId, componentIndex) // 为成员写入同一个分量编号。
+      if (memberId === nodeId) break // 弹到当前分量根节点时停止。
+    }
+    componentIndex += 1 // 为下一个分量预留编号。
+  }
+  for (const node of [...nodes].sort(compareSeed)) if (!indices.has(node.id)) visit(node.id) // 从稳定节点顺序启动所有未访问分量。
+  return components // 返回循环安全的强连通分量映射。
+}
+
+/** 在排除指定边后检查是否仍有一条真实引用路径可达目标，用于安全隐藏传递边。 */
+function hasAlternativeCitationPath(edges: VisualEdge[], sourceId: string, targetId: string, excludedEdgeId: string): boolean { // 只检查当前暂时保留的事实边集合。
+  const adjacency = new Map<string, string[]>() // 构造排除候选边后的确定性邻接表。
+  for (const edge of edges) { // 遍历当前仍可显示的真实引用边。
+    if (visualEdgeId(edge) === excludedEdgeId) continue // 删除候选边后才验证替代路径。
+    const targets = adjacency.get(edge.sourceId) || [] // 读取来源节点已有相邻目标。
+    targets.push(edge.targetId) // 加入当前可用的事实方向。
+    adjacency.set(edge.sourceId, targets) // 写回邻接表。
+  }
+  for (const targets of adjacency.values()) targets.sort((left, right) => left.localeCompare(right, 'en')) // 固定遍历顺序以确保输出稳定。
+  const visited = new Set<string>([sourceId]) // 防止循环关系造成无限遍历。
+  const queue = [sourceId] // 从候选边源节点开始广度搜索。
+  for (let cursor = 0; cursor < queue.length; cursor += 1) { // 使用游标遍历，避免移除队首带来的额外开销。
+    const currentId = queue[cursor] // 读取当前待扩展节点。
+    for (const nextId of adjacency.get(currentId) || []) { // 访问所有当前可用的直接引用目标。
+      if (nextId === targetId) return true // 找到不使用候选边的替代事实路径。
+      if (visited.has(nextId)) continue // 已访问节点无需重复排队。
+      visited.add(nextId) // 标记节点已访问以安全处理循环。
+      queue.push(nextId) // 继续搜索后续事实边。
+    }
+  }
+  return false // 没有替代路径时必须保留候选边。
+}
+
+/** 计算仅供视觉裁剪使用的稳定显示优先级，绝不表示论文的学术重要性。 */
+function compareDisplayPriority(left: VisualEdge, right: VisualEdge, nodeById: Map<string, VisualSeed>, incomingDegree: Map<string, number>, priorityNodeId: string | null | undefined): number { // 比较两条真实引用边的展示顺序。
+  const priorityDifference = Number(right.sourceId === priorityNodeId || right.targetId === priorityNodeId) - Number(left.sourceId === priorityNodeId || left.targetId === priorityNodeId) // 优先保留选中或聚焦论文的直接事实关系。
+  if (priorityDifference) return priorityDifference // 有直接关系优先级差异时无需比较后续条件。
+  const leftTarget = nodeById.get(left.targetId) // 读取左边目标节点的已有事实元数据。
+  const rightTarget = nodeById.get(right.targetId) // 读取右边目标节点的已有事实元数据。
+  const degreeDifference = (incomingDegree.get(right.targetId) || 0) - (incomingDegree.get(left.targetId) || 0) // 优先保留当前可见事实图中被更多论文引用的目标。
+  if (degreeDifference) return degreeDifference // 被引数不同可直接确定顺序。
+  const relevanceDifference = (rightTarget?.relevance ?? Number.NEGATIVE_INFINITY) - (leftTarget?.relevance ?? Number.NEGATIVE_INFINITY) // 其次复用已有相关性，不重新推断。
+  if (relevanceDifference) return relevanceDifference // 相关性不同可直接确定顺序。
+  const leftDistance = Math.abs((nodeById.get(left.sourceId)?.year ?? 0) - (leftTarget?.year ?? 0)) // 计算左边两端的已知年份距离。
+  const rightDistance = Math.abs((nodeById.get(right.sourceId)?.year ?? 0) - (rightTarget?.year ?? 0)) // 计算右边两端的已知年份距离。
+  if (leftDistance !== rightDistance) return leftDistance - rightDistance // 年份更接近的边优先，降低长边视觉负担。
+  return visualEdgeId(left).localeCompare(visualEdgeId(right), 'en') // 所有可审计指标相同时按稳定边键收敛。
+}
+
+/** 选择研究主干真实引用边：保守传递约简后再应用节点和全图显示上限。 */
+export function selectBackboneEdges(nodes: VisualSeed[], edges: VisualEdge[], options: BackboneEdgeOptions = {}): BackboneEdgeSelection { // 返回不改变原始事实的视觉筛选结果。
+  const citationById = new Map<string, VisualEdge>() // 先按稳定键去重，防止异常输入造成重复绘制。
+  for (const edge of edges) { // 只遍历调用方给出的视觉关系。
+    if (edge.edgeType !== 'cites' || edge.sourceId === edge.targetId) continue // 主干只处理真实引用，且布局本就不接受自环。
+    citationById.set(visualEdgeId(edge), { ...edge }) // 复制边对象，保证输入数组和对象均不被原地修改。
+  }
+  const originalEdges = [...citationById.values()].sort((left, right) => visualEdgeId(left).localeCompare(visualEdgeId(right), 'en')) // 固定全流程的关系处理顺序。
+  if (!originalEdges.length) return { visibleEdges: [], hiddenEdgeCount: 0 } // 空图无需继续计算强连通分量或显示上限。
+  const nodeById = new Map(nodes.map((node) => [node.id, node])) // 索引现有可审计节点元数据。
+  const incomingDegree = new Map<string, number>() // 计算完整事实图中的目标入度，供显示优先级复用。
+  for (const edge of originalEdges) incomingDegree.set(edge.targetId, (incomingDegree.get(edge.targetId) || 0) + 1) // 只统计真实引用边，不混入版本族虚线。
+  const strongComponents = findStrongComponents(nodes, originalEdges) // 明确识别循环分量，避免在其中做激进传递约简。
+  const priorityNodeId = options.priorityNodeId || null // 规范化可选选中或聚焦节点标识。
+  const isProtected = (edge: VisualEdge): boolean => edge.sourceId === priorityNodeId || edge.targetId === priorityNodeId // 选中或聚焦论文的直接事实关系不被主干筛选隐藏。
+  let retainedEdges = [...originalEdges] // 从完整事实边开始逐步执行保守筛选。
+  for (const candidate of originalEdges) { // 按稳定关系键尝试删除可由现有路径表达的跨分量边。
+    const sameComponent = strongComponents.get(candidate.sourceId) === strongComponents.get(candidate.targetId) // 循环分量内部边必须保守保留。
+    if (sameComponent || isProtected(candidate)) continue // 不约简循环内部关系或当前用户关注的直接关系。
+    if (hasAlternativeCitationPath(retainedEdges, candidate.sourceId, candidate.targetId, visualEdgeId(candidate))) retainedEdges = retainedEdges.filter((edge) => visualEdgeId(edge) !== visualEdgeId(candidate)) // 仅在仍有替代路径时隐藏传递冗余边。
+  }
+  const maxOutgoing = Math.max(1, Math.floor(options.maxOutgoingEdgesPerNode ?? DEFAULT_MAX_OUTGOING_EDGES)) // 规范化每个来源节点的显示上限。
+  const afterOutgoingLimit: VisualEdge[] = [] // 累积单节点上限后的事实边。
+  const edgesBySource = new Map<string, VisualEdge[]>() // 按引用方分组，以限制每篇论文同时展示的出边。
+  for (const edge of retainedEdges) { // 遍历传递约简后仍保留的边。
+    const grouped = edgesBySource.get(edge.sourceId) || [] // 读取当前引用方已有边集合。
+    grouped.push(edge) // 将当前边加入同一个引用方。
+    edgesBySource.set(edge.sourceId, grouped) // 写回来源节点分组。
+  }
+  for (const sourceId of [...edgesBySource.keys()].sort((left, right) => left.localeCompare(right, 'en'))) { // 固定来源节点处理顺序。
+    const grouped = edgesBySource.get(sourceId) || [] // 读取该论文的所有候选出边。
+    const protectedEdges = grouped.filter(isProtected) // 当前选中或聚焦论文的直接关系必须优先保留。
+    const rankedEdges = grouped.filter((edge) => !isProtected(edge)).sort((left, right) => compareDisplayPriority(left, right, nodeById, incomingDegree, priorityNodeId)) // 其余边按可审计显示优先级排序。
+    afterOutgoingLimit.push(...protectedEdges, ...rankedEdges.slice(0, Math.max(0, maxOutgoing - protectedEdges.length))) // 保护关系可突破普通上限，避免用户选中论文失去直接关系。
+  }
+  const maxVisible = Math.max(1, Math.floor(options.maxVisibleEdges ?? DEFAULT_MAX_VISIBLE_EDGES)) // 规范化全图显示上限。
+  const protectedEdges = afterOutgoingLimit.filter(isProtected).sort((left, right) => compareDisplayPriority(left, right, nodeById, incomingDegree, priorityNodeId)) // 先排序并保留所有当前用户关注的直接关系。
+  const rankedEdges = afterOutgoingLimit.filter((edge) => !isProtected(edge)).sort((left, right) => compareDisplayPriority(left, right, nodeById, incomingDegree, priorityNodeId)) // 再排序普通候选边。
+  const visibleEdges = [...protectedEdges, ...rankedEdges.slice(0, Math.max(0, maxVisible - protectedEdges.length))].sort((left, right) => visualEdgeId(left).localeCompare(visualEdgeId(right), 'en')) // 最终按稳定键输出，保证路径与渲染顺序不跳动。
+  return { visibleEdges, hiddenEdgeCount: originalEdges.length - visibleEdges.length } // 回显被主干隐藏的原始真实引用数量。
+}
+
 /** 计算仅由真实引用边构成的弱连通分量，版本族关系不合并引用分支。 */
 function findWeakComponents(nodes: VisualSeed[], edges: VisualEdge[]): Map<string, number> { // 返回视觉节点到分量编号的映射。
   const adjacency = new Map<string, Set<string>>() // 以无向邻接表表达弱连通关系。
@@ -188,6 +340,24 @@ function findWeakComponents(nodes: VisualSeed[], edges: VisualEdge[]): Map<strin
     componentIndex += 1 // 当前分量遍历完成后递增编号。
   }
   return components // 返回完整、稳定的弱连通分量映射。
+}
+
+/** 在每个引用分支先选代表论文，再应用全图上限以减少默认常驻标签。 */
+function selectPersistentLabelIds(nodes: CitationLayoutNode[], maxLabels: number, maxLabelsPerComponent: number): Set<string> { // 返回稳定且可测试的默认标签节点标识。
+  const byComponent = new Map<number, CitationLayoutNode[]>() // 按弱连通分支组织非孤立论文。
+  for (const node of nodes.filter((item) => !item.isIsolate)) { // 孤立论文默认不占用主图标签预算。
+    const members = byComponent.get(node.community) || [] // 读取当前分支已有候选。
+    members.push(node) // 将节点加入其可审计引用分支。
+    byComponent.set(node.community, members) // 写回分组。
+  }
+  const candidates: CitationLayoutNode[] = [] // 累积各分支的少量代表节点。
+  for (const component of [...byComponent.keys()].sort((left, right) => left - right)) { // 固定分支顺序以保证刷新稳定。
+    const members = byComponent.get(component) || [] // 读取该分支成员。
+    members.sort((left, right) => (right.inDegree - left.inDegree) || (right.relevance ?? Number.NEGATIVE_INFINITY) - (left.relevance ?? Number.NEGATIVE_INFINITY) || left.id.localeCompare(right.id, 'en')) // 优先被引用更多、已有相关性更高的论文。
+    candidates.push(...members.slice(0, maxLabelsPerComponent)) // 每个分支最多提供有限常驻标签候选。
+  }
+  candidates.sort((left, right) => (right.inDegree - left.inDegree) || (right.relevance ?? Number.NEGATIVE_INFINITY) - (left.relevance ?? Number.NEGATIVE_INFINITY) || left.community - right.community || left.id.localeCompare(right.id, 'en')) // 全图再以同一稳定规则裁剪。
+  return new Set(candidates.slice(0, maxLabels).map((node) => node.id)) // 返回受全图预算约束的默认标签集合。
 }
 
 /** 按相邻节点的纵向重心重排同一年节点，降低跨年份引用边的交叉概率。 */
@@ -472,9 +642,83 @@ export function routeEdgesAroundObstacles(nodes: CitationLayoutNode[], edges: Vi
   return routed // 返回供 D3 渲染的所有路径。
 }
 
+/** 将稳定字符串映射为小整数，不使用随机数决定曲线朝向。 */
+function stableEdgeHash(value: string): number { // 接收稳定边键或节点标识。
+  let hash = 0 // 初始化可重复哈希值。
+  for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0 // 以固定乘数累积每个字符编码。
+  return hash // 返回无符号整数供曲线方向选择。
+}
+
+/** 根据有向连线的主要方向选择语义一致的圆周端口名称。 */
+function portNameForDirection(dx: number, dy: number): NodePortName { // 接收从当前节点指向另一端的向量。
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left' // 横向占主导时沿时间轴方向连接。
+  return dy >= 0 ? 'bottom' : 'top' // 同年或纵向关系使用上下端口。
+}
+
+/** 从节点圆周外沿给定方向生成贝塞尔端点，避免路径穿过起点和终点圆形。 */
+function circleExitPoint(node: CitationLayoutNode, dx: number, dy: number, clearance: number): LayoutPoint { // 接收节点、方向和额外安全距离。
+  const length = Math.hypot(dx, dy) || 1 // 避免异常重叠坐标导致除零。
+  const distance = node.radius + clearance // 保持端点停在节点圆周之外。
+  return { x: node.x + dx / length * distance, y: node.y + dy / length * distance } // 返回沿方向外移后的稳定端点。
+}
+
+/** 为同年和同年份区间边分配确定性小幅偏移，避免所有曲线共用同一通道。 */
+function createBezierLaneOffsets(nodes: CitationLayoutNode[], edges: VisualEdge[]): Map<string, number> { // 返回每条边相对曲率的稳定偏移量。
+  const nodeById = new Map(nodes.map((node) => [node.id, node])) // 建立节点索引以读取年份和位置。
+  const grouped = new Map<string, VisualEdge[]>() // 按共享时间通道聚合曲线。
+  for (const edge of edges) { // 遍历当前实际绘制的关系边。
+    const source = nodeById.get(edge.sourceId) // 读取引用方节点。
+    const target = nodeById.get(edge.targetId) // 读取被引方节点。
+    if (!source || !target) continue // 不完整节点不应生成路径。
+    const key = source.year === target.year ? `same:${source.year ?? 'unknown'}` : `cross:${source.year ?? 'unknown'}:${target.year ?? 'unknown'}` // 同年边共享外侧弧线通道，跨年边按年份对分组。
+    const members = grouped.get(key) || [] // 读取该通道已有成员。
+    members.push(edge) // 将当前边加入稳定分组。
+    grouped.set(key, members) // 写回分组。
+  }
+  const offsets = new Map<string, number>() // 累积最终边键到曲率偏移的映射。
+  for (const members of grouped.values()) { // 分别为每个通道分配交替的上下或左右偏移。
+    members.sort((left, right) => visualEdgeId(left).localeCompare(visualEdgeId(right), 'en')) // 固定边顺序，避免刷新后车道跳动。
+    members.forEach((edge, index) => { // 依序分配左右交替且逐步拉开的车道。
+      const magnitude = 8 + Math.floor(index / 2) * 8 // 同一通道后续边仅小幅拉开，限制曲率增长。
+      const sign = index % 2 === 0 ? 1 : -1 // 交替向曲线法向两侧展开。
+      offsets.set(visualEdgeId(edge), sign * magnitude) // 保存当前边稳定偏移。
+    })
+  }
+  return offsets // 返回供贝塞尔控制点计算使用的偏移。
+}
+
+/** 以确定性三次贝塞尔曲线替代默认正交回折路径，保持真实边的方向和端点。 */
+export function routeEdgesAsBezierCurves(nodes: CitationLayoutNode[], edges: VisualEdge[]): CitationLayoutEdge[] { // 返回可直接由 SVG 渲染的平滑事实关系路径。
+  const nodeById = new Map(nodes.map((node) => [node.id, node])) // 建立节点坐标索引。
+  const laneOffsets = createBezierLaneOffsets(nodes, edges) // 先为共享通道中的边分配稳定小幅偏移。
+  const routed: CitationLayoutEdge[] = [] // 累积完成的贝塞尔关系路径。
+  for (const edge of [...edges].sort((left, right) => visualEdgeId(left).localeCompare(visualEdgeId(right), 'en'))) { // 固定路径输出顺序，避免 D3 刷新抖动。
+    const source = nodeById.get(edge.sourceId) // 读取当前关系起点节点。
+    const target = nodeById.get(edge.targetId) // 读取当前关系终点节点。
+    if (!source || !target) continue // 隐藏或缺失节点不能形成有效路径。
+    const dx = target.x - source.x // 计算从引用方到被引方的横向方向。
+    const dy = target.y - source.y // 计算从引用方到被引方的纵向方向。
+    const length = Math.hypot(dx, dy) || 1 // 保护同坐标异常输入，保证后续数值有限。
+    const start = circleExitPoint(source, dx, dy, 3) // 从引用方圆周外开始曲线。
+    const end = circleExitPoint(target, -dx, -dy, ARROW_CLEARANCE) // 在被引方圆周外结束，并为按需箭头保留空间。
+    const normalX = -dy / length // 计算稳定单位法向量横向分量。
+    const normalY = dx / length // 计算稳定单位法向量纵向分量。
+    const direction = stableEdgeHash(visualEdgeId(edge)) % 2 === 0 ? 1 : -1 // 依据稳定边键交替曲线朝向，避免长边全挤在一侧。
+    const sameYearExtra = source.year === target.year ? 18 : 0 // 同年关系使用额外独立弧线以离开年份列。
+    const baseCurvature = Math.min(88, Math.max(24, length * 0.13 + sameYearExtra)) // 距离越远可适度增大弯曲，但始终限制上限。
+    const curvature = direction * baseCurvature + (laneOffsets.get(visualEdgeId(edge)) || 0) // 叠加稳定车道偏移，让平行关系彼此分开。
+    const controlOne = { x: start.x + (end.x - start.x) * 0.34 + normalX * curvature, y: start.y + (end.y - start.y) * 0.34 + normalY * curvature } // 将第一控制点放在起点方向前段并偏离法向。
+    const controlTwo = { x: start.x + (end.x - start.x) * 0.66 + normalX * curvature, y: start.y + (end.y - start.y) * 0.66 + normalY * curvature } // 将第二控制点放在终点方向后段并使用相同通道偏移。
+    const path = `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} C ${controlOne.x.toFixed(1)} ${controlOne.y.toFixed(1)}, ${controlTwo.x.toFixed(1)} ${controlTwo.y.toFixed(1)}, ${end.x.toFixed(1)} ${end.y.toFixed(1)}` // 输出稳定、无回折的 SVG 三次贝塞尔命令。
+    routed.push({ id: visualEdgeId(edge), sourceId: edge.sourceId, targetId: edge.targetId, edgeType: edge.edgeType, path, points: [start, controlOne, controlTwo, end], sourcePort: portNameForDirection(dx, dy), targetPort: portNameForDirection(-dx, -dy) }) // 保留端点、控制点和端口语义供测试与箭头渲染使用。
+  }
+  return routed // 返回当前可见事实关系的完整平滑路径。
+}
+
 /** 构造默认时间分层、分支分离且孤立节点折叠的完整引用图布局。 */
 export function buildCitationGraphLayout(graph: CitationGraphData, options: CitationLayoutOptions): CitationGraphLayout { // 只使用后端已保存节点和事实边生成前端坐标。
   const width = Math.max(640, Math.round(options.width || 960)) // 限制过窄容器仍保留年份列的可读宽度。
+  const viewMode = options.viewMode || 'backbone' // 默认进入研究主干，完整网络必须由用户显式切换。
   const { seeds, paperToVisualId } = buildVisualSeeds(graph.nodes, options.collapseFamilies) // 先按默认版本族合并策略生成视觉节点。
   const visualEdges = buildVisualEdges(graph.edges, paperToVisualId, options.collapseFamilies, options.includeVersionLinks) // 仅保留用户允许显示的事实关系。
   const visibleSeedIds = new Set(seeds.map((seed) => seed.id)) // 保存当前所有视觉节点标识供边过滤。
@@ -488,14 +732,25 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
     for (const seedId of [...visibleSeedIds]) if (!neighborhoodIds.has(seedId)) visibleSeedIds.delete(seedId) // 移除不属于一阶邻域的视觉节点。
   }
   const visibleSeeds = seeds.filter((seed) => visibleSeedIds.has(seed.id)) // 按当前全局或邻域范围保留节点。
-  const visibleEdges = visualEdges.filter((edge) => visibleSeedIds.has(edge.sourceId) && visibleSeedIds.has(edge.targetId)) // 同步过滤两端均可见的关系。
+  const originalVisibleEdges = visualEdges.filter((edge) => visibleSeedIds.has(edge.sourceId) && visibleSeedIds.has(edge.targetId)) // 保留当前范围内的完整事实关系，供原始度数和完整模式使用。
+  const priorityVisualId = options.priorityNodeId ? paperToVisualId.get(options.priorityNodeId) || (seeds.some((seed) => seed.id === options.priorityNodeId) ? options.priorityNodeId : null) : focusedVisualId // 同时兼容论文标识和组件已选中的视觉节点标识。
+  const originalCitationEdges = originalVisibleEdges.filter((edge) => edge.edgeType === 'cites') // 主干筛选只处理真实引用边。
+  const backboneSelection = selectBackboneEdges(visibleSeeds, originalCitationEdges, { priorityNodeId: priorityVisualId, maxVisibleEdges: options.maxVisibleEdges, maxOutgoingEdgesPerNode: options.maxOutgoingEdgesPerNode }) // 使用纯函数筛选研究主干，不修改原始图数据。
+  const visibleCitationEdges = viewMode === 'full' ? [...originalCitationEdges] : backboneSelection.visibleEdges // 完整网络无条件恢复当前范围内全部真实引用事实。
+  const displayEdges = [...visibleCitationEdges, ...originalVisibleEdges.filter((edge) => edge.edgeType === 'same_work')] // 版本族虚线继续遵守既有开关，不参与主干筛选。
   const inDegree = new Map<string, number>(visibleSeeds.map((seed) => [seed.id, 0])) // 初始化当前可见图中的真实引用入度。
   const outDegree = new Map<string, number>(visibleSeeds.map((seed) => [seed.id, 0])) // 初始化当前可见图中的真实引用出度。
-  for (const edge of visibleEdges.filter((edge) => edge.edgeType === 'cites')) { // 只让真实引用影响节点重要性和孤立判断。
+  const displayInDegree = new Map<string, number>(visibleSeeds.map((seed) => [seed.id, 0])) // 初始化当前视图实际绘制的真实引用入度。
+  const displayOutDegree = new Map<string, number>(visibleSeeds.map((seed) => [seed.id, 0])) // 初始化当前视图实际绘制的真实引用出度。
+  for (const edge of originalCitationEdges) { // 原始事实入出度不因主干视觉裁剪而改变。
     inDegree.set(edge.targetId, (inDegree.get(edge.targetId) || 0) + 1) // 被其他论文引用时增加目标入度。
     outDegree.set(edge.sourceId, (outDegree.get(edge.sourceId) || 0) + 1) // 当前论文引用其他论文时增加来源出度。
   }
-  const components = findWeakComponents(visibleSeeds, visibleEdges) // 计算仅由真实引用关系形成的弱连通分支。
+  for (const edge of visibleCitationEdges) { // 单独统计当前视图真正绘制的真实引用关系。
+    displayInDegree.set(edge.targetId, (displayInDegree.get(edge.targetId) || 0) + 1) // 记录当前显示入度。
+    displayOutDegree.set(edge.sourceId, (displayOutDegree.get(edge.sourceId) || 0) + 1) // 记录当前显示出度。
+  }
+  const components = findWeakComponents(visibleSeeds, originalVisibleEdges) // 始终依据完整可见事实关系计算分支，避免主干裁剪改变节点社区归属。
   const isolateSeeds = visibleSeeds.filter((seed) => (inDegree.get(seed.id) || 0) === 0 && (outDegree.get(seed.id) || 0) === 0) // 识别不会帮助阅读引用主图的孤立论文。
   const mainSeeds = visibleSeeds.filter((seed) => !isolateSeeds.some((isolate) => isolate.id === seed.id)) // 默认从主图折叠孤立论文。
   const displayedSeeds = options.includeIsolates ? [...mainSeeds, ...isolateSeeds] : mainSeeds // 根据用户开关决定是否把孤立论文加入可见集合。
@@ -520,7 +775,7 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
       buckets.set(member.year, bucket) // 写回年份桶。
     }
     const memberIds = new Set(members.map((member) => member.id)) // 收集当前弱连通分支的节点标识。
-    const componentEdges = visibleEdges.filter((edge) => memberIds.has(edge.sourceId) && memberIds.has(edge.targetId)) // 只将当前分支的事实边用于同年排序。
+    const componentEdges = originalVisibleEdges.filter((edge) => memberIds.has(edge.sourceId) && memberIds.has(edge.targetId)) // 继续使用完整事实边稳定降低同年节点交叉。
     minimizeLayerCrossings(buckets, componentEdges) // 按相邻年份节点重心稳定重排，尽量减少跨年边交叉。
     const largestBucket = Math.max(...[...buckets.values()].map((bucket) => bucket.length), 1) // 根据同年最大节点数预留分支高度。
     const componentHeight = Math.max(132, largestBucket * NODE_ROW_GAP + 44) // 保证小分支和同年密集分支均有可读空间。
@@ -529,7 +784,7 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
         const nodeInDegree = inDegree.get(seed.id) || 0 // 读取当前节点真实被引数量。
         const nodeOutDegree = outDegree.get(seed.id) || 0 // 读取当前节点真实引用数量。
         const radius = Math.min(22, 8 + Math.log1p(nodeInDegree) * 5) // 使用入度对数缩放，避免单节点过大。
-        positionedNodes.push({ ...seed, x: xForYear(year), y: cursorY + 28 + index * NODE_ROW_GAP, radius, inDegree: nodeInDegree, outDegree: nodeOutDegree, community: component, isIsolate: false, showLabel: false, labelText: shortenCitationLabel(seed.title), labelBox: { x: 0, y: 0, width: 0, height: 0 } }) // 写入主图节点的完整稳定渲染数据。
+        positionedNodes.push({ ...seed, x: xForYear(year), y: cursorY + 28 + index * NODE_ROW_GAP, radius, inDegree: nodeInDegree, outDegree: nodeOutDegree, displayInDegree: displayInDegree.get(seed.id) || 0, displayOutDegree: displayOutDegree.get(seed.id) || 0, community: component, isIsolate: false, showLabel: false, labelText: shortenCitationLabel(seed.title), labelBox: { x: 0, y: 0, width: 0, height: 0 } }) // 写入主图节点的完整稳定渲染数据。
       })
     }
     cursorY += componentHeight + COMPONENT_GAP // 在下一个引用分支前保留清晰留白。
@@ -540,19 +795,19 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
     isolateSeeds.sort(compareSeed).forEach((seed, index) => { // 使用年份和标题稳定排列孤立论文。
       const column = index % columns // 计算当前论文所在网格列。
       const row = Math.floor(index / columns) // 计算当前论文所在网格行。
-      positionedNodes.push({ ...seed, x: 52 + column * ISOLATE_GRID_GAP, y: gridStartY + 44 + row * 74, radius: 8, inDegree: 0, outDegree: 0, community: -1, isIsolate: true, showLabel: false, labelText: shortenCitationLabel(seed.title), labelBox: { x: 0, y: 0, width: 0, height: 0 } }) // 写入不参与引用社区颜色的孤立论文节点。
+      positionedNodes.push({ ...seed, x: 52 + column * ISOLATE_GRID_GAP, y: gridStartY + 44 + row * 74, radius: 8, inDegree: 0, outDegree: 0, displayInDegree: 0, displayOutDegree: 0, community: -1, isIsolate: true, showLabel: false, labelText: shortenCitationLabel(seed.title), labelBox: { x: 0, y: 0, width: 0, height: 0 } }) // 写入不参与引用社区颜色的孤立论文节点。
     })
     cursorY = gridStartY + Math.ceil(isolateSeeds.length / columns) * 74 + 74 // 扩展画布高度以完整容纳孤立网格。
   }
-  const labelBudget = width < 760 ? 5 : 10 // 窄画布按语义缩放减少默认常驻标题数量。
-  const importantLabelIds = new Set([...positionedNodes].filter((node) => !node.isIsolate).sort((left, right) => (right.inDegree + right.outDegree) - (left.inDegree + left.outDegree) || left.title.localeCompare(right.title, 'en')).slice(0, Math.min(labelBudget, mainSeeds.length)).map((node) => node.id)) // 在可用空间内只保留最重要论文的默认标签。
+  const labelBudget = width < 760 ? 5 : 8 // 窄画布进一步收紧默认常驻标题数量。
+  const importantLabelIds = selectPersistentLabelIds(positionedNodes, Math.min(labelBudget, mainSeeds.length), 2) // 每个引用分支最多保留两项代表标签，再应用全图上限。
   for (const node of positionedNodes) node.showLabel = importantLabelIds.has(node.id) // 其余论文仅在悬浮、选中或详情中显示标题。
   const nodeById = new Map(positionedNodes.map((node) => [node.id, node])) // 建立坐标索引供边路径生成。
   const height = Math.max(300, cursorY + 28) // 在标签和路由前固定当前画布有效高度。
   const canvas = { x: 0, y: 0, width, height } // 将画布边界作为标签和边路由的障碍约束。
   const yearTitleBoxes = [...yearColumns.entries()].filter(([year]) => year !== null).map(([year, x]) => ({ x: x - String(year).length * 3.5 - 5, y: 14, width: String(year).length * 7 + 10, height: 18 })) // 让标签和边避开年份轴标题文本。
   const provisionalSegments: Array<[LayoutPoint, LayoutPoint]> = [] // 用简化正交预览让标签选择提前考虑边位置。
-  for (const edge of visibleEdges) { // 为每条可见事实边建立不依赖标签的初始折线。
+  for (const edge of displayEdges) { // 为当前实际绘制的事实边建立简化预览，供标签候选避让使用。
     const source = nodeById.get(edge.sourceId) // 读取源节点。
     const target = nodeById.get(edge.targetId) // 读取目标节点。
     if (!source || !target) continue // 隐藏节点不进入标签代价。
@@ -561,9 +816,7 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
   const labelMetrics = measureLabelBoxes(positionedNodes) // 先测量实际短标题的宽高，避免仅在渲染阶段才处理文字。
   const allLabelBoxes = chooseLabelPositions(positionedNodes, labelMetrics, provisionalSegments, canvas, yearTitleBoxes) // 在八向候选中最小化标签、节点、边和年份标题冲突。
   for (const node of positionedNodes) node.labelBox = allLabelBoxes.get(node.id) || { x: node.x, y: node.y, width: 0, height: 0 } // 将纯函数选择的标签矩形写回渲染节点。
-  const visibleLabelBoxes = new Map(positionedNodes.filter((node) => node.showLabel).map((node) => [node.id, node.labelBox])) // 默认只让语义缩放后可见的标签参与边避让。
-  const portAssignments = assignNodePorts(positionedNodes, visibleEdges, visibleLabelBoxes) // 根据端口占用、路径长度和可见标签动态选择两端连接点。
-  const edgeLanes = allocateEdgeLanes(positionedNodes, visibleEdges, portAssignments, yearColumns, visibleLabelBoxes, canvas, yearTitleBoxes) // 在年份间和同年外部通道内分配无碰撞优先的车道。
-  const layoutEdges = routeEdgesAroundObstacles(positionedNodes, visibleEdges, portAssignments, edgeLanes) // 将端口和车道组合为圆角分段避障路径。
-  return { width, height, nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, componentCount: sortedComponents.length, yearTicks } // 返回供 D3 组件直接渲染的完整布局。
+  const layoutEdges = routeEdgesAsBezierCurves(positionedNodes, displayEdges) // 默认使用平滑三次贝塞尔曲线，避免长边形成多次正交回折。
+  const mergedVersionNodeCount = options.collapseFamilies ? seeds.reduce((count, seed) => count + Math.max(0, seed.memberCount - 1), 0) : 0 // 明确统计因版本族默认合并而未单独显示的论文节点。
+  return { width, height, nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, mergedVersionNodeCount, componentCount: sortedComponents.length, yearTicks, originalCitationEdgeCount: originalCitationEdges.length, visibleCitationEdgeCount: visibleCitationEdges.length, hiddenCitationEdgeCount: viewMode === 'backbone' ? backboneSelection.hiddenEdgeCount : 0 } // 返回当前视图统计，避免组件重新遍历猜测。
 }
