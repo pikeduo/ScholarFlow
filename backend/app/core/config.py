@@ -35,9 +35,16 @@ class Settings(BaseSettings):
     redis_key_prefix: str = Field(default="ScholarFlow", pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")  # 以统一项目名前缀隔离 DB 0 中的 ScholarFlow 键空间。
     redis_socket_timeout_seconds: float = Field(default=2.0, gt=0, le=30)  # 限制 Redis 不可用时单次连接或命令等待时间。
     redis_source_search_cache_ttl_seconds: int = Field(default=14400, ge=60, le=86400)  # 限制学术来源搜索响应最多缓存四小时，避免长期保留过时结果。
+    academic_api_max_retries: int = Field(default=3, ge=0, le=5)  # 所有幂等学术 API 在首次请求后允许的统一最大重试次数。
+    academic_api_backoff_initial_seconds: float = Field(default=15.0, gt=0, le=300)  # 未收到有效 Retry-After 时的首次指数退避等待。
+    academic_api_backoff_max_seconds: float = Field(default=60.0, gt=0, le=600)  # 限制指数退避避免临时故障造成过长等待。
+    academic_api_jitter_max_seconds: float = Field(default=3.0, ge=0, le=60)  # 每次重试额外加入的最大随机抖动。
+    academic_api_cooldown_seconds: float = Field(default=60.0, ge=30, le=3600)  # 最终 429 后所有学术来源的默认冷却时间。
+    academic_api_retry_after_max_seconds: float = Field(default=300.0, ge=30, le=3600)  # 限制供应商 Retry-After 防止异常响应无限阻塞。
     openalex_api_base_url: str = Field(default="https://api.openalex.org", pattern=r"^https://")  # 限制 OpenAlex 使用 HTTPS 地址。
     openalex_api_key: SecretStr | None = None  # 保存不可写入日志的 OpenAlex API 密钥。
     openalex_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制未来适配器的单次请求等待时间。
+    openalex_requests_per_second: float = Field(default=5.0, gt=0, le=20)  # 为 OpenAlex 保留独立且可配置的来源级 RPS。
     arxiv_api_base_url: str = Field(default="https://export.arxiv.org/api", pattern=r"^https://")  # 限制 arXiv 使用 HTTPS API 地址。
     arxiv_timeout_seconds: float = Field(default=15.0, gt=0, le=120)  # 为 Atom XML 响应保留略长的单次请求超时。
     arxiv_requests_per_second: float = Field(default=1 / 3, gt=0, le=1)  # 默认遵守官方建议的连续请求至少间隔三秒。
@@ -59,7 +66,6 @@ class Settings(BaseSettings):
     semantic_scholar_enabled: bool = False  # 必须由用户在密钥获批后显式启用，默认不进入动态路由。
     semantic_scholar_timeout_seconds: float = Field(default=10.0, gt=0, le=120)  # 限制 Semantic Scholar 单次请求等待时间。
     semantic_scholar_requests_per_second: float = Field(default=1.0, gt=0, le=10)  # 配置来源级请求起始频率上限。
-    semantic_scholar_max_retries: int = Field(default=0, ge=0, le=5)  # 固定补发一次后允许的额外 429 重试次数，默认不再增加额外调用。
     deepseek_api_base_url: str = Field(default="https://api.deepseek.com", pattern=r"^https://")  # 限制 DeepSeek 使用官方或兼容的 HTTPS 端点。
     deepseek_api_key: SecretStr | None = None  # 保存不可写入日志或 API 响应的 DeepSeek 密钥。
     deepseek_model: str = Field(default="deepseek-v4-flash", min_length=1)  # 默认使用规划指定的低成本 Flash 模型。

@@ -45,7 +45,7 @@ def _build_test_settings() -> Settings:
     返回：
         Settings：携带测试用地址、超时和无等待频率的隔离设置。
     """
-    return Settings(_env_file=None, arxiv_requests_per_second=1)  # 提升测试频率以避免重复调用时产生实际等待。
+    return Settings(_env_file=None, arxiv_requests_per_second=1, academic_api_max_retries=0)  # 提升测试频率并避免错误边界测试真实等待。
 
 
 def test_search_params_quote_terms_and_map_submitted_date_range() -> None:

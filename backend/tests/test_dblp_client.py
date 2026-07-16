@@ -45,7 +45,7 @@ def _build_test_settings() -> Settings:
     返回：
         Settings：携带无等待频率的隔离设置。
     """
-    return Settings(_env_file=None, dblp_requests_per_second=5)  # 提升测试频率以避免重复调用时产生实际等待。
+    return Settings(_env_file=None, dblp_requests_per_second=5, academic_api_max_retries=0)  # 提升测试频率并避免错误边界测试真实等待。
 
 
 def test_search_params_map_query_intent_to_official_fields() -> None:

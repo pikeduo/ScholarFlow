@@ -75,7 +75,7 @@ class SourceRateLimiter:
         client = self._redis_provider.get_client()  # 仅使用已验证 Redis 客户端。
         if client is None:  # Redis 缺席时调用方仍保留自己的进程内冷却。
             return False  # 不将冷却同步失败误判为来源错误。
-        ttl_seconds = max(1, math.ceil(cooldown_seconds))  # 以整秒 TTL 表达不短于供应商建议的冷却时间。
+        ttl_seconds = max(30, math.ceil(cooldown_seconds))  # 即使调用方误传过短值也强制满足来源冷却至少三十秒的安全下限。
         try:  # 冷却同步属于旁路可靠性增强，不应遮蔽原始 429。
             await client.set(self._cooldown_key(source), "1", ex=ttl_seconds)  # 覆盖写入以延长但不缩短本次来源冷却。
         except Exception:  # Redis 短暂故障时继续使用本地冷却。

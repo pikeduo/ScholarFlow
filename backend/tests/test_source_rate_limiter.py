@@ -71,7 +71,7 @@ def test_rate_limiter_blocks_remote_cooldown() -> None:
     client = FakeRedisClient()  # 构造不连接真实 Redis 的内存客户端。
     cooldown_key = "ScholarFlow:source:rate:semantic_scholar:cooldown"  # 构造预期的项目化来源级冷却键。
     client.values[cooldown_key] = "1"  # 模拟其他进程收到 429 后写入冷却标记。
-    client.ttls[cooldown_key] = 3  # 模拟统一后的剩余三秒冷却时间。
+    client.ttls[cooldown_key] = 60  # 模拟统一策略下的来源级剩余冷却时间。
     limiter = SourceRateLimiter(FakeRedisProvider(client))  # 注入包含远程冷却状态的客户端替身。
     with pytest.raises(SourceCooldownError, match="跨进程冷却期"):  # 验证不应继续争抢来源请求窗口。
         asyncio.run(limiter.acquire("semantic_scholar", requests_per_second=1.0))  # 尝试访问已冷却来源。
@@ -81,9 +81,9 @@ def test_rate_limiter_penalize_and_redis_failure_fallback() -> None:
     """429 冷却应写入共享键，而 Redis 缺席或失败时必须回退进程内策略。"""
     client = FakeRedisClient()  # 构造可用内存客户端验证冷却同步。
     limiter = SourceRateLimiter(FakeRedisProvider(client))  # 注入可用 Redis 管理器替身。
-    synchronized = asyncio.run(limiter.penalize("semantic_scholar", cooldown_seconds=3.0))  # 写入统一三秒的来源级 429 冷却。
+    synchronized = asyncio.run(limiter.penalize("semantic_scholar", cooldown_seconds=3.0))  # 验证存储边界会拒绝短于三十秒的冷却值。
     cooldown_key = "ScholarFlow:source:rate:semantic_scholar:cooldown"  # 构造预期共享项目化冷却键。
     assert synchronized is True  # 验证 Redis 可用时冷却会同步给其他进程。
-    assert client.ttls[cooldown_key] == 3  # 验证共享冷却键使用统一三秒 TTL。
+    assert client.ttls[cooldown_key] == 30  # 验证共享冷却键强制使用不少于三十秒 TTL。
     assert asyncio.run(SourceRateLimiter(FakeRedisProvider(None)).acquire("semantic_scholar", 1.0)) is False  # 验证 Redis 禁用时交由进程内限流。
     assert asyncio.run(SourceRateLimiter(FakeRedisProvider(FakeRedisClient(should_fail=True))).acquire("semantic_scholar", 1.0)) is False  # 验证 Redis 命令失败时安全降级。

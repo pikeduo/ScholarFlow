@@ -1,6 +1,5 @@
 """封装 DBLP 出版物搜索、来源级节流与统一论文映射。"""
 
-import asyncio  # 串行控制 DBLP 来源级请求间隔。
 import html  # 解码 DBLP 标题中可能出现的 HTML 实体。
 import re  # 清理 DBLP 标题中可能出现的少量展示标签。
 from collections.abc import Mapping  # 安全读取嵌套 JSON 对象。
@@ -8,10 +7,12 @@ from collections.abc import Mapping  # 安全读取嵌套 JSON 对象。
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 实现 LangGraph 可替换的统一适配器协议。
+from backend.app.adapters.academic_api import AcademicApiNetworkError, AcademicApiRequestExecutor  # 复用统一的幂等请求重试、RPS 与冷却边界。
 from backend.app.core.config import Settings, settings  # 读取 DBLP 地址、超时和来源级限流配置。
 from backend.app.core.logging import logger  # 记录不含完整查询的来源调用统计与错误。
 from backend.app.models.paper import PaperAuthor, PaperRecord, PaperSourceRecord  # 构造保留来源溯源信息的统一论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一意图。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter  # 将共享冷却状态转换为来源领域异常。
 
 
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")  # 匹配仅用于展示且不应进入统一标题字段的 HTML 标签。
@@ -60,12 +61,13 @@ class DblpClient(AcademicSearchAdapter):
         self,
         settings_override: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        source_rate_limiter: SourceRateLimiter | None = None,
+        request_executor: AcademicApiRequestExecutor | None = None,
     ) -> None:
         """保存配置、测试传输层和来源级节流状态。"""
         self._settings = settings_override or settings  # 默认复用经环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
-        self._rate_limit_lock = asyncio.Lock()  # 串行化同一客户端的请求起始时间。
-        self._next_request_at = 0.0  # 保存下一次允许发起请求的事件循环时间。
+        self._request_executor = request_executor or AcademicApiRequestExecutor("dblp", self._settings, self._settings.dblp_requests_per_second, source_rate_limiter=source_rate_limiter)  # 统一管理来源 RPS、重试和冷却。
 
     async def search(self, query: QueryIntent) -> list[PaperRecord]:
         """搜索 DBLP 出版物并返回保留来源排名的统一论文记录。
@@ -77,7 +79,6 @@ class DblpClient(AcademicSearchAdapter):
         异常：
             DblpClientError：HTTP、网络、JSON 或响应结构异常时抛出。
         """
-        await self._wait_for_rate_limit()  # 在请求前遵守配置化的 DBLP 最小间隔。
         params = build_dblp_search_params(query)  # 构造不含用户密钥的可测试请求参数。
         try:  # 将 HTTP 层异常转换为不泄露响应正文的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
@@ -85,7 +86,7 @@ class DblpClient(AcademicSearchAdapter):
                 timeout=self._settings.dblp_timeout_seconds,  # 使用集中配置的请求超时。
                 transport=self._transport,  # 在测试时使用本地 MockTransport。
             ) as client:
-                response = await client.get("/api", params=params)  # 请求 DBLP 官方出版物搜索端点。
+                response = await self._request_executor.execute(lambda: client.get("/api", params=params))  # 每次重试均重新通过统一来源限流。
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为可统一处理的异常。
                 payload = response.json()  # 解码 JSON 响应供结构校验与映射使用。
         except httpx.HTTPStatusError as error:  # 单独记录不含响应正文的 HTTP 状态码。
@@ -94,6 +95,10 @@ class DblpClient(AcademicSearchAdapter):
         except httpx.RequestError as error:  # 捕获连接、超时和传输失败。
             logger.error("DBLP 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
             raise DblpClientError("DBLP 网络请求失败") from None  # 返回稳定的领域错误。
+        except AcademicApiNetworkError:  # 统一执行器耗尽网络重试后维持来源异常契约。
+            raise DblpClientError("DBLP 网络请求失败") from None  # 不泄露传输层细节。
+        except SourceCooldownError:  # 本地或 Redis 冷却期间直接降级。
+            raise DblpClientError("DBLP 请求受限，当前处于冷却期") from None  # 不影响其他来源。
         except ValueError:  # 捕获无效 JSON 等解析失败。
             logger.error("DBLP 响应不是有效 JSON")  # 不记录可能过大的原始响应正文。
             raise DblpClientError("DBLP 响应格式无效") from None  # 返回不泄露内部细节的稳定错误。
@@ -108,18 +113,6 @@ class DblpClient(AcademicSearchAdapter):
                 skipped_count += 1  # 累加映射失败统计。
         logger.info("DBLP 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(hits), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
         return papers  # 返回可直接进入多源融合的统一论文记录。
-
-    async def _wait_for_rate_limit(self) -> None:
-        """按配置化 RPS 串行等待下一次允许发起 DBLP 请求的时间。"""
-        async with self._rate_limit_lock:  # 防止同一客户端并发请求绕过来源级限额。
-            loop = asyncio.get_running_loop()  # 使用事件循环单调时间避免系统时钟调整影响间隔。
-            now = loop.time()  # 读取当前单调时间。
-            wait_seconds = max(0.0, self._next_request_at - now)  # 计算距离允许请求还需等待的时间。
-            if wait_seconds > 0:  # 仅在连续调用过快时等待。
-                logger.info("DBLP 限流等待：秒数=%.3f", wait_seconds)  # 记录来源级等待统计，不记录查询内容。
-                await asyncio.sleep(wait_seconds)  # 让出事件循环并遵守请求最小间隔。
-            self._next_request_at = loop.time() + (1.0 / self._settings.dblp_requests_per_second)  # 预约下一次允许请求的时间。
-
 
 def map_dblp_hit(hit: Mapping[str, object], raw_rank: int | None = None) -> PaperRecord:
     """将一条 DBLP 出版物命中映射为可溯源的 PaperRecord。

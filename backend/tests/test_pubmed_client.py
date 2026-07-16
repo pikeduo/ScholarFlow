@@ -40,6 +40,7 @@ def _build_test_settings() -> Settings:
         pubmed_requests_per_second=10,  # 取允许上限避免 ESearch 与 EFetch 之间出现长等待。
         pubmed_tool="ScholarFlowTest",  # 验证应用标识通过配置传递。
         pubmed_email="maintainer@example.test",  # 验证可选联系邮箱仅在 HTTP 边界添加。
+        academic_api_max_retries=0,  # 错误边界测试不应等待默认指数退避。
     )
 
 

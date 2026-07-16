@@ -1,17 +1,17 @@
 """封装 Semantic Scholar 论文搜索、节流和统一论文映射。"""
 
-import asyncio  # 串行控制来源级请求间隔。
 from collections.abc import Mapping  # 安全读取嵌套 JSON 对象。
 
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 实现 LangGraph 可替换的统一适配器协议。
+from backend.app.adapters.academic_api import AcademicApiNetworkError, AcademicApiRequestExecutor  # 复用统一的幂等请求重试、RPS 与冷却边界。
 from backend.app.core.config import Settings, settings  # 读取 Semantic Scholar 地址、密钥、超时和限额配置。
 from backend.app.core.logging import logger  # 记录不含查询与密钥的来源调用统计。
 from backend.app.models.paper import PaperAuthor, PaperRecord, PaperSourceRecord  # 构造保留来源溯源信息的统一论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一意图。
 from backend.app.repositories.source_cache import SourceResponseCache, get_source_response_cache  # 复用可降级的来源响应缓存边界。
-from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter, get_source_rate_limiter  # 复用 Redis 跨进程限流与冷却同步边界。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter  # 将共享冷却状态转换为来源领域异常。
 
 
 SEMANTIC_SCHOLAR_PAPER_FIELDS = (  # 仅请求当前统一模型与溯源需要的最小字段集合。
@@ -28,9 +28,6 @@ SEMANTIC_SCHOLAR_PAPER_FIELDS = (  # 仅请求当前统一模型与溯源需要�
     "openAccessPdf",  # 获取来源提供的合法开放访问链接。
     "publicationTypes",  # 获取论文类型的基础分类。
 )
-
-SEMANTIC_SCHOLAR_RATE_LIMIT_COOLDOWN_SECONDS = 3.0  # 将来源 429 的进程内与跨进程冷却统一固定为三秒。
-
 
 class SemanticScholarMappingError(ValueError):
     """表示 Semantic Scholar 响应缺少生成统一论文所必需的数据。"""
@@ -75,15 +72,13 @@ class SemanticScholarClient(AcademicSearchAdapter):
         transport: httpx.AsyncBaseTransport | None = None,
         response_cache: SourceResponseCache | None = None,
         source_rate_limiter: SourceRateLimiter | None = None,
+        request_executor: AcademicApiRequestExecutor | None = None,
     ) -> None:
         """保存配置、测试传输层和来源级节流状态。"""
         self._settings = settings_override or settings  # 默认复用经环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
         self._response_cache = response_cache or get_source_response_cache()  # 默认复用应用 Redis 缓存，测试可注入离线替身。
-        self._source_rate_limiter = source_rate_limiter or get_source_rate_limiter()  # 默认复用应用 Redis 限流器，测试可注入离线替身。
-        self._rate_limit_lock = asyncio.Lock()  # 串行化同一客户端的请求起始时间。
-        self._next_request_at = 0.0  # 保存下一次允许发起请求的事件循环时间。
-        self._cooldown_until = 0.0  # 保存来源返回 429 后的进程内冷却截止时间。
+        self._request_executor = request_executor or AcademicApiRequestExecutor("semantic_scholar", self._settings, self._settings.semantic_scholar_requests_per_second, source_rate_limiter=source_rate_limiter)  # 统一管理来源 RPS、重试和本地/Redis 冷却。
 
     async def search(self, query: QueryIntent) -> list[PaperRecord]:
         """搜索 Semantic Scholar 并返回保留来源排名的统一论文记录。
@@ -99,12 +94,6 @@ class SemanticScholarClient(AcademicSearchAdapter):
         cache_key = self._response_cache.build_key("semantic_scholar", "search", params)  # 仅使用不含认证头的规范化参数构造缓存键。
         data = await self._response_cache.get_list(cache_key, "semantic_scholar", "search")  # 缓存命中不应消耗来源配额或受冷却期影响。
         if data is None:  # 未命中或 Redis 不可用时才进入既有来源调用路径。
-            self._ensure_not_in_cooldown()  # 冷却期内直接降级，避免继续消耗已受限来源调用。
-            try:  # Redis 已启用时同步检查其他进程的冷却并占用来源请求窗口。
-                await self._source_rate_limiter.acquire("semantic_scholar", self._settings.semantic_scholar_requests_per_second)  # Redis 故障时限流器会安全回退为本地路径。
-            except SourceCooldownError:  # 其他进程收到 429 时当前进程不得继续访问供应商。
-                raise SemanticScholarClientError("Semantic Scholar 请求受限，当前处于冷却期") from None  # 对协调器保持现有稳定冷却错误契约。
-            await self._wait_for_rate_limit()  # 在请求前遵守配置化的来源级最小间隔。
             headers = self._build_headers()  # 仅在配置了密钥时构造认证请求头。
             data = await self._request_search_data(params, headers)  # 执行带有限流重试和安全错误分类的来源请求。
             await self._response_cache.set_list(cache_key, "semantic_scholar", "search", data)  # 仅缓存已通过官方 data 数组校验的成功响应。
@@ -125,7 +114,7 @@ class SemanticScholarClient(AcademicSearchAdapter):
         return papers  # 返回可直接进入多源融合的统一论文记录。
 
     async def _request_search_data(self, params: dict[str, str | int], headers: dict[str, str]) -> list[object]:
-        """请求论文数组，并仅对明确限流响应执行配置化短重试。
+        """请求论文数组，并通过共享执行器重试临时 HTTP 与网络失败。
 
         参数：
             params：不含密钥的 Semantic Scholar 搜索参数。
@@ -135,52 +124,31 @@ class SemanticScholarClient(AcademicSearchAdapter):
         异常：
             SemanticScholarClientError：网络、非限流状态、认证、参数或响应结构异常。
         """
-        max_attempts = self._settings.semantic_scholar_max_retries + 2  # 首次 429 后固定等待三秒补发一次，并保留可选额外重试预算。
-        async with httpx.AsyncClient(  # 在全部尝试间复用连接池并在结束时自动关闭。
+        try:  # 保留对协调器公开的领域异常类型，不泄露底层请求细节。
+            async with httpx.AsyncClient(  # 在全部尝试间复用连接池并在结束时自动关闭。
             base_url=self._settings.semantic_scholar_api_base_url,  # 使用集中配置的 Graph API 地址。
             timeout=self._settings.semantic_scholar_timeout_seconds,  # 使用集中配置的请求超时。
             transport=self._transport,  # 在测试时使用本地 MockTransport。
-        ) as client:
-            for attempt in range(1, max_attempts + 1):  # 按首次调用和有限重试顺序执行。
-                try:  # 将 HTTP 层异常转换为不泄露正文和请求头的领域错误。
-                    response = await client.get("/paper/search", params=params, headers=headers)  # 请求官方单页论文搜索端点。
-                    response.raise_for_status()  # 将非成功 HTTP 状态转换为可分类异常。
-                    payload = response.json()  # 解码 JSON 响应供结构校验和映射使用。
-                except httpx.HTTPStatusError as error:  # 单独处理状态码并允许 429 重试。
-                    status_code = error.response.status_code  # 提取不含认证信息的状态码。
-                    if status_code == 429 and attempt < max_attempts:  # 仅在仍有预算时重试明确限流。
-                        await self._wait_before_retry(attempt, max_attempts)  # 固定等待三秒后补发同一来源请求。
-                        continue  # 发起下一次有限尝试。
-                    if status_code == 429:  # 最终限流响应应触发跨搜索冷却。
-                        await self._activate_cooldown(error.response)  # 优先尊重 Retry-After，否则使用保守冷却时间并同步 Redis。
-                    logger.error("Semantic Scholar 请求失败，状态码=%d，尝试=%d/%d", status_code, attempt, max_attempts)  # 记录状态与尝试次数。
-                    raise SemanticScholarClientError(f"Semantic Scholar 请求失败（HTTP {status_code}）") from None  # 隐藏底层请求上下文。
-                except httpx.RequestError as error:  # 网络和超时错误不自动重试，避免放大外部故障。
-                    logger.error("Semantic Scholar 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全异常类型。
-                    raise SemanticScholarClientError("Semantic Scholar 网络请求失败") from None  # 返回稳定领域错误。
-                except ValueError:  # 捕获无效 JSON 等解析失败。
-                    logger.error("Semantic Scholar 响应不是有效 JSON")  # 不记录原始响应正文。
-                    raise SemanticScholarClientError("Semantic Scholar 响应格式无效") from None  # 返回不泄露内部细节的错误。
-                response_data = _as_mapping(payload)  # 确认根 JSON 响应具有对象结构。
-                data = response_data.get("data") if response_data else None  # 读取官方搜索响应中的论文数组。
-                if isinstance(data, list):  # 正常响应立即结束重试循环。
-                    return data  # 返回官方论文数组供单条映射。
-                error_category = _classify_error_envelope(response_data)  # 将非标准成功状态响应归类为安全错误摘要。
-                if error_category == "请求受限" and attempt < max_attempts:  # 兼容供应商以 HTTP 200 返回的限流信封。
-                    await self._wait_before_retry(attempt, max_attempts)  # 固定等待三秒后补发同一来源请求。
-                    continue  # 发起下一次有限尝试。
-                if error_category == "请求受限":  # 最终限流信封同样触发跨搜索冷却。
-                    await self._activate_cooldown(response)  # 使用响应头或保守默认时间并同步 Redis。
-                response_fields = ",".join(sorted(response_data.keys())) if response_data else "none"  # 仅记录字段名而不记录值。
-                logger.error("Semantic Scholar 响应不可用：错误类型=%s，响应字段=%s，尝试=%d/%d", error_category, response_fields, attempt, max_attempts)  # 记录安全分类和最终尝试数。
-                raise SemanticScholarClientError(f"Semantic Scholar {error_category}")  # 将来源错误安全传递给协调器。
-        raise SemanticScholarClientError("Semantic Scholar 请求受限")  # 防御循环异常退出，正常路径不会到达此处。
-
-    async def _wait_before_retry(self, attempt: int, max_attempts: int) -> None:
-        """在首次限流后固定等待三秒，再补发同一请求。"""
-        wait_seconds = SEMANTIC_SCHOLAR_RATE_LIMIT_COOLDOWN_SECONDS  # 将补发等待与最终冷却统一为用户要求的三秒。
-        logger.warning("Semantic Scholar 请求受限，等待重试：秒数=%.3f，下一次=%d/%d", wait_seconds, attempt + 1, max_attempts)  # 记录可观测重试进度。
-        await asyncio.sleep(wait_seconds)  # 让出事件循环且不阻塞其他来源任务。
+            ) as client:
+                response = await self._request_executor.execute(lambda: client.get("/paper/search", params=params, headers=headers), response_status=_semantic_response_status)  # 200 错误信封同样进入统一限流和重试策略。
+                response.raise_for_status()  # 最终 HTTP 错误继续映射为现有领域异常。
+                payload = response.json()  # 仅在成功或最终错误信封后解析 JSON。
+        except httpx.HTTPStatusError as error:  # 不记录响应正文或含 API Key 的请求信息。
+            raise SemanticScholarClientError(f"Semantic Scholar 请求失败（HTTP {error.response.status_code}）") from None  # 保持原有调用方可识别的状态边界。
+        except AcademicApiNetworkError:  # 临时网络错误已按统一预算重试完毕。
+            raise SemanticScholarClientError("Semantic Scholar 网络请求失败") from None  # 不泄露底层异常链。
+        except SourceCooldownError:  # 本地或 Redis 冷却在 HTTP 调用前快速失败。
+            raise SemanticScholarClientError("Semantic Scholar 请求受限，当前处于冷却期") from None  # 维持多源故障隔离。
+        except ValueError:  # 无效 JSON 不属于可重试的传输失败。
+            raise SemanticScholarClientError("Semantic Scholar 响应格式无效") from None  # 不记录原始正文。
+        response_data = _as_mapping(payload)  # 确认根 JSON 响应具有对象结构。
+        data = response_data.get("data") if response_data else None  # 读取官方搜索响应中的论文数组。
+        if isinstance(data, list):  # 正常响应可安全写入来源缓存。
+            return data  # 返回官方论文数组供单条映射。
+        error_category = _classify_error_envelope(response_data)  # 为最终成功状态错误信封提供稳定错误分类。
+        response_fields = ",".join(sorted(response_data.keys())) if response_data else "none"  # 只记录字段名，不记录上游内容。
+        logger.error("Semantic Scholar 响应不可用：错误类型=%s，响应字段=%s", error_category, response_fields)  # 保持安全观测边界。
+        raise SemanticScholarClientError(f"Semantic Scholar {error_category}")  # 维持既有来源专属异常。
 
     def _build_headers(self) -> dict[str, str]:
         """构造可选 API Key 请求头，未配置密钥时保持匿名访问。
@@ -191,34 +159,6 @@ class SemanticScholarClient(AcademicSearchAdapter):
         if self._settings.semantic_scholar_api_key is None:  # 官方端点允许匿名访问，但可能受共享限流影响。
             return {}  # 不发送空认证头，避免产生误导性请求。
         return {"x-api-key": self._settings.semantic_scholar_api_key.get_secret_value()}  # 仅在实际请求层解封装密钥。
-
-    def _ensure_not_in_cooldown(self) -> None:
-        """在来源限流冷却期内快速失败，避免再次发出外部请求。"""
-        loop = asyncio.get_running_loop()  # 使用事件循环单调时间判断冷却状态。
-        remaining_seconds = self._cooldown_until - loop.time()  # 计算剩余冷却时间。
-        if remaining_seconds > 0:  # 冷却尚未结束时不访问供应商。
-            logger.warning("Semantic Scholar 仍在限流冷却期：剩余秒数=%.3f", remaining_seconds)  # 记录安全等待统计。
-            raise SemanticScholarClientError("Semantic Scholar 请求受限，当前处于冷却期")  # 让协调器立即使用其他来源降级。
-
-    async def _activate_cooldown(self, _: httpx.Response) -> None:
-        """在来源返回限流后启用固定三秒冷却，并尽力同步给其他进程。"""
-        cooldown_seconds = SEMANTIC_SCHOLAR_RATE_LIMIT_COOLDOWN_SECONDS  # 用户要求所有现有来源冷却统一为三秒，不再按 Retry-After 延长。
-        loop = asyncio.get_running_loop()  # 使用与请求限流一致的单调时间。
-        self._cooldown_until = max(self._cooldown_until, loop.time() + cooldown_seconds)  # 延长而不缩短已有冷却期。
-        await self._source_rate_limiter.penalize("semantic_scholar", cooldown_seconds)  # Redis 不可用时限流器只返回结果，不影响本地冷却。
-        logger.warning("Semantic Scholar 已进入限流冷却：秒数=%.3f", cooldown_seconds)  # 记录不含响应正文的冷却统计。
-
-    async def _wait_for_rate_limit(self) -> None:
-        """按配置化 RPS 串行等待下一次允许的来源请求时间。"""
-        async with self._rate_limit_lock:  # 防止同一客户端并发请求绕过来源级限额。
-            loop = asyncio.get_running_loop()  # 使用事件循环单调时间避免系统时钟调整影响间隔。
-            now = loop.time()  # 读取当前单调时间。
-            wait_seconds = max(0.0, self._next_request_at - now)  # 计算距离允许发起请求还需等待的时间。
-            if wait_seconds > 0:  # 仅在并发或连续调用过快时等待。
-                logger.info("Semantic Scholar 限流等待：秒数=%.3f", wait_seconds)  # 记录来源级等待统计，不记录查询内容。
-                await asyncio.sleep(wait_seconds)  # 让出事件循环并遵守来源最小间隔。
-            self._next_request_at = loop.time() + (1.0 / self._settings.semantic_scholar_requests_per_second)  # 预约下一次允许请求的时间。
-
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
     """将 JSON 值安全转换为可读取的字符串键映射。
@@ -252,6 +192,24 @@ def _classify_error_envelope(response_data: Mapping[str, object] | None) -> str:
     if any(marker in message_text for marker in ("500", "502", "503", "504", "internal", "unavailable", "timeout")):  # 识别供应商服务故障。
         return "供应商暂时不可用"  # 指示安全降级并稍后重试。
     return "响应结构无效"  # 未知信封不猜测具体原因。
+
+
+def _semantic_response_status(response: httpx.Response) -> int:
+    """将 Semantic Scholar 的成功状态错误信封映射为统一重试状态码。"""
+    if response.status_code != 200:  # 非成功 HTTP 状态无需检查 JSON 信封。
+        return response.status_code  # 交给共享执行器按标准状态规则处理。
+    try:  # 仅检查公开错误摘要，不记录任何供应商正文。
+        payload = _as_mapping(response.json())  # 读取能够区分 data 与错误信封的顶层对象。
+    except ValueError:  # 无效 JSON 将由适配器按响应格式错误处理。
+        return response.status_code  # 不把响应解析错误伪装成可重试失败。
+    if isinstance(payload.get("data") if payload else None, list):  # 正常论文数组不应触发重试。
+        return response.status_code  # 保留成功状态。
+    category = _classify_error_envelope(payload)  # 使用既有安全分类而不泄露原始消息。
+    if category == "请求受限":  # 供应商有时以 200 返回 429 语义。
+        return 429  # 让共享执行器应用 Retry-After、退避与最终冷却。
+    if category == "供应商暂时不可用":  # 200 错误信封也可能表示临时 5xx 语义。
+        return 503  # 让共享执行器按临时故障重试。
+    return response.status_code  # 认证、参数和结构错误都不得自动重试。
 
 
 def _optional_text(value: object) -> str | None:

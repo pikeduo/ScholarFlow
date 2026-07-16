@@ -9,6 +9,7 @@ import httpx  # 使用 MockTransport 拦截 HTTP 请求。
 import pytest  # 提供异常断言工具。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 验证客户端满足统一来源协议。
+from backend.app.adapters.academic_api import AcademicApiRequestExecutor  # 注入不真实等待的统一重试执行器。
 from backend.app.adapters.semantic_scholar import SemanticScholarClient, SemanticScholarClientError  # 导入待测客户端和领域异常。
 from backend.app.core.config import Settings  # 构造不读取真实 .env 的隔离配置。
 from backend.app.models.query_intent import QueryIntent  # 构造统一适配器输入。
@@ -89,7 +90,7 @@ def _build_query_intent() -> QueryIntent:
 
 def _build_test_settings(api_key: str | None = "test-api-key") -> Settings:
     """构造不读取真实 .env 的 Semantic Scholar 测试配置。"""
-    return Settings(_env_file=None, semantic_scholar_api_key=api_key, semantic_scholar_max_retries=0)  # 注入测试密钥并默认关闭等待重试。
+    return Settings(_env_file=None, semantic_scholar_api_key=api_key, academic_api_max_retries=0)  # 注入测试密钥并默认关闭错误边界测试的重试等待。
 
 
 def test_client_implements_unified_adapter_and_maps_search_response() -> None:
@@ -153,11 +154,11 @@ def test_client_hides_http_error_details() -> None:
         with pytest.raises(SemanticScholarClientError, match="冷却期"):  # 冷却期内不应再次访问来源。
             await client.search(_build_query_intent())  # 验证进程内快速降级。
 
-    with patch("backend.app.adapters.semantic_scholar.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 跳过固定三秒补发等待并保留调用断言。
+    with patch("backend.app.adapters.academic_api.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 验证零重试配置不会触发共享执行器等待。
         asyncio.run(execute_twice())  # 执行同一事件循环内的两次搜索。
-    assert request_count == 2  # 验证首次 429 后会补发一次，第二个 429 才进入冷却。
-    sleep_mock.assert_awaited_once_with(3.0)  # 验证补发前严格等待用户要求的三秒。
-    assert rate_limiter.penalized == [("semantic_scholar", 3.0)]  # 验证忽略较长 Retry-After 并统一写入三秒冷却。
+    assert request_count == 1  # 验证零重试配置会在首次最终 429 后立即进入统一冷却。
+    sleep_mock.assert_not_awaited()  # 验证最终失败不会再无意义等待。
+    assert rate_limiter.penalized == [("semantic_scholar", 90.0)]  # 验证更长 Retry-After 会扩展来源级冷却。
 
 
 @pytest.mark.parametrize(  # 覆盖供应商可能以 HTTP 200 返回的常见错误信封。
@@ -180,7 +181,7 @@ def test_client_classifies_success_status_error_envelope(payload: dict[str, obje
 
 
 def test_client_retries_success_status_rate_limit_envelope() -> None:
-    """供应商以 HTTP 200 返回限流信封时客户端应等待并在预算内重试。"""
+    """供应商以 HTTP 200 返回限流信封时客户端应按统一退避在预算内重试。"""
     fixture = _load_semantic_scholar_paper_fixture()  # 读取重试成功时返回的本地论文样例。
     request_count = 0  # 统计 MockTransport 收到的调用次数。
 
@@ -191,18 +192,19 @@ def test_client_retries_success_status_rate_limit_envelope() -> None:
         payload = {"message": "Too many requests 429"} if request_count == 1 else {"data": [fixture]}  # 按次数切换响应。
         return httpx.Response(200, json=payload, request=request)  # 保持完全离线的成功状态响应。
 
-    settings = Settings(_env_file=None, semantic_scholar_api_key="test-api-key", semantic_scholar_max_retries=1)  # 允许一次限流重试。
-    client = SemanticScholarClient(settings_override=settings, transport=httpx.MockTransport(handler))  # 注入离线来源响应。
-    with patch("backend.app.adapters.semantic_scholar.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 跳过真实一秒等待。
-        papers = asyncio.run(client.search(_build_query_intent()))  # 执行限流后成功路径。
+    settings = Settings(_env_file=None, semantic_scholar_api_key="test-api-key", academic_api_max_retries=1)  # 允许一次统一限流重试。
+    sleep_mock = AsyncMock()  # 记录等待参数而不真实等待。
+    executor = AcademicApiRequestExecutor("semantic_scholar", settings, settings.semantic_scholar_requests_per_second, retry_sleep=sleep_mock, rate_limit_sleep=AsyncMock(), random_uniform=lambda _start, _end: 0.0)  # 仅记录退避等待，避免同一 mock 接收 RPS 等待。
+    client = SemanticScholarClient(settings_override=settings, transport=httpx.MockTransport(handler), request_executor=executor)  # 注入离线来源响应与可观测执行器。
+    papers = asyncio.run(client.search(_build_query_intent()))  # 执行限流后成功路径。
 
     assert request_count == 2  # 验证只发起首次调用和一次重试。
     assert [paper.paper_id for paper in papers] == ["S2-paper-123"]  # 验证重试成功结果正常映射。
-    sleep_mock.assert_awaited_once_with(3.0)  # 验证非标准限流信封同样等待三秒后补发。
+    sleep_mock.assert_awaited_once_with(15.0)  # 验证非标准限流信封同样遵循统一指数退避。
 
 
 def test_client_retries_http_rate_limit_after_three_seconds() -> None:
-    """HTTP 429 后应等待三秒补发一次，并使用第二次成功结果。"""
+    """HTTP 429 后应按统一退避补发一次，并使用第二次成功结果。"""
     fixture = _load_semantic_scholar_paper_fixture()  # 读取第二次请求成功时返回的离线论文样例。
     request_count = 0  # 统计同一请求的首次限流和一次补发调用。
 
@@ -214,13 +216,15 @@ def test_client_retries_http_rate_limit_after_three_seconds() -> None:
             return httpx.Response(429, request=request)  # 触发固定三秒的补发路径。
         return httpx.Response(200, json={"data": [fixture]}, request=request)  # 第二次调用模拟供应商恢复可用。
 
-    client = SemanticScholarClient(settings_override=_build_test_settings(), transport=httpx.MockTransport(handler))  # 使用默认额外重试预算验证强制补发行为。
-    with patch("backend.app.adapters.semantic_scholar.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:  # 避免单元测试实际等待三秒。
-        papers = asyncio.run(client.search(_build_query_intent()))  # 执行首次 429 后补发成功的完整搜索。
+    retry_settings = Settings(_env_file=None, semantic_scholar_api_key="test-api-key", academic_api_max_retries=1)  # 为该用例显式保留一次统一重试预算。
+    sleep_mock = AsyncMock()  # 记录等待参数而不真实等待。
+    executor = AcademicApiRequestExecutor("semantic_scholar", retry_settings, retry_settings.semantic_scholar_requests_per_second, retry_sleep=sleep_mock, rate_limit_sleep=AsyncMock(), random_uniform=lambda _start, _end: 0.0)  # 仅记录退避等待，避免同一 mock 接收 RPS 等待。
+    client = SemanticScholarClient(settings_override=retry_settings, transport=httpx.MockTransport(handler), request_executor=executor)  # 使用一次统一重试预算验证恢复行为。
+    papers = asyncio.run(client.search(_build_query_intent()))  # 执行首次 429 后补发成功的完整搜索。
 
     assert request_count == 2  # 验证只执行首次调用和一次补发，未无限重试。
     assert [paper.paper_id for paper in papers] == ["S2-paper-123"]  # 验证补发成功结果仍完成统一论文映射。
-    sleep_mock.assert_awaited_once_with(3.0)  # 验证 HTTP 429 的补发等待精确为三秒。
+    sleep_mock.assert_awaited_once_with(15.0)  # 验证 HTTP 429 的补发遵循统一指数退避。
 
 
 def test_client_uses_cached_response_before_cooldown_or_second_network_request() -> None:

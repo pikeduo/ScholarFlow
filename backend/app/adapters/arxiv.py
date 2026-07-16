@@ -1,6 +1,5 @@
 """封装 arXiv Atom 搜索、来源级节流与统一论文映射。"""
 
-import asyncio  # 串行控制 arXiv 建议的连续请求间隔。
 import re  # 规范化 arXiv 标识中的可选版本号。
 import xml.etree.ElementTree as ElementTree  # 使用标准库解析 arXiv 返回的 Atom XML。
 from urllib.parse import unquote, urlparse  # 从 arXiv 抽象页 URL 提取稳定论文标识。
@@ -8,10 +7,12 @@ from urllib.parse import unquote, urlparse  # 从 arXiv 抽象页 URL 提取稳�
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 实现 LangGraph 可替换的统一适配器协议。
+from backend.app.adapters.academic_api import AcademicApiNetworkError, AcademicApiRequestExecutor  # 复用统一的幂等请求重试、RPS 与冷却边界。
 from backend.app.core.config import Settings, settings  # 读取 arXiv 地址、超时和来源级限流配置。
 from backend.app.core.logging import logger  # 记录不含完整查询的来源调用统计与错误。
 from backend.app.models.paper import PaperAuthor, PaperRecord, PaperSourceRecord  # 构造保留来源溯源信息的统一论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一意图。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter  # 将共享冷却状态转换为来源领域异常。
 
 
 ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"  # 声明 arXiv Atom 1.0 元素命名空间。
@@ -67,12 +68,13 @@ class ArxivClient(AcademicSearchAdapter):
         self,
         settings_override: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        source_rate_limiter: SourceRateLimiter | None = None,
+        request_executor: AcademicApiRequestExecutor | None = None,
     ) -> None:
         """保存配置、测试传输层与来源级节流状态。"""
         self._settings = settings_override or settings  # 默认复用经环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
-        self._rate_limit_lock = asyncio.Lock()  # 串行化同一客户端的请求起始时间。
-        self._next_request_at = 0.0  # 保存下一次允许发起请求的事件循环时间。
+        self._request_executor = request_executor or AcademicApiRequestExecutor("arxiv", self._settings, self._settings.arxiv_requests_per_second, source_rate_limiter=source_rate_limiter)  # 统一管理请求前的来源窗口和重试。
 
     async def search(self, query: QueryIntent) -> list[PaperRecord]:
         """搜索 arXiv 并返回保留来源排名的统一论文记录。
@@ -84,7 +86,6 @@ class ArxivClient(AcademicSearchAdapter):
         异常：
             ArxivClientError：HTTP、Atom 解析或来源错误响应时抛出。
         """
-        await self._wait_for_rate_limit()  # 在请求前遵守配置化的 arXiv 最小间隔。
         params = build_arxiv_search_params(query)  # 构造不含用户密钥的可测试请求参数。
         try:  # 将 HTTP 层异常转换为不泄露响应正文的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
@@ -93,7 +94,7 @@ class ArxivClient(AcademicSearchAdapter):
                 transport=self._transport,  # 在测试时使用本地 MockTransport。
                 headers={"User-Agent": "ScholarWeave/0.1 (academic-search)"},  # 标识客户端用途但不发送用户数据或密钥。
             ) as client:
-                response = await client.get("/query", params=params)  # 请求 arXiv Atom Query API。
+                response = await self._request_executor.execute(lambda: client.get("/query", params=params))  # 每次重试均重新通过统一来源限流。
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为可统一处理的异常。
                 entries = parse_arxiv_atom_feed(response.text)  # 解析 Atom XML 并提前识别来源内错误条目。
         except httpx.HTTPStatusError as error:  # 单独记录不含响应正文的 HTTP 状态码。
@@ -102,6 +103,10 @@ class ArxivClient(AcademicSearchAdapter):
         except httpx.RequestError as error:  # 捕获连接、超时和传输失败。
             logger.error("arXiv 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
             raise ArxivClientError("arXiv 网络请求失败") from None  # 返回稳定的领域错误。
+        except AcademicApiNetworkError:  # 统一执行器耗尽网络重试后不泄露传输层上下文。
+            raise ArxivClientError("arXiv 网络请求失败") from None  # 保留既有来源错误类型。
+        except SourceCooldownError:  # 冷却期内不触发任何 HTTP transport 调用。
+            raise ArxivClientError("arXiv 请求受限，当前处于冷却期") from None  # 让协调器继续使用其他来源。
         except ArxivClientError:  # 保留已净化的来源内错误条目说明。
             raise  # 不再包装已可安全展示给调用方的领域异常。
         except ElementTree.ParseError:  # 捕获响应非 Atom XML 或 XML 格式损坏。
@@ -117,18 +122,6 @@ class ArxivClient(AcademicSearchAdapter):
                 skipped_count += 1  # 累加映射失败统计。
         logger.info("arXiv 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(entries), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
         return papers  # 返回可直接进入多源融合的统一论文记录。
-
-    async def _wait_for_rate_limit(self) -> None:
-        """按配置化 RPS 串行等待下一次允许发起 arXiv 请求的时间。"""
-        async with self._rate_limit_lock:  # 防止同一客户端并发请求绕过来源级限额。
-            loop = asyncio.get_running_loop()  # 使用事件循环单调时间避免系统时钟调整影响间隔。
-            now = loop.time()  # 读取当前单调时间。
-            wait_seconds = max(0.0, self._next_request_at - now)  # 计算距离允许请求还需等待的时间。
-            if wait_seconds > 0:  # 仅在连续调用过快时等待。
-                logger.info("arXiv 限流等待：秒数=%.3f", wait_seconds)  # 记录来源级等待统计，不记录查询内容。
-                await asyncio.sleep(wait_seconds)  # 让出事件循环并遵守请求最小间隔。
-            self._next_request_at = loop.time() + (1.0 / self._settings.arxiv_requests_per_second)  # 预约下一次允许请求的时间。
-
 
 def parse_arxiv_atom_feed(xml_text: str) -> list[ElementTree.Element]:
     """解析 arXiv Atom XML，并将来源内错误条目转换为稳定异常。

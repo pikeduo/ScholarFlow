@@ -1,16 +1,16 @@
 """封装 PubMed E-utilities 检索、来源级节流与统一论文映射。"""
 
-import asyncio  # 串行控制同一 PubMed 客户端内的请求起始间隔。
 import re  # 从 PubMed 非结构化日期文本中提取可用年份。
-import time  # 读取事件循环无关的单调时间以实施来源级限流。
 import xml.etree.ElementTree as ElementTree  # 使用标准库解析 EFetch 返回的 PubMed XML。
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 实现统一学术来源适配器协议。
+from backend.app.adapters.academic_api import AcademicApiNetworkError, AcademicApiRequestExecutor  # 复用统一的幂等请求重试、RPS 与冷却边界。
 from backend.app.core.config import Settings, settings  # 读取 PubMed 端点、超时和来源限流配置。
 from backend.app.core.logging import logger  # 记录不包含完整查询的来源调用统计与错误。
 from backend.app.models.paper import PaperAuthor, PaperRecord, PaperSourceRecord  # 构造保留 PubMed 溯源信息的统一论文记录。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一检索意图。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter  # 将共享冷却状态转换为来源领域异常。
 
 YEAR_PATTERN = re.compile(r"(?<!\d)(?:18|19|20)\d{2}(?!\d)")  # 匹配 PaperRecord 支持范围内的四位出版年份。
 
@@ -60,12 +60,13 @@ class PubMedClient(AcademicSearchAdapter):
         self,
         settings_override: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        source_rate_limiter: SourceRateLimiter | None = None,
+        request_executor: AcademicApiRequestExecutor | None = None,
     ) -> None:
         """保存配置、测试传输层和来源级节流状态。"""
         self._settings = settings_override or settings  # 默认复用经环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
-        self._rate_limit_lock = asyncio.Lock()  # 串行化同一客户端的请求起始时间。
-        self._next_request_at = 0.0  # 保存下一次允许发起请求的单调时间。
+        self._request_executor = request_executor or AcademicApiRequestExecutor("pubmed", self._settings, self._settings.pubmed_requests_per_second, source_rate_limiter=source_rate_limiter)  # ESearch 与 EFetch 共用同一来源窗口和冷却状态。
 
     async def search(self, query: QueryIntent) -> list[PaperRecord]:
         """检索 PubMed 并返回保留 PMID、DOI 与来源排名的统一论文记录。"""
@@ -121,25 +122,18 @@ class PubMedClient(AcademicSearchAdapter):
 
     async def _request(self, client: httpx.AsyncClient, path: str, params: dict[str, str | int]) -> httpx.Response:
         """在本地来源级限流后请求单个 E-utilities 端点。"""
-        await self._wait_for_rate_limit()  # ESearch 与 EFetch 均计入 PubMed 来源请求配额。
         try:  # 网络错误和 HTTP 状态错误均需转换为安全的领域异常。
-            response = await client.get(path, params=params)  # 仅通过配置化 HTTPS 基地址访问 PubMed。
+            response = await self._request_executor.execute(lambda: client.get(path, params=params))  # 每次重试均重新经过来源 RPS 与 Redis 窗口。
             response.raise_for_status()  # 将 4xx/5xx 响应转入统一异常边界。
         except httpx.HTTPStatusError as error:  # 状态错误仅保留状态码，不暴露上游正文。
             raise PubMedClientError(f"PubMed 请求失败：HTTP {error.response.status_code}") from error  # 向协调器提供可审计错误类别。
         except httpx.RequestError as error:  # DNS、连接和超时错误均不携带可展示的内部细节。
             raise PubMedClientError("PubMed 请求失败：网络或超时错误") from error  # 使协调器能够按单来源安全降级。
+        except AcademicApiNetworkError:  # 统一执行器耗尽临时网络重试后保持既有领域错误契约。
+            raise PubMedClientError("PubMed 请求失败：网络或超时错误") from None  # 不泄露底层传输细节。
+        except SourceCooldownError:  # 冷却期内新请求不得继续访问任意 E-utilities 端点。
+            raise PubMedClientError("PubMed 请求受限，当前处于冷却期") from None  # 让多源协调器继续使用其他来源。
         return response  # 返回已确认成功的 HTTP 响应。
-
-    async def _wait_for_rate_limit(self) -> None:
-        """等待直到满足 PubMed 配置的同客户端请求起始间隔。"""
-        interval_seconds = 1.0 / self._settings.pubmed_requests_per_second  # 将每秒上限转换为最小起始间隔。
-        async with self._rate_limit_lock:  # 避免并发协程同时绕过同一客户端的限流状态。
-            now = time.monotonic()  # 使用不受系统时钟回拨影响的时间源。
-            wait_seconds = max(0.0, self._next_request_at - now)  # 只等待尚未覆盖的来源级间隔。
-            if wait_seconds > 0:  # 首次请求无需等待，连续请求才实施节流。
-                await asyncio.sleep(wait_seconds)  # 异步等待不阻塞同一进程的其他来源调用。
-            self._next_request_at = time.monotonic() + interval_seconds  # 从实际请求起始前更新下一许可时间。
 
     def _with_common_params(self, params: dict[str, str | int]) -> dict[str, str | int]:
         """为 PubMed 请求添加应用标识与可选联系邮箱。"""

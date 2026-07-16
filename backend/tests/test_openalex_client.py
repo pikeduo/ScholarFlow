@@ -44,7 +44,7 @@ def _load_openalex_work_fixture() -> dict[str, object]:
 
 def _build_test_settings() -> Settings:
     """构造不读取真实 .env 的 OpenAlex 测试配置。"""
-    return Settings(_env_file=None, openalex_api_key="test-api-key")  # 注入没有实际权限的测试密钥。
+    return Settings(_env_file=None, openalex_api_key="test-api-key", academic_api_max_retries=0)  # 注入没有实际权限的测试密钥并避免错误边界测试真实等待。
 
 
 def test_client_requests_works_and_maps_results() -> None:

@@ -7,10 +7,12 @@ import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 from backend.app.core.config import Settings, settings  # 读取 OpenAlex 地址、密钥和超时配置。
 from backend.app.core.logging import logger  # 记录不含敏感信息的调用统计和错误。
 from backend.app.adapters.base import AcademicSearchAdapter  # 声明当前客户端满足统一学术来源协议。
+from backend.app.adapters.academic_api import AcademicApiNetworkError, AcademicApiRequestExecutor  # 复用统一的幂等请求重试、RPS 与冷却边界。
 from backend.app.models.paper import Paper, PaperAuthor, PaperRecord, PaperSourceRecord  # 复用基础模型与多源溯源模型。
 from backend.app.models.query import QuerySchema  # 读取结构化检索约束。
 from backend.app.models.query_intent import QueryIntent  # 接收查询规划节点输出的统一检索意图。
 from backend.app.repositories.source_cache import SourceResponseCache, get_source_response_cache  # 复用可降级的来源响应缓存边界。
+from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter  # 将统一冷却状态转换为既有领域异常。
 
 
 OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
@@ -98,11 +100,14 @@ class OpenAlexClient(AcademicSearchAdapter):
         settings_override: Settings | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         response_cache: SourceResponseCache | None = None,
+        source_rate_limiter: SourceRateLimiter | None = None,
+        request_executor: AcademicApiRequestExecutor | None = None,
     ) -> None:
         """保存客户端配置与可选的 HTTP 传输层。"""
         self._settings = settings_override or settings  # 默认复用经过环境变量校验的全局配置。
         self._transport = transport  # 保留可由测试替换的 HTTP 传输层。
         self._response_cache = response_cache or get_source_response_cache()  # 默认复用应用 Redis 缓存，测试可注入离线替身。
+        self._request_executor = request_executor or AcademicApiRequestExecutor("openalex", self._settings, self._settings.openalex_requests_per_second, source_rate_limiter=source_rate_limiter)  # 将所有真实 GET 统一交给共享策略。
 
     source = "openalex"  # 声明统一适配器协议要求的稳定来源名称。
 
@@ -183,7 +188,7 @@ class OpenAlexClient(AcademicSearchAdapter):
                 timeout=self._settings.openalex_timeout_seconds,  # 使用集中配置的请求超时。
                 transport=self._transport,  # 在测试时使用本地 MockTransport。
             ) as client:
-                response = await client.get("/works", params=request_params)  # 请求论文列表端点。
+                response = await self._request_executor.execute(lambda: client.get("/works", params=request_params))  # 每次重试均重新经过来源 RPS 与 Redis 窗口。
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为异常。
                 payload = response.json()  # 解码 JSON 响应供后续结构校验。
         except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
@@ -192,6 +197,10 @@ class OpenAlexClient(AcademicSearchAdapter):
         except httpx.RequestError as error:  # 捕获超时、连接和传输错误。
             logger.error("OpenAlex 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
             raise OpenAlexClientError("OpenAlex 网络请求失败") from None  # 避免异常链泄露请求参数。
+        except AcademicApiNetworkError:  # 统一执行器耗尽临时网络重试后保留既有领域错误边界。
+            raise OpenAlexClientError("OpenAlex 网络请求失败") from None  # 不向协调器泄露传输层细节。
+        except SourceCooldownError:  # 本地或 Redis 冷却期内不得继续访问供应商。
+            raise OpenAlexClientError("OpenAlex 请求受限，当前处于冷却期") from None  # 保持单来源可降级语义。
         except ValueError:  # 保留 JSON 解码错误给下方统一响应结构处理。
             logger.error("OpenAlex 响应不是有效 JSON")  # 记录不包含响应正文的解析错误。
             raise OpenAlexClientError("OpenAlex 响应格式无效") from None  # 返回稳定的领域错误。
