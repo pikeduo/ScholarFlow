@@ -904,7 +904,7 @@ h1 em { /* 突出“编织”产品隐喻。 */
 
 .search-history { /* 提供可按需展开的本地运行恢复和清理入口。 */
   margin-top: 0.75rem; /* 与主搜索表单保持紧凑层级。 */
-  padding: 0.75rem 0.9rem; /* 为索引条目提供舒适留白。 */
+  padding: 0.9rem 1.05rem; /* 配合增大的文字为索引条目保留舒适留白。 */
   border: 1px solid #d7e4ea; /* 使用轻量边框区别于主检索操作。 */
   border-radius: 0.75rem; /* 与页面面板保持一致圆角。 */
   background: rgba(255, 255, 255, 0.68); /* 保持历史为次级但可读的本地功能。 */
@@ -916,12 +916,12 @@ h1 em { /* 突出“编织”产品隐喻。 */
   justify-content: space-between; /* 将数量置于右侧。 */
   color: #31566e; /* 使用中层级蓝色。 */
   cursor: pointer; /* 明确该标题可展开。 */
-  font-size: 0.73rem; /* 保持在主搜索表单之下的视觉层级。 */
+  font-size: 0.9rem; /* 提升历史入口清晰度，同时保持低于主搜索标题的层级。 */
   font-weight: 800; /* 提升小字号入口辨识度。 */
 }
 
 .search-history summary span { /* 展示有限历史条目数量。 */
-  padding: 0.14rem 0.42rem; /* 提供紧凑胶囊留白。 */
+  padding: 0.18rem 0.5rem; /* 配合较大数量文字保留清晰胶囊留白。 */
   border-radius: 999px; /* 使用数量胶囊强调索引规模。 */
   color: #54758a; /* 使用辅助蓝色文字。 */
   background: #e8f2f5; /* 与面板背景形成轻微层次。 */
@@ -930,13 +930,13 @@ h1 em { /* 突出“编织”产品隐喻。 */
 .search-history > p { /* 说明历史隐私边界或展示空、错误状态。 */
   margin: 0.55rem 0 0; /* 与展开标题建立稳定距离。 */
   color: #718496; /* 使用辅助文字色。 */
-  font-size: 0.67rem; /* 控制说明信息密度。 */
+  font-size: 0.78rem; /* 提升隐私说明与状态文本的阅读舒适度。 */
   line-height: 1.55; /* 提升多行状态文本可读性。 */
 }
 
 .search-history ul { /* 纵向组织最近运行索引项。 */
   display: grid; /* 使用网格保持条目间距稳定。 */
-  gap: 0.45rem; /* 分隔相邻运行。 */
+  gap: 0.55rem; /* 为增大文字后的相邻运行保留辨识间隔。 */
   margin: 0.7rem 0 0; /* 与说明文字分隔。 */
   padding: 0; /* 移除默认列表缩进。 */
   list-style: none; /* 使用卡片条目而非圆点。 */
@@ -947,14 +947,14 @@ h1 em { /* 突出“编织”产品隐喻。 */
   align-items: center; /* 对齐多行元数据和按钮。 */
   justify-content: space-between; /* 将操作保持在条目右侧。 */
   gap: 0.7rem; /* 防止窄屏元数据贴近操作。 */
-  padding: 0.58rem 0.65rem; /* 提供紧凑且可点击的条目留白。 */
+  padding: 0.75rem 0.85rem; /* 配合较大文字提供舒适且可点击的条目留白。 */
   border-radius: 0.58rem; /* 与其它次级控件协调。 */
   background: #f5f9fb; /* 与页面背景建立轻微层次。 */
 }
 
 .search-history li > div:first-child { /* 纵向排列安全状态、轮次和停止原因。 */
   display: grid; /* 保持三行元数据清晰分隔。 */
-  gap: 0.12rem; /* 减少紧凑索引的垂直占用。 */
+  gap: 0.2rem; /* 避免增大后的三行信息显得拥挤。 */
   min-width: 0; /* 允许较长停止原因在窄屏换行。 */
 }
 
@@ -962,7 +962,7 @@ h1 em { /* 突出“编织”产品隐喻。 */
   display: flex; /* 让 completed 等状态紧邻问题显示。 */
   align-items: baseline; /* 保持中英文状态和问题文本的基线对齐。 */
   min-width: 0; /* 允许右侧问题文本在窄屏安全截断。 */
-  gap: 0.55rem; /* 在状态与搜索问题之间保留适当距离。 */
+  gap: 0.65rem; /* 在增大的状态与搜索问题之间保留适当距离。 */
 }
 
 .history-title-row strong { /* 防止状态文字被长问题压缩。 */
@@ -975,40 +975,41 @@ h1 em { /* 突出“编织”产品隐喻。 */
   margin: 0; /* 清除段落默认外边距以保持条目紧凑。 */
   overflow: hidden; /* 隐藏超出历史条目宽度的文本。 */
   color: #31566e; /* 使用比状态信息更醒目的文字层级。 */
-  font-size: 0.7rem; /* 让问题可读但不压过主要搜索输入区。 */
+  font-size: 0.86rem; /* 提升搜索问题可读性但不压过主要搜索输入区。 */
   font-weight: 750; /* 提升单行问题的扫读性。 */
-  line-height: 1.45; /* 保持紧凑行高。 */
+  line-height: 1.5; /* 让中英文混排问题保持舒适行高。 */
   text-overflow: ellipsis; /* 超长问题使用省略号提示仍有完整内容。 */
   white-space: nowrap; /* 强制问题始终只占一行。 */
 }
 
 .search-history strong { /* 突出运行状态，便于判断是否可清理。 */
   color: #31566e; /* 使用可读的中层级蓝色。 */
-  font-size: 0.68rem; /* 保持与索引内容一致。 */
+  font-size: 0.82rem; /* 让 completed 等状态与搜索问题保持匹配的可读层级。 */
 }
 
 .search-history li span, .search-history li small { /* 展示轮次、更新时间和停止原因。 */
   overflow-wrap: anywhere; /* 防止长停止原因撑破窄屏。 */
   color: #718496; /* 使用辅助文字色。 */
-  font-size: 0.62rem; /* 控制历史信息密度。 */
-  line-height: 1.45; /* 提升多行元数据可读性。 */
+  font-size: 0.75rem; /* 提升轮次、时间和停止原因的可读性。 */
+  line-height: 1.5; /* 提升多行元数据可读性。 */
 }
 
 .history-actions { /* 并列恢复与清理两个显式用户操作。 */
   display: flex; /* 横向组织操作按钮。 */
   flex: 0 0 auto; /* 不让操作区被长元数据挤压消失。 */
-  gap: 0.35rem; /* 分隔恢复与清理入口。 */
+  gap: 0.45rem; /* 分隔增大后的恢复与清理入口。 */
 }
 
 .history-actions button { /* 设置历史恢复与清理的紧凑按钮。 */
-  padding: 0.35rem 0.5rem; /* 提供适中的点击面积。 */
+  min-height: 2.25rem; /* 让恢复与清理按钮具备更舒适的鼠标和触摸高度。 */
+  padding: 0.42rem 0.68rem; /* 配合增大的按钮文字提供舒适点击面积。 */
   border: 1px solid #b8ccdc; /* 使用蓝灰边框保持次级层级。 */
   border-radius: 0.45rem; /* 与索引条目圆角协调。 */
   color: #2e6f95; /* 使用品牌强调文字。 */
   background: #ffffff; /* 与条目背景形成可点击对比。 */
   cursor: pointer; /* 明确用户可以恢复或清理。 */
   font: inherit; /* 继承页面字体。 */
-  font-size: 0.62rem; /* 保持操作紧凑。 */
+  font-size: 0.76rem; /* 提升操作文字清晰度并保持次级层级。 */
   font-weight: 800; /* 提升小字号按钮可辨识度。 */
 }
 
