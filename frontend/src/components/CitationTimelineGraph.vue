@@ -162,13 +162,16 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   const activeAnalysisNodeIds = analysisNodeIds.value // 读取路径或邻域分析需要高亮的节点集合。
   const activeAnalysisEdgeIds = new Set(analysisEdgeIds.value) // 读取路径或邻域分析需要高亮的真实边集合。
   const analysisActive = activeAnalysisNodeIds.size > 0 // 判断当前是否需要淡化无关关系。
+  const shouldShowCitationArrow = (edge: CitationLayoutEdge): boolean => edge.edgeType === 'cites' && (!analysisActive || activeAnalysisEdgeIds.has(edge.id)) // 普通浏览显示浅色方向，分析模式只显示实际分析关系的箭头。
+  const isEmphasizedCitationEdge = (edge: CitationLayoutEdge): boolean => edge.edgeType === 'cites' && (analysisActive ? activeAnalysisEdgeIds.has(edge.id) : Boolean(focusedPaperId.value || (activeNodeId && isEdgeRelated(edge, activeNodeId)))) // 只有选中、邻域或分析关系才使用深色强调样式。
   const svg = d3.select(svgNode) // 将 SVG 交给 D3 做受控 DOM 更新。
   svg.selectAll('*').remove() // 每次按确定性状态完整重绘，避免残留事件监听器和旧元素。
   svg.attr('viewBox', `0 0 ${currentLayout.width} ${currentLayout.height}`) // 让画布随布局高度扩展并支持响应式缩放。
   svg.attr('aria-label', '本次搜索结果的时间分层引用网络') // 为辅助技术提供图形语义。
 
   const definitions = svg.append('defs') // 定义真实引用边所需的三种方向箭头。
-  const markerDefinitions = [ // 仅定义交互激活时使用的引用方向箭头。
+  const markerDefinitions = [ // 分别定义普通浏览和交互强调的引用方向箭头。
+    { id: 'citation-timeline-arrow-default', color: '#aacbd9' }, // 未选中关系使用浅色箭头，与低权重边保持一致。
     { id: 'citation-timeline-arrow-active', color: '#2f7598' }, // 悬浮、选中或一阶邻域模式使用深色箭头强化方向。
   ]
   for (const markerDefinition of markerDefinitions) { // 逐个创建固定像素尺寸的 SVG marker。
@@ -204,13 +207,13 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
     .join('path') // 创建当前状态所需路径。
     .attr('d', (edge) => edge.path) // 使用布局模块计算的避让节点的曲线路径。
     .attr('fill', 'none') // 边不填充任何区域。
-    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : analysisActive && activeAnalysisEdgeIds.has(edge.id) ? '#b24d3c' : !activeNodeId ? '#78a8bd' : isEdgeRelated(edge, activeNodeId) ? '#2f7598' : '#c5d9e3') // 分析路径优先高亮，普通悬浮仍只加深关联引用边。
-    .attr('stroke-width', (edge) => edge.edgeType === 'same_work' ? 1.1 : analysisActive && activeAnalysisEdgeIds.has(edge.id) ? 2.7 : activeNodeId && isEdgeRelated(edge, activeNodeId) ? 2.3 : 1.15) // 分析边使用更粗线宽，其余维持既有视觉层级。
+    .attr('stroke', (edge) => edge.edgeType === 'same_work' ? '#d8a944' : analysisActive && activeAnalysisEdgeIds.has(edge.id) ? '#b24d3c' : isEmphasizedCitationEdge(edge) ? '#2f7598' : '#78a8bd') // 选中关系与路径保持深色，普通边维持低权重颜色。
+    .attr('stroke-width', (edge) => edge.edgeType === 'same_work' ? 1.1 : analysisActive && activeAnalysisEdgeIds.has(edge.id) ? 2.7 : isEmphasizedCitationEdge(edge) ? 2.3 : 1.15) // 只有强调关系加粗，默认浅色边保持轻量。
     .attr('stroke-linecap', 'round') // 让曲线路径和箭头连接处更柔和。
     .attr('stroke-linejoin', 'round') // 保持辅助虚线转折处的视觉连续性。
-    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (analysisActive ? 0.08 : activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : analysisActive ? activeAnalysisEdgeIds.has(edge.id) ? 1 : 0.04 : !activeNodeId ? (viewMode.value === 'backbone' ? 0.22 : 0.12) : isEdgeRelated(edge, activeNodeId) ? 0.96 : 0.05) // 分析模式淡化无关边，默认主干继续保持低噪声。
+    .attr('stroke-opacity', (edge) => edge.edgeType === 'same_work' ? (analysisActive ? 0.08 : activeNodeId && !isEdgeRelated(edge, activeNodeId) ? 0.12 : 0.46) : analysisActive ? activeAnalysisEdgeIds.has(edge.id) ? 1 : 0.04 : isEmphasizedCitationEdge(edge) ? 0.96 : !activeNodeId ? (viewMode.value === 'backbone' ? 0.22 : 0.12) : 0.05) // 未选中关系使用浅色边和浅色箭头，强调关系保持高对比度。
     .attr('stroke-dasharray', (edge) => edge.edgeType === 'same_work' ? '5 4' : null) // 版本族只在用户显式开启时显示为黄色虚线。
-    .attr('marker-end', (edge) => edge.edgeType !== 'cites' ? null : analysisActive && activeAnalysisEdgeIds.has(edge.id) || focusedPaperId.value || (activeNodeId && isEdgeRelated(edge, activeNodeId)) ? 'url(#citation-timeline-arrow-active)' : null) // 路径和邻域边始终显示方向，其余遵守既有按需箭头规则。
+    .attr('marker-end', (edge) => shouldShowCitationArrow(edge) ? `url(#citation-timeline-arrow-${isEmphasizedCitationEdge(edge) ? 'active' : 'default'})` : null) // 箭头颜色与边的普通或强调状态保持一致。
 
   const nodes = svg.append('g').attr('class', 'citation-nodes') // 在边之上渲染可交互论文节点。
   const nodeGroups = nodes.selectAll<SVGGElement, CitationLayoutNode>('g') // 绑定布局节点。
@@ -228,7 +231,7 @@ function renderGraph(): void { // 将当前纯布局状态渲染为 SVG，且不
   nodeGroups.append('circle') // 绘制按入度对数缩放的节点。
     .attr('r', (node) => node.radius) // 直接使用布局函数计算的半径。
     .attr('fill', (node) => communityColor(node.community, node.isIsolate)) // 使用引用社区色或孤立中性色。
-    .attr('fill-opacity', (node) => analysisActive ? activeAnalysisNodeIds.has(node.id) ? 0.94 : 0.1 : isNodeRelated(node, activeNodeId) ? 0.9 : 0.18) // 分析模式只突出路径或邻域节点。
+    .attr('fill-opacity', (node) => analysisActive ? activeAnalysisNodeIds.has(node.id) ? 0.94 : 0.1 : focusedPaperId.value ? node.id === selectedNodeId.value ? 0.9 : 0.22 : isNodeRelated(node, activeNodeId) ? 0.9 : 0.18) // 一阶邻域只保持中心论文选中，邻居回到未选中视觉状态。
     .attr('stroke', (node) => activePath.value?.nodeIds[0] === node.id ? '#17735d' : activePath.value?.nodeIds[(activePath.value?.nodeIds.length || 1) - 1] === node.id ? '#a2473f' : analysisActive && activeAnalysisNodeIds.has(node.id) ? '#b26a32' : node.id === selectedNodeId.value ? '#1b4965' : '#3d7895') // 使用兼容当前 TypeScript 目标库的索引突出路径终点。
     .attr('stroke-width', (node) => analysisActive && activeAnalysisNodeIds.has(node.id) || node.id === selectedNodeId.value ? 2.7 : 1.5) // 高亮节点与既有选中节点均保持可读描边。
   nodeGroups.append('title').text((node) => `${node.title}\n年份：${node.year || '未知'}\n入度：${node.inDegree}，出度：${node.outDegree}${node.memberCount > 1 ? `\n合并版本：${node.memberCount} 篇` : ''}`) // 悬浮时展示完整信息而非永久铺满标题。
