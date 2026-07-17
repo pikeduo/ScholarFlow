@@ -75,7 +75,7 @@ def test_query_planner_normalizes_real_model_output_variants() -> None:
             "institutions": [],
             "venues": [],
             "paper_types": ["research article"],
-            "year_range": [2021, 2026],
+            "year_range": {"start": 2021, "end": 2026},
             "must_include": [],
             "should_include": [],
             "exclude": [],
@@ -96,5 +96,6 @@ def test_query_planner_normalizes_real_model_output_variants() -> None:
     intent = planning_result.query_intent  # 提取规范化后的领域契约。
 
     assert intent.paper_types == ["article"]  # 验证 research article 映射为核心枚举。
+    assert intent.year_range == (2021, 2026)  # 验证 start/end 对象会规范化为领域年份闭区间。
     assert intent.complexity_score == 0.6  # 验证五级复杂度转换为 0–1。
     assert [subquery.language for subquery in intent.subqueries] == ["en", "en"]  # 验证缺失语言默认补为英文。
