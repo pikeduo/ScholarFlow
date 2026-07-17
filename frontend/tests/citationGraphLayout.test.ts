@@ -138,6 +138,27 @@ test('一阶邻域、版本族合并与孤立论文策略继续保留', () => { 
   assert.equal(result.mergedVersionNodeCount, 1) // 验证工具栏可区分默认合并的版本节点数量。
 })
 
+test('一阶邻域可按新中心重新收敛，只保留该节点的直接关系', () => { // 验证点击邻域内其他节点后，旧中心的非直接关系不会残留在画布中。
+  const data = graph( // 构造一条四篇论文的引用链以区分两个相邻中心的可见范围。
+    [
+      { paper_id: 'a', title: 'A', year: 2020, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'b', title: 'B', year: 2021, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'c', title: 'C', year: 2022, relevance: 0.8, source: 'openalex' },
+      { paper_id: 'd', title: 'D', year: 2023, relevance: 0.8, source: 'openalex' },
+    ],
+    [
+      { source_paper_id: 'a', target_paper_id: 'b', edge_type: 'cites' },
+      { source_paper_id: 'b', target_paper_id: 'c', edge_type: 'cites' },
+      { source_paper_id: 'c', target_paper_id: 'd', edge_type: 'cites' },
+    ],
+  )
+  const firstCenter = layout(data, { focusNodeId: 'b' }) // 初始中心 B 显示 A、B、C 三个一阶节点。
+  const secondCenter = layout(data, { focusNodeId: 'c' }) // 点击 C 后应重新以 C 作为中心显示 B、C、D。
+  assert.deepEqual(new Set(firstCenter.nodes.map((node) => node.id)), new Set(['paper:a', 'paper:b', 'paper:c'])) // 确认初始邻域范围正确。
+  assert.deepEqual(new Set(secondCenter.nodes.map((node) => node.id)), new Set(['paper:b', 'paper:c', 'paper:d'])) // 确认旧中心的非直接节点 A 已被隐藏。
+  assert.ok(secondCenter.edges.every((edge) => edge.sourceId === 'paper:c' || edge.targetId === 'paper:c')) // 新邻域只保留 C 的引用和被引边。
+})
+
 test('路径分析可临时恢复研究主干隐藏的真实引用边', () => { // 验证分析显示不会修改完整网络事实集合。
   const backbone = layout(transitiveGraph) // 默认主干隐藏可传递的 A 到 C 直接引用。
   const analysis = layout(transitiveGraph, { forceCitationEdgeIds: ['cites:paper:a:paper:c'] }) // 路径分析请求临时显示该事实边。

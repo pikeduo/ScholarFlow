@@ -93,8 +93,13 @@ function enterPathAnalysis(): void { // 进入明确的两论文路径选择模�
   citationNeighborhood.value = null // 路径分析与多层邻域保持独立。
 }
 
-function chooseNode(nodeId: string): void { // 统一处理普通浏览和路径分析模式下的节点选择。
+function chooseNode(nodeId: string): void { // 统一处理普通浏览、一阶邻域和路径分析模式下的节点选择。
+  const node = nodeById.value.get(nodeId) // 在可能触发布局重算前读取当前被点击的视觉节点。
   selectedNodeId.value = nodeId // 所有模式均保留既有侧栏选择行为。
+  if (focusedPaperId.value && analysisMode.value === 'browse' && node?.paperIds[0]) { // 一阶邻域浏览中，点击其他节点即切换当前邻域中心。
+    focusedPaperId.value = node.paperIds[0] // 仅保留新中心的直接引用与被引关系，旧中心的非直接关系不再显示。
+    hoveredNodeId.value = null // 让新选中节点而非旧悬浮状态主导重绘后的强调样式。
+  }
   if (analysisMode.value !== 'path') return // 普通浏览和邻域模式不占用点击作为路径端点。
   if (!pathStartNodeId.value || pathEndNodeId.value) { pathStartNodeId.value = nodeId; pathEndNodeId.value = null; citationPathResult.value = null; activePathIndex.value = 0; return } // 首次或已有完整路径时以当前节点替换起点。
   if (nodeId !== pathStartNodeId.value) { pathEndNodeId.value = nodeId; citationPathResult.value = null; activePathIndex.value = 0 } // 第二次点击不同节点设置终点。
