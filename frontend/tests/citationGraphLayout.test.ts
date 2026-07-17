@@ -158,12 +158,3 @@ test('一阶邻域仅在传入显式焦点时重新收敛，只保留该节点�
   assert.deepEqual(new Set(secondCenter.nodes.map((node) => node.id)), new Set(['paper:b', 'paper:c', 'paper:d'])) // 确认旧中心的非直接节点 A 已被隐藏。
   assert.ok(secondCenter.edges.every((edge) => edge.sourceId === 'paper:c' || edge.targetId === 'paper:c')) // 新邻域只保留 C 的引用和被引边。
 })
-
-test('路径分析可临时恢复研究主干隐藏的真实引用边', () => { // 验证分析显示不会修改完整网络事实集合。
-  const backbone = layout(transitiveGraph) // 默认主干隐藏可传递的 A 到 C 直接引用。
-  const analysis = layout(transitiveGraph, { forceCitationEdgeIds: ['cites:paper:a:paper:c'] }) // 路径分析请求临时显示该事实边。
-  assert.equal(backbone.visibleCitationEdgeCount, 2) // 验证默认主干仍然保持裁剪。
-  assert.equal(analysis.visibleCitationEdgeCount, 3) // 验证分析视图恢复真实路径边。
-  assert.equal(analysis.temporarilyRevealedCitationEdgeCount, 1) // 验证 UI 可准确提示临时恢复数量。
-  assert.equal(analysis.originalCitationEdgeCount, 3) // 验证原始事实边数量始终不变。
-})

@@ -13,6 +13,9 @@ export interface RelationshipEdge {
   targetId: string // 保存关系终点的视觉节点标识。
 }
 
+/** 描述已选节点当前需要查看的直接引用方向。 */
+export type CitationRelationshipDirection = 'all' | 'outgoing' | 'incoming'
+
 /** 仅更新持久选中节点，绝不改变邻域焦点或悬浮状态。 */
 export function selectCitationGraphNode(state: CitationGraphInteractionState, nodeId: string): CitationGraphInteractionState {
   return { ...state, selectedNodeId: nodeId } // 普通点击只切换关系高亮中心和侧栏论文。
@@ -39,7 +42,9 @@ export function resolveRelationshipNodeId(hoveredNodeId: string | null, selected
 }
 
 /** 仅保留与当前关系中心直接相连的边；无中心时保留当前布局的全部边。 */
-export function filterRelationshipEdges<T extends RelationshipEdge>(edges: readonly T[], relationshipNodeId: string | null): T[] {
+export function filterRelationshipEdges<T extends RelationshipEdge>(edges: readonly T[], relationshipNodeId: string | null, direction: CitationRelationshipDirection = 'all'): T[] {
   if (!relationshipNodeId) return [...edges] // 初始状态需要渲染完整网络轮廓。
-  return edges.filter((edge) => edge.sourceId === relationshipNodeId || edge.targetId === relationshipNodeId) // 选中或悬浮后让无关边完全不进入 SVG 数据绑定。
+  if (direction === 'outgoing') return edges.filter((edge) => edge.sourceId === relationshipNodeId) // “查看引用”仅保留当前论文引用其他论文的出边。
+  if (direction === 'incoming') return edges.filter((edge) => edge.targetId === relationshipNodeId) // “查看被引用”仅保留其他论文引用当前论文的入边。
+  return edges.filter((edge) => edge.sourceId === relationshipNodeId || edge.targetId === relationshipNodeId) // 默认关系视图保留当前论文全部直接入边和出边。
 }

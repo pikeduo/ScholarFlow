@@ -44,6 +44,14 @@ test('普通选择只改变 selectedNodeId，并让无关边不进入渲染集�
   assert.deepEqual(renderedEdges.map((edge) => edge.id), ['cites:paper:a:paper:b', 'cites:paper:c:paper:a']) // 只有 A 的入边和出边会被绑定，B 到 D、E 到 C 不会留下路径或 marker。
 })
 
+test('查看引用和查看被引用只绑定当前节点对应方向的真实关系', () => { // 验证方向按钮会彻底隐藏另一方向和无关关系。
+  const globalLayout = layout() // 使用完整当前节点范围构造可路由真实引用边。
+  const outgoing = filterRelationshipEdges(globalLayout.allCitationEdges, 'paper:a', 'outgoing') // 模拟点击“查看引用”。
+  const incoming = filterRelationshipEdges(globalLayout.allCitationEdges, 'paper:a', 'incoming') // 模拟点击“查看被引用”。
+  assert.deepEqual(outgoing.map((edge) => edge.id), ['cites:paper:a:paper:b']) // 仅 A 引用 B 的出边会进入 SVG 数据绑定。
+  assert.deepEqual(incoming.map((edge) => edge.id), ['cites:paper:c:paper:a']) // 仅 C 引用 A 的入边会进入 SVG 数据绑定。
+})
+
 test('一阶邻域由显式焦点固定，邻域内选择 B 不会重新裁剪节点集合', () => { // 验证 A 邻域中普通点击 B 只切换关系中心。
   const selectedA = selectCitationGraphNode(initialState, 'paper:a') // 先选择 A 以模拟用户打开侧栏。
   const focusedA = focusCitationGraphPaper(selectedA, 'a') // 仅模拟用户点击“一阶邻域”按钮时才写入 A 焦点。
