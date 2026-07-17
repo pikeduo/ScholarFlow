@@ -62,24 +62,38 @@ def build_arxiv_search_params(query: QueryIntent) -> dict[str, str | int]:
 
 
 def compile_arxiv_search_query(query: QueryIntent) -> str:
-    """将统一意图编译为仅含有限核心概念的安全 arXiv 搜索表达。"""
-    clauses = [_build_arxiv_concept_group(concept) for concept in select_arxiv_concepts(query)]  # 为每个已选概念构造独立 OR 组。
+    """将统一意图编译为只按研究主题宽松召回的安全 arXiv 表达。"""
+    variants = [variant for concept in select_arxiv_concepts(query) for variant in _expand_arxiv_aliases(concept)]  # 将最多两个研究主题的有限变体放入同一宽松 OR 组。
+    text_clauses = [f'all:"{variant}"' for variant in _distinct_arxiv_variants(variants)]  # 每个文本变体均由编译器包裹，用户文本不能注入来源语法。
+    clauses = [text_clauses[0] if len(text_clauses) == 1 else f"({' OR '.join(text_clauses)})"] if text_clauses else []  # 不同研究主题之间只使用 OR，避免来源召回阶段形成多个 AND 条件。
     if query.year_range:  # arXiv 只提供投稿日期过滤，因此以此作为发表年份的近似前置过滤。
         start_year, end_year = query.year_range  # 解构已由 QueryIntent 校验的闭区间年份。
         clauses.append(f"submittedDate:[{start_year}01010000 TO {end_year}12312359]")  # 使用官方要求的 GMT 分钟时间范围格式。
-    return " AND ".join(clauses)  # 只让不同概念组和年份过滤形成强制 AND 条件。
+    return " AND ".join(clauses)  # 仅让主题 OR 组与年份过滤形成强制 AND 条件。
 
 
 def select_arxiv_concepts(query: QueryIntent) -> list[str]:
-    """按字段优先级选择最多两个互不重复的 arXiv 召回概念。"""
-    selected_concepts: list[str] = []  # 保存保持字段与原文出现顺序的最终核心概念。
-    for terms in (query.research_topics, query.methods, query.tasks, query.must_include, query.datasets, [query.normalized_query]):  # 按召回语义强度依次评估候选字段并在最后回退规范化查询。
-        for term in terms:  # 保持同一字段内由 Query Agent 或用户提供的稳定顺序。
-            for candidate in _split_arxiv_candidate(term):  # 长子查询会先被压缩为可审计的短概念。
-                _append_arxiv_concept(selected_concepts, candidate)  # 去重、替换更完整重叠概念或追加新概念。
-                if len(selected_concepts) >= _ARXIV_MAX_CONCEPT_COUNT:  # 达到前置检索上限后不再引入更细的强制条件。
-                    return selected_concepts  # 保持最高优先级概念的确定性选择。
-    return selected_concepts  # QueryIntent 的 normalized_query 非空时通常至少可产生一个概念。
+    """只从研究主题选择最多两个 arXiv 宽松召回概念，必要时回退规范化查询。"""
+    selected_concepts = _select_arxiv_research_topic_concepts(query)  # 先且只从研究主题提取来源级候选。
+    if selected_concepts:  # 只要存在有效研究主题就禁止混入其他意图字段。
+        return selected_concepts  # 保持来源查询仅代表研究主题。
+    return _select_arxiv_concepts_from_terms([query.normalized_query])  # 主题完全缺失或无效时才回退规范化查询。
+
+
+def _select_arxiv_research_topic_concepts(query: QueryIntent) -> list[str]:
+    """从研究主题提取 arXiv 宽松召回概念，不读取其他 QueryIntent 条件。"""
+    return _select_arxiv_concepts_from_terms(query.research_topics)  # 让回退判断和实际选择使用同一确定性规则。
+
+
+def _select_arxiv_concepts_from_terms(terms: list[str]) -> list[str]:
+    """从给定文本项提取最多两个安全且不重复的 arXiv 概念。"""
+    selected_concepts: list[str] = []  # 保存保持输入顺序的最终核心概念。
+    for term in terms:  # 保持 Query Agent 或用户提供的稳定顺序。
+        for candidate in _split_arxiv_candidate(term):  # 长自然语言主题会压缩为有限短概念，避免整句精确短语。
+            _append_arxiv_concept(selected_concepts, candidate)  # 去重、替换更完整重叠概念或追加新概念。
+            if len(selected_concepts) >= _ARXIV_MAX_CONCEPT_COUNT:  # 达到最多两个研究主题的来源级上限后停止。
+                return selected_concepts  # 保持主题优先级和确定性选择。
+    return selected_concepts  # 所有输入无效时稳定返回空列表，调用方再按需要回退。
 
 
 def _append_arxiv_concept(selected_concepts: list[str], candidate: str) -> None:
@@ -102,7 +116,7 @@ def _split_arxiv_candidate(value: str) -> list[str]:
     """将普通术语保留为短语，并把长自然语言表达拆成有限概念。"""
     normalized_value = _normalize_search_term(value)  # 先统一空白并移除用户提供的 arXiv 语法片段。
     tokens = _arxiv_term_tokens(normalized_value)  # 以安全词项判断表达长度和通用修饰词。
-    if len(tokens) <= _ARXIV_LONG_TERM_WORD_LIMIT and not _ARXIV_CONNECTOR_PATTERN.search(normalized_value):  # 短且不含连接结构的术语可作为一个概念保留。
+    if len(tokens) <= _ARXIV_LONG_TERM_WORD_LIMIT:  # 短主题即使含有 for 等语义连接词也可作为单一宽松主题保留。
         return [normalized_value] if normalized_value else []  # 空白值不应产生空概念组。
     segments = [_shorten_arxiv_segment(segment) for segment in _ARXIV_CONNECTOR_PATTERN.split(normalized_value)]  # 按常见连接词切分长子查询并将每段压缩为短语。
     meaningful_segments = [segment for segment in segments if _is_meaningful_arxiv_concept(segment)]  # 丢弃 recent、paper 或年份等没有召回意义的片段。
@@ -118,17 +132,12 @@ def _shorten_arxiv_segment(value: str) -> str:
     return " ".join(content_tokens[:_ARXIV_LONG_TERM_WORD_LIMIT])  # 保持原词序并防止再次形成超长精确短语。
 
 
-def _build_arxiv_concept_group(concept: str) -> str:
-    """将一个核心概念扩展为最多四项、使用 OR 连接的安全 arXiv 组。"""
-    variants = _expand_arxiv_aliases(concept)  # 使用集中且确定的词形或缩写变体。
-    clauses = [f'all:"{variant}"' for variant in variants]  # 每个变体均由编译器包裹，用户文本无法注入字段或运算符。
-    return clauses[0] if len(clauses) == 1 else f"({' OR '.join(clauses)})"  # 单项不生成无意义括号，多项明确组成 OR 组。
-
-
 def _expand_arxiv_aliases(concept: str) -> list[str]:
     """返回一个概念的有限同义、连字符和单复数变体。"""
     normalized_concept = _normalize_search_term(concept)  # 确保后续别名扩展只处理安全纯文本。
     variants = list(_ARXIV_ALIASES.get(normalized_concept.casefold(), (normalized_concept,)))  # 已知缩写优先使用集中定义的稳定映射。
+    if normalized_concept.casefold() == "large language models for forecasting":  # 为常见完整主题补充不会改变主题语义的明确缩写表达。
+        variants.append("LLM forecasting")  # 避免将方法、任务等额外条件加入来源查询。
     for phrase in _ARXIV_HYPHENATED_PHRASES:  # 为常见词组添加不改变含义的连字符变体。
         if phrase in normalized_concept.casefold():  # 仅在原概念确实包含该词组时扩展。
             variants.append(re.sub(re.escape(phrase), lambda matched_phrase: matched_phrase.group(0).replace(" ", "-"), normalized_concept, flags=re.IGNORECASE))  # 仅替换匹配片段中的空格，保持用户词形的大小写。
@@ -221,6 +230,8 @@ class ArxivClient(AcademicSearchAdapter):
         异常：
             ArxivClientError：HTTP、Atom 解析或来源错误响应时抛出。
         """
+        concepts = select_arxiv_concepts(query)  # 仅提取将进入来源查询的研究主题或必要回退概念。
+        has_research_topics = bool(_select_arxiv_research_topic_concepts(query))  # 判断本次是否因主题缺失而使用规范化查询回退。
         params = build_arxiv_search_params(query)  # 构造不含用户密钥的可测试请求参数。
         try:  # 将 HTTP 层异常转换为不泄露响应正文的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
@@ -255,7 +266,7 @@ class ArxivClient(AcademicSearchAdapter):
                 papers.append(map_arxiv_entry(entry, raw_rank=raw_rank))  # 映射并保留来源原始排名。
             except ArxivMappingError:  # 仅跳过缺少必要标识或标题的条目。
                 skipped_count += 1  # 累加映射失败统计。
-        logger.info("arXiv 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(entries), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
+        logger.info("来源检索完成：来源=arxiv，主题数=%d，查询词数=%d，使用年份=%s，回退规范化查询=%s，返回数量=%d，原始结果=%d，跳过=%d", len(concepts), sum(len(_arxiv_term_tokens(concept)) for concept in concepts), query.year_range is not None, not has_research_topics, len(papers), len(entries), skipped_count)  # 只记录安全统计，不记录完整用户问题或来源查询字符串。
         return papers  # 返回可直接进入多源融合的统一论文记录。
 
 def parse_arxiv_atom_feed(xml_text: str) -> list[ElementTree.Element]:

@@ -34,10 +34,7 @@ def build_dblp_search_params(query: QueryIntent) -> dict[str, str | int]:
     返回：
         dict[str, str | int]：不含密钥、可直接用于 DBLP `/api` 端点的请求参数。
     """
-    search_terms: list[str] = []  # 按确定顺序收集 DBLP 出版物全文检索词。
-    for terms in (query.research_topics, query.methods, query.tasks, query.datasets, query.must_include):  # 合并主题、方法、任务、数据集与硬约束。
-        search_terms.extend(_normalize_search_term(term) for term in terms if _normalize_search_term(term))  # 规范化词语并跳过空白项。
-    search_text = " ".join(search_terms) or _normalize_search_term(query.normalized_query)  # 缺少显式拆分词时回退为必填规范化查询。
+    search_text = select_dblp_primary_topic(query)  # DBLP 空格语义等价 AND，因此只选择一个宽泛主要研究主题。
     return {  # 返回 DBLP 官方出版物搜索 API 所需的单页参数。
         "q": search_text,  # 使用来源默认的出版物关键词搜索语义。
         "format": "json",  # 请求方便安全映射的官方 JSON 响应格式。
@@ -45,6 +42,36 @@ def build_dblp_search_params(query: QueryIntent) -> dict[str, str | int]:
         "f": 0,  # 首版仅请求每次搜索结果的第一页。
         "c": 0,  # 后端不消费自动补全，关闭其计算以降低泛词在线检索的来源负担与 5xx 风险。
     }
+
+
+def select_dblp_primary_topic(query: QueryIntent) -> str:
+    """从研究主题中选择单个宽泛 DBLP 查询，主题为空时回退规范化查询。
+
+    参数：
+        query：完整 QueryIntent；本函数仅读取 research_topics 与必要的 normalized_query 回退。
+    返回：
+        str：适合 DBLP 单页召回的一个宽泛主题文本。
+    """
+    topics = [_normalize_search_term(topic) for topic in query.research_topics if _normalize_search_term(topic)]  # 仅保留实际可检索的研究主题，忽略方法、任务和约束字段。
+    if not topics:  # 结构化主题完全缺失时才允许使用规范化查询保持来源可调用。
+        return _normalize_search_term(query.normalized_query)  # 不改变原 QueryIntent，也不拼入年份或其他条件。
+    combined_time_series_forecasting = _combine_time_series_forecasting_topic(topics)  # 优先构造常见且更宽泛的时间序列预测主主题。
+    if combined_time_series_forecasting is not None:  # 只有研究主题本身同时提供两个明确语义时才使用该保守组合。
+        return combined_time_series_forecasting  # 避免将模型、任务或硬约束拼入 DBLP q。
+    return min(enumerate(topics), key=lambda indexed_topic: _dblp_topic_priority(indexed_topic[1], indexed_topic[0]))[1]  # 优先选择含实际任务词、较短且更早出现的主题。
+
+
+def _combine_time_series_forecasting_topic(topics: list[str]) -> str | None:
+    """从多个研究主题中保守识别可合并为 time series forecasting 的宽泛主任务。"""
+    has_time_series = any("time series" in topic.casefold() for topic in topics)  # 只基于研究主题判断是否存在时间序列研究对象。
+    has_forecasting = any("forecast" in topic.casefold() for topic in topics)  # 只基于研究主题判断是否存在预测任务。
+    return "time series forecasting" if has_time_series and has_forecasting else None  # 两项同时存在时生成常见宽泛检索主题，否则不作推断。
+
+
+def _dblp_topic_priority(topic: str, index: int) -> tuple[int, int, int]:
+    """为 DBLP 单主题召回计算稳定的宽泛性优先级。"""
+    has_task_word = int(not any(keyword in topic.casefold() for keyword in ("forecast", "prediction", "classification", "retrieval", "generation")))  # 优先保留含明确研究任务的主题而不是纯模型名称。
+    return has_task_word, len(topic.split()), index  # 任务主题优先，其次选择更短表达，最后保持输入顺序。
 
 
 class DblpClient(AcademicSearchAdapter):
@@ -80,6 +107,7 @@ class DblpClient(AcademicSearchAdapter):
             DblpClientError：HTTP、网络、JSON 或响应结构异常时抛出。
         """
         params = build_dblp_search_params(query)  # 构造不含用户密钥的可测试请求参数。
+        has_research_topics = any(_normalize_search_term(topic) for topic in query.research_topics)  # 仅记录本次是否使用规范化查询回退，不记录主题正文。
         try:  # 将 HTTP 层异常转换为不泄露响应正文的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
                 base_url=self._settings.dblp_api_base_url,  # 使用集中配置的 DBLP 出版物搜索地址。
@@ -111,8 +139,18 @@ class DblpClient(AcademicSearchAdapter):
                 papers.append(map_dblp_hit(hit, raw_rank=raw_rank))  # 映射并保留来源原始排名。
             except DblpMappingError:  # 仅跳过缺少必要标识或标题的命中。
                 skipped_count += 1  # 累加映射失败统计。
-        logger.info("DBLP 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(hits), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
-        return papers  # 返回可直接进入多源融合的统一论文记录。
+        returned_papers = _filter_dblp_year_range(papers, query)  # DBLP 不在 q 中拼年份，映射后再按用户年份硬约束本地过滤。
+        logger.info("来源检索完成：来源=dblp，主题数=%d，查询词数=%d，使用年份=%s，回退规范化查询=%s，返回数量=%d，原始结果=%d，映射成功=%d，跳过=%d", len([topic for topic in query.research_topics if _normalize_search_term(topic)]), len(params["q"].split()), query.year_range is not None, not has_research_topics, len(returned_papers), len(hits), len(papers), skipped_count)  # 只记录安全统计，不记录完整用户问题或来源查询字符串。
+        return returned_papers  # 返回已完成来源级年份过滤的统一论文记录，后续仍执行全部规则与核验。
+
+
+def _filter_dblp_year_range(papers: list[PaperRecord], query: QueryIntent) -> list[PaperRecord]:
+    """在 DBLP 映射后应用可验证的本地年份闭区间过滤。"""
+    if query.year_range is None:  # 未指定年份时不能额外过滤来源返回结果。
+        return papers  # 保持 DBLP 原始映射顺序与完整候选集合。
+    start_year, end_year = query.year_range  # 解构 QueryIntent 已校验的年份闭区间。
+    return [paper for paper in papers if paper.year is not None and start_year <= paper.year <= end_year]  # 年份未知或不在范围内的来源记录交由此处明确移除。
+
 
 def map_dblp_hit(hit: Mapping[str, object], raw_rank: int | None = None) -> PaperRecord:
     """将一条 DBLP 出版物命中映射为可溯源的 PaperRecord。
