@@ -682,7 +682,7 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
             <div><dt>最终保留</dt><dd>{{ `${result.papers?.length ?? 0} 篇` }}</dd></div>
             <div><dt>高相关（目标）</dt><dd>{{ `${coverageReport?.high_relevance_count ?? 0} / ${coverageReport?.target_count ?? 0}` }}</dd></div>
             <div><dt>待确认</dt><dd>{{ `${coverageReport?.partial_relevance_count ?? 0} 篇` }}</dd></div>
-            <div><dt>边际收益</dt><dd>{{ `${Math.round((coverageReport?.marginal_gain || 0) * 100)}%` }}</dd></div>
+            <div><dt>本轮新增收益 <abbr class="overview-stat-hint" title="相比上一轮，本轮新增高相关论文数占目标数量的比例。" aria-label="说明：相比上一轮，本轮新增高相关论文数占目标数量的比例。">ⓘ</abbr></dt><dd>{{ `${Math.round((coverageReport?.marginal_gain || 0) * 100)}%` }}</dd></div>
           </dl>
         </header>
 
@@ -1404,7 +1404,12 @@ textarea::placeholder { /* 设置查询示例占位。 */
   font-weight: 800; /* 保证小字号仍清晰。 */
 }
 
-.overview-stats dd { /* 突出最终数量、完成度和边际收益。 */
+.overview-stat-hint { /* 用原生提示解释本轮新增收益的计算口径。 */
+  cursor: help; /* 明确该图标可悬浮查看说明。 */
+  text-decoration: none; /* 移除缩写元素默认下划线，避免破坏统计标签扫读。 */
+}
+
+.overview-stats dd { /* 突出最终数量、完成度和本轮新增收益。 */
   margin: 0.2rem 0 0; /* 与标签形成清楚层级。 */
   color: #214d69; /* 使用深蓝强化数值。 */
   font-family: Georgia, "Noto Serif SC", serif; /* 增强数字的扫读性。 */
