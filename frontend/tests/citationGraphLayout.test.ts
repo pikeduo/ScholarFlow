@@ -138,7 +138,7 @@ test('一阶邻域、版本族合并与孤立论文策略继续保留', () => { 
   assert.equal(result.mergedVersionNodeCount, 1) // 验证工具栏可区分默认合并的版本节点数量。
 })
 
-test('一阶邻域可按新中心重新收敛，只保留该节点的直接关系', () => { // 验证点击邻域内其他节点后，旧中心的非直接关系不会残留在画布中。
+test('一阶邻域仅在传入显式焦点时重新收敛，只保留该节点的直接关系', () => { // 验证布局只响应明确的一阶邻域焦点，而不推断普通点击行为。
   const data = graph( // 构造一条四篇论文的引用链以区分两个相邻中心的可见范围。
     [
       { paper_id: 'a', title: 'A', year: 2020, relevance: 0.8, source: 'openalex' },
@@ -152,8 +152,8 @@ test('一阶邻域可按新中心重新收敛，只保留该节点的直接关�
       { source_paper_id: 'c', target_paper_id: 'd', edge_type: 'cites' },
     ],
   )
-  const firstCenter = layout(data, { focusNodeId: 'b' }) // 初始中心 B 显示 A、B、C 三个一阶节点。
-  const secondCenter = layout(data, { focusNodeId: 'c' }) // 点击 C 后应重新以 C 作为中心显示 B、C、D。
+  const firstCenter = layout(data, { focusNodeId: 'b' }) // 明确传入 B 焦点时显示 A、B、C 三个一阶节点。
+  const secondCenter = layout(data, { focusNodeId: 'c' }) // 仅在调用方明确改传 C 焦点时才重新以 C 为中心显示 B、C、D。
   assert.deepEqual(new Set(firstCenter.nodes.map((node) => node.id)), new Set(['paper:a', 'paper:b', 'paper:c'])) // 确认初始邻域范围正确。
   assert.deepEqual(new Set(secondCenter.nodes.map((node) => node.id)), new Set(['paper:b', 'paper:c', 'paper:d'])) // 确认旧中心的非直接节点 A 已被隐藏。
   assert.ok(secondCenter.edges.every((edge) => edge.sourceId === 'paper:c' || edge.targetId === 'paper:c')) // 新邻域只保留 C 的引用和被引边。

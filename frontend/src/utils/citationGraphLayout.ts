@@ -100,6 +100,7 @@ export interface CitationGraphLayout { // 描述布局模块输出给 D3 组件�
   hiddenCitationEdgeCount: number // 返回研究主干因视觉筛选隐藏的真实引用边数量。
   temporarilyRevealedCitationEdgeCount: number // 返回路径或上下游分析临时恢复的主干隐藏事实边数量。
   originalCitationEdges: VisualEdge[] // 返回当前节点范围内未裁剪的真实引用边，供事实型分析复用。
+  allCitationEdges: CitationLayoutEdge[] // 返回当前节点范围内全部真实引用的可路由路径，供选择关系展示而不改变布局。
 }
 
 export interface VisualSeed { // 表示版本族合并后、尚未计算坐标的内部节点。
@@ -824,6 +825,7 @@ export function buildCitationGraphLayout(graph: CitationGraphData, options: Cita
   const allLabelBoxes = chooseLabelPositions(positionedNodes, labelMetrics, provisionalSegments, canvas, yearTitleBoxes) // 在八向候选中最小化标签、节点、边和年份标题冲突。
   for (const node of positionedNodes) node.labelBox = allLabelBoxes.get(node.id) || { x: node.x, y: node.y, width: 0, height: 0 } // 将纯函数选择的标签矩形写回渲染节点。
   const layoutEdges = routeEdgesAsBezierCurves(positionedNodes, displayEdges) // 默认使用平滑三次贝塞尔曲线，避免长边形成多次正交回折。
+  const allCitationEdges = routeEdgesAsBezierCurves(positionedNodes, originalCitationEdges) // 额外保留当前节点范围内全部真实引用的路径，供选中关系独立渲染而不影响坐标或标签布局。
   const mergedVersionNodeCount = options.collapseFamilies ? seeds.reduce((count, seed) => count + Math.max(0, seed.memberCount - 1), 0) : 0 // 明确统计因版本族默认合并而未单独显示的论文节点。
-  return { width, height, nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, mergedVersionNodeCount, componentCount: sortedComponents.length, yearTicks, originalCitationEdgeCount: originalCitationEdges.length, visibleCitationEdgeCount: visibleCitationEdges.length, hiddenCitationEdgeCount: viewMode === 'backbone' ? originalCitationEdges.length - visibleCitationEdges.length : 0, temporarilyRevealedCitationEdgeCount: temporarilyRevealedCitationEdges.length, originalCitationEdges: [...originalCitationEdges] } // 返回当前视图统计，避免组件重新遍历猜测。
+  return { width, height, nodes: displayedSeeds.length ? positionedNodes : [], edges: layoutEdges, isolatedCount: isolateSeeds.length, mergedVersionNodeCount, componentCount: sortedComponents.length, yearTicks, originalCitationEdgeCount: originalCitationEdges.length, visibleCitationEdgeCount: visibleCitationEdges.length, hiddenCitationEdgeCount: viewMode === 'backbone' ? originalCitationEdges.length - visibleCitationEdges.length : 0, temporarilyRevealedCitationEdgeCount: temporarilyRevealedCitationEdges.length, originalCitationEdges: [...originalCitationEdges], allCitationEdges } // 返回当前视图统计，避免组件重新遍历猜测。
 }
