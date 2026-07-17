@@ -87,7 +87,6 @@ function chooseNode(nodeId: string): void { // 统一处理全局和一阶邻域
 function showSelectedRelationship(direction: Exclude<CitationRelationshipDirection, 'all'>): void { // 切换已选论文当前要查看的直接引用方向。
   if (!selectedNodeId.value) return // 未选择论文时不改变当前图边显示。
   selectedRelationshipDirection.value = direction // 引用仅显示出边，被引用仅显示入边。
-  return // 已完成方向切换，无需路径索引状态。
 }
 
 function resetRelationshipDirection(): void { // 在清除筛选等全局重置后恢复默认直接关系查看方式。
@@ -274,7 +273,7 @@ function disposeRenderer(): void { // 释放本组件创建的可视化资源。
   resizeObserver = null // 解除观察器引用。
 }
 
-watch([layout, hoveredNodeId, selectedNodeId], async () => { // 布局或交互状态变化时重新渲染受控 SVG。
+watch([layout, hoveredNodeId, selectedNodeId, selectedRelationshipDirection], async () => { // 布局、节点交互或关系方向变化时重新渲染受控 SVG。
   await nextTick() // 等待 Vue 将最新容器状态提交到 DOM。
   renderGraph() // 按当前确定性状态重绘。
 }, { deep: false })

@@ -50,6 +50,7 @@ test('查看引用和查看被引用只绑定当前节点对应方向的真实�
   const incoming = filterRelationshipEdges(globalLayout.allCitationEdges, 'paper:a', 'incoming') // 模拟点击“查看被引用”。
   assert.deepEqual(outgoing.map((edge) => edge.id), ['cites:paper:a:paper:b']) // 仅 A 引用 B 的出边会进入 SVG 数据绑定。
   assert.deepEqual(incoming.map((edge) => edge.id), ['cites:paper:c:paper:a']) // 仅 C 引用 A 的入边会进入 SVG 数据绑定。
+  assert.notDeepEqual(outgoing.map((edge) => edge.id), incoming.map((edge) => edge.id)) // 切换方向必须得到不同的 SVG 绑定集合。
 })
 
 test('一阶邻域由显式焦点固定，邻域内选择 B 不会重新裁剪节点集合', () => { // 验证 A 邻域中普通点击 B 只切换关系中心。
