@@ -11,6 +11,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict  # 支持环境�
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # 根据当前配置模块位置定位仓库根目录。
 
 
+def resolve_database_url(database_url: str) -> str:
+    """将文件型相对 SQLite URL 固定解析到仓库根目录。
+
+    参数：
+        database_url：环境变量或默认配置提供的 SQLAlchemy 连接地址。
+    返回：
+        str：相对 SQLite 文件已转为绝对路径的连接地址；其他地址保持原样。
+    """
+    sqlite_prefix = "sqlite:///"  # 仅处理 SQLAlchemy 文件型 SQLite URL。
+    if not database_url.startswith(sqlite_prefix):  # 非 SQLite 或特殊内存 URL 不应被本地路径规则改写。
+        return database_url  # 保留用户提供的其他数据库连接地址。
+    database_path = database_url.removeprefix(sqlite_prefix)  # 提取 SQLite URL 中的文件路径部分。
+    if not database_path or database_path == ":memory:":  # 空路径和内存数据库都没有可稳定化的文件位置。
+        return database_url  # 保持 SQLAlchemy 的原始特殊语义。
+    path = Path(database_path)  # 使用系统路径语义识别绝对路径与相对路径。
+    if path.is_absolute():  # 用户显式提供绝对 SQLite URL 时必须保持原样。
+        return database_url  # 避免改写部署者选择的磁盘位置或 URL 形式。
+    return f"{sqlite_prefix}{(PROJECT_ROOT / path).resolve().as_posix()}"  # 将相对文件稳定锚定到仓库根目录。
+
+
 class Settings(BaseSettings):
     """保存可由环境变量覆盖的应用设置。
 
@@ -27,7 +47,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="ScholarFlow")  # 定义 OpenAPI 与日志显示名称。
     environment: str = Field(default="development")  # 记录当前运行环境名称。
     api_v1_prefix: str = Field(default="/api/v1")  # 集中维护版本化 API 路径。
-    database_url: str = Field(default="sqlite:///./data/scholarflow.db")  # 指定开发期 SQLite 地址。
+    database_url: str = Field(default="sqlite:///./data/scholarflow.db")  # 默认 SQLite 文件会稳定解析到仓库 data 目录。
     log_dir: Path = Field(default=Path("logs"))  # 指定可被 Git 忽略的日志目录。
     log_level: str = Field(default="INFO")  # 支持部署时调整日志详细程度。
     redis_enabled: bool = Field(default=False)  # 控制 Redis 短期存储是否在当前环境启用，默认保持 SQLite 单机可用。
@@ -83,13 +103,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def resolve_project_relative_paths(self) -> "Settings":
-        """将相对日志目录稳定解析到仓库根目录。
+        """将相对日志目录和 SQLite 地址稳定解析到仓库根目录。
 
         返回：
             Settings：日志目录已转换为绝对路径的当前配置实例。
         """
         if not self.log_dir.is_absolute():  # 仅转换默认值或环境变量提供的相对目录。
             self.log_dir = (PROJECT_ROOT / self.log_dir).resolve()  # 避免 pytest 或 IDE 工作目录改变日志位置。
+        self.database_url = resolve_database_url(self.database_url)  # 避免不同工作目录创建不同的默认 SQLite 文件。
         return self  # 保留用户显式提供的绝对日志目录。
 
     @field_validator("openalex_api_key", mode="before")

@@ -11,6 +11,7 @@ from backend.app.core.config import settings  # 读取集中式应用配置。
 from backend.app.core.logging import logger  # 使用统一控制台和文件日志器。
 from backend.app.repositories.database import initialize_database  # 初始化 SQLite 元数据。
 from backend.app.repositories.redis_client import get_redis_manager  # 管理可选 Redis 短期存储生命周期。
+from backend.app.services.search_run_recovery import SearchRunRecoveryError, SearchRunRecoveryService  # 在单进程启动时回收无法续跑的孤儿搜索运行。
 
 
 @asynccontextmanager
@@ -27,7 +28,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("正在启动 ScholarFlow 后端，环境=%s", settings.environment)  # 记录阶段性启动信息。
     try:  # 将基础设施错误记录为完整堆栈。
         initialize_database()  # 创建尚不存在的 SQLite 数据库与表结构。
-    except SQLAlchemyError:  # 仅处理数据库层可预期异常。
+        SearchRunRecoveryService().reconcile_interrupted_search_runs()  # 只回收上个进程遗留的轻量状态，不续跑任务或调用外部依赖。
+    except (SQLAlchemyError, SearchRunRecoveryError):  # 基础设施或回收失败时都不能带着不一致运行状态继续启动。
         logger.exception("SQLite 初始化失败，应用停止启动")  # 记录完整错误堆栈便于排查。
         raise  # 保持失败可见，避免服务带着不可用状态运行。
     await get_redis_manager().start()  # Redis 不可用时内部降级，SQLite 主服务仍可继续启动。

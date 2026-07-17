@@ -6,7 +6,7 @@ from sqlalchemy import create_engine  # 创建 SQLAlchemy 数据库引擎。
 from sqlalchemy.engine import Engine  # 标注数据库引擎返回类型。
 from sqlalchemy.orm import DeclarativeBase, sessionmaker  # 定义模型基类与会话工厂。
 
-from backend.app.core.config import settings  # 读取数据库地址配置。
+from backend.app.core.config import settings  # 读取已稳定化的数据库地址配置。
 from backend.app.core.logging import logger  # 记录数据库初始化状态。
 
 
@@ -23,6 +23,21 @@ def _prepare_sqlite_directory(database_url: str) -> None:
     if database_path == ":memory:":  # 内存数据库不需要文件目录。
         return  # 直接结束目录准备。
     Path(database_path).parent.mkdir(parents=True, exist_ok=True)  # 创建数据库父目录。
+
+
+def _database_log_location(database_url: str) -> str:
+    """返回不包含凭据的数据库位置摘要，用于启动日志。
+
+    参数：
+        database_url：已完成配置解析的连接地址。
+    返回：
+        str：SQLite 绝对文件路径或非 SQLite 的安全类型摘要。
+    """
+    sqlite_prefix = "sqlite:///"  # 与目录准备逻辑使用相同的文件型 SQLite 前缀。
+    if not database_url.startswith(sqlite_prefix):  # 非 SQLite URL 可能包含密码，禁止直接写入日志。
+        return "非 SQLite 数据库"  # 仅保留安全且足够的诊断信息。
+    database_path = database_url.removeprefix(sqlite_prefix)  # 提取不会包含认证凭据的 SQLite 文件部分。
+    return database_path if database_path else "SQLite 默认连接"  # 记录实际文件位置，方便定位工作目录问题。
 
 
 def create_database_engine() -> Engine:
@@ -60,4 +75,4 @@ def initialize_database() -> None:
     _ = _search_run_repository  # 明确该导入用于 SQLAlchemy 元数据注册而非直接调用。
     _ = _paper_translation_repository  # 明确该导入用于 SQLAlchemy 元数据注册而非直接调用。
     Base.metadata.create_all(bind=engine)  # 仅创建不存在的表，不删除或修改已有数据。
-    logger.info("SQLite 基础结构已准备完成，数据库=%s", settings.database_url)  # 记录数据库准备完成信息。
+    logger.info("SQLite 基础结构已准备完成，数据库路径=%s", _database_log_location(settings.database_url))  # 记录不含凭据的实际 SQLite 文件位置。

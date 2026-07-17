@@ -18,6 +18,23 @@ def test_settings_preserves_absolute_log_dir() -> None:
     assert settings.log_dir == absolute_log_dir  # 验证绝对路径不会被重复拼接或重写。
 
 
+def test_settings_resolves_relative_sqlite_database_url_from_project_root() -> None:
+    """默认和环境提供的相对 SQLite 地址不得随启动工作目录变化。"""
+    settings = Settings(_env_file=None, database_url="sqlite:///./data/isolated-search-runs.db")  # 构造不读取用户 .env 的相对 SQLite 地址。
+
+    assert settings.database_url == f"sqlite:///{(PROJECT_ROOT / 'data' / 'isolated-search-runs.db').as_posix()}"  # 验证文件固定写入仓库 data 目录。
+
+
+def test_settings_preserves_absolute_sqlite_database_url_from_environment(monkeypatch) -> None:
+    """用户显式提供的绝对 SQLite URL 不得被项目默认路径覆盖。"""
+    absolute_path = (PROJECT_ROOT / "external-data" / "custom.db").resolve()  # 构造可移植的绝对 SQLite 文件路径。
+    absolute_url = f"sqlite:///{absolute_path.as_posix()}"  # 使用 SQLAlchemy 文件型 SQLite URL 表示该路径。
+    monkeypatch.setenv("SCHOLARFLOW_DATABASE_URL", absolute_url)  # 模拟部署环境通过环境变量提供绝对数据库 URL。
+    settings = Settings(_env_file=None)  # 不读取用户 .env，只读取本用例设置的环境变量。
+
+    assert settings.database_url == absolute_url  # 验证绝对地址保持字节级不变。
+
+
 def test_settings_allows_explicit_fast_path_switches() -> None:
     """模型快速路径开关必须可由部署环境显式关闭。"""
     settings = Settings(_env_file=None, semantic_ranking_enabled=False, cross_encoder_ranking_enabled=False, llm_ranking_enabled=False)  # 构造不读取本地环境的全模型跳过配置。

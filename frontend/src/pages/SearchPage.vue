@@ -11,6 +11,7 @@ import { LibraryApiError, saveLibraryPaper } from '../services/libraryApi.js' //
 import { SearchApiError, comparePapers, deleteSearchRun, getCitationGraph, getPaperDetail, getSearchRunPapers, getSearchRunSynthesis, getSearchRunUsage, getTechnicalRoutes, listSearchRuns, restoreSearchRun, streamSearchPapers, streamSearchWithIntent, translateDiscoveryToChinese } from '../services/searchApi.js' // 使用 SSE 执行搜索、恢复运行、读取详情、综合报告、比较、图谱、服务端分页、历史、用量、路线与网页发现翻译。
 import { formatDuration } from '../utils/duration.js' // 将后端保存的精确毫秒耗时转换为易读单位。
 import { resolveSearchPageJump } from '../utils/searchResults.js' // 严格校验用户输入的目标页码。
+import { removeSearchRunHistoryItem, replaceSearchRunHistory } from '../utils/searchRunHistory.js' // 统一处理服务端刷新和 404 过期运行的本地历史自愈。
 import { deduplicateTerms } from '../utils/terms.js' // 复用卡片关键词的大小写无关去重与展示上限规则。
 import { usePaperComparison } from '../composables/usePaperComparison.js' // 统一管理二至五篇论文比较交互。
 import { usePaperDetail } from '../composables/usePaperDetail.js' // 统一管理论文详情读取交互。
@@ -219,6 +220,10 @@ function applyRecoveredRun(recovered) { // 将只读恢复响应统一映射为�
   const { state, result: recoveredResult } = recovered // 解构轻量状态与可选最终结果。
   progressEvent.value = { run_id: state.run_id, current_round: state.current_round || 0, progress: state.status === 'completed' ? 1 : 0, message: `已恢复搜索运行：${state.status}` } // 使用安全状态字段更新过程提示。
   submittedQuery.value = state.query_intent.original_query // 回显关联研究问题而不修改用户当前输入表单。
+  if (state.status === 'failed') { // 启动回收后的失败运行不具备完整结果或续跑条件。
+    recoveryMessage.value = state.stop_reason || '搜索未完成' // 直接展示后端保存的中断原因，不误导用户继续等待结果。
+    return true // 通知调用方停止恢复轮询和结果等待。
+  }
   if (recoveredResult) { // 仅当结果接口真实返回时才替换论文集合。
     result.value = recoveredResult // 使用同次持久化结果，绝不重新检索。
     conditionChips.value = buildConditionChipsFromIntent(recoveredResult.query_intent) // 使用保存意图恢复结果条件标签。
@@ -232,7 +237,7 @@ function applyRecoveredRun(recovered) { // 将只读恢复响应统一映射为�
 
 function shouldPollRecoveredRun(state, hasResult) { // 仅为尚未拿到结果的运行保留有限轮询。
   if (hasResult || state.status === 'failed') return false // 已获得结果或明确失败时不继续请求。
-  return ['queued', 'running', 'completed'].includes(state.status) // completed 但结果暂未写入时允许短暂等待持久化完成。
+  return ['pending', 'running', 'completed'].includes(state.status) // pending、running 或 completed 但结果暂未写入时允许短暂等待持久化完成。
 }
 
 function scheduleRecoveryPoll(runId) { // 安排下一次只读状态轮询。
@@ -279,6 +284,12 @@ async function restoreRunFromUrl() { // 在页面首次挂载时恢复已有 run
     const hasResult = applyRecoveredRun(recovered) // 将恢复状态或最终结果映射到页面。
     if (shouldPollRecoveredRun(recovered.state, hasResult)) startRecoveryPolling(runId) // 运行中或终态结果尚未落库时启用有限轮询回退。
   } catch (error) { // 将不存在运行或读取失败转换为安全页面提示。
+    if (error instanceof SearchApiError && error.status === 404) { // URL 可能引用了已被其他页面或用户清理的旧运行。
+      removeExpiredSearchHistoryRun(runId) // 同步移除本地索引并清理同一 URL 标识。
+      errorMessage.value = '该搜索记录已不存在，已从列表移除' // 明确告知用户当前不会继续恢复该过期运行。
+      void loadSearchHistory() // 回到首页后立即以服务端最新 SQLite 索引替换此前空的本地列表。
+      return // 404 已被自愈处理，无需再显示通用读取失败提示。
+    }
     errorMessage.value = error instanceof SearchApiError ? error.message : '恢复已保存的搜索运行时出现未知错误，请稍后重试' // 不展示内部路径或响应正文。
   } finally { // 无论恢复成功或失败都恢复表单操作。
     loading.value = false // 结束恢复加载状态。
@@ -336,14 +347,20 @@ function clearRunIdFromUrl(runId) { // 删除当前运行后移除地址中的�
   currentRunId.value = '' // 回到首页状态后允许重新展示历史入口。
 }
 
+function removeExpiredSearchHistoryRun(runId) { // 统一处理恢复或清理接口返回 404 的本地过期条目。
+  searchHistory.value = removeSearchRunHistoryItem(searchHistory.value, runId) // 立即移除已经不存在的本地索引，避免用户重复点击。
+  clearRunIdFromUrl(runId) // 仅在地址确实指向同一运行时清除失效恢复标识。
+}
+
 async function loadSearchHistory() { // 读取有限本地运行索引，不加载查询正文、论文或外部来源。
   if (!showSearchHistory.value) return // 当前结果页不展示历史，也不发起无用的索引读取。
   searchHistoryLoading.value = true // 展示历史面板的读取中状态。
   searchHistoryError.value = '' // 清除旧的读取或清理错误。
   try { // 通过客户端公共边界读取最近运行。
     const history = await listSearchRuns(10) // 固定读取最近十条，避免列表无限增长。
-    searchHistory.value = history.items // 仅保存后端允许展示的最小索引字段。
+    searchHistory.value = replaceSearchRunHistory(history.items) // 每次成功读取都完整替换本地列表，以服务端 SQLite 为唯一事实源。
   } catch (error) { // 将客户端已净化错误映射为折叠面板提示。
+    searchHistory.value = replaceSearchRunHistory(null) // 读取失败时清空旧索引，避免将上次读取结果伪装成当前数据库状态。
     searchHistoryError.value = error instanceof SearchApiError ? error.message : '读取搜索运行历史时出现未知错误，请稍后重试' // 不展示存储或网络内部细节。
   } finally { // 无论成功失败都结束历史加载状态。
     searchHistoryLoading.value = false // 恢复历史面板操作。
@@ -363,10 +380,23 @@ async function restoreSearchHistoryRun(runId) { // 从用户选择的历史索�
     if (hasResult) searchHistoryExpanded.value = false // 仅在结果确实恢复后收起历史面板，失败时保留现场。
     if (shouldPollRecoveredRun(recovered.state, hasResult)) startRecoveryPolling(recovered.state.run_id) // 尚未形成最终结果时继续有限只读轮询。
   } catch (error) { // 将历史条目过期或读取失败转换为安全页面错误。
+    if (error instanceof SearchApiError && error.status === 404) { // 历史索引可能在另一个页面被清理或已过期。
+      removeExpiredSearchHistoryRun(runId) // 移除当前过期条目，且仅清理同一运行的 URL 标识。
+      errorMessage.value = '该搜索记录已不存在，已从列表移除' // 给出用户可理解且无需重试的自愈结果。
+      return // 已处理的 404 不再覆盖为通用恢复失败提示。
+    }
     errorMessage.value = error instanceof SearchApiError ? error.message : '恢复历史搜索运行时出现未知错误，请稍后重试' // 不展示底层存储细节。
   } finally { // 所有恢复分支都恢复页面交互。
     loading.value = false // 结束恢复加载状态。
   }
+}
+
+async function restartSearchHistoryRun(run) { // 使用历史原始问题创建一次新的搜索运行，不尝试续跑旧任务。
+  const queryText = String(run?.query_text || '').trim() // 历史索引只保存可展示的原始问题，不能伪造旧 QueryIntent 中间状态。
+  if (!queryText || loading.value) return // 缺少可重搜问题或当前已有请求时禁止创建并发搜索。
+  form.queryText = queryText // 将历史问题带回输入框，确保本次新运行对用户可见且可继续编辑。
+  recoveryMessage.value = '' // 新搜索不沿用旧运行的失败或恢复提示。
+  await submitSearch() // 创建新的 SSE 搜索运行，绝不尝试恢复旧 asyncio task 或旧快照。
 }
 
 async function removeSearchHistoryRun(run) { // 在用户确认后清理一条终态本地运行及同次完整结果。
@@ -376,7 +406,7 @@ async function removeSearchHistoryRun(run) { // 在用户确认后清理一条�
   searchHistoryError.value = '' // 清除旧删除错误。
   try { // 由后端校验终态并原子删除两类快照。
     await deleteSearchRun(run.run_id) // 不在前端假设删除成功或直接操作本地 SQLite。
-    searchHistory.value = searchHistory.value.filter((item) => item.run_id !== run.run_id) // 成功后仅移除当前索引条目。
+    searchHistory.value = removeSearchRunHistoryItem(searchHistory.value, run.run_id) // 成功后仅移除当前索引条目。
     if (runState.value?.run_id === run.run_id) { // 当前正在展示被清理运行时必须清除失效结果。
       result.value = null // 不继续展示已经不存在的结果快照。
       progressEvent.value = null // 清除与已删除运行关联的进度提示。
@@ -384,6 +414,11 @@ async function removeSearchHistoryRun(run) { // 在用户确认后清理一条�
       clearRunIdFromUrl(run.run_id) // 防止刷新后使用失效运行标识再次恢复。
     }
   } catch (error) { // 将运行中 409、过期 404 或服务故障映射为公共提示。
+    if (error instanceof SearchApiError && error.status === 404) { // 删除时发现条目已经被其他页面清理，应视为本地索引过期。
+      removeExpiredSearchHistoryRun(run.run_id) // 移除过期条目并停止要求用户重复清理。
+      searchHistoryError.value = '该搜索记录已不存在，已从列表移除' // 明确说明 404 已完成本地自愈而非删除失败。
+      return // 不保留会引导用户重试的错误状态。
+    }
     searchHistoryError.value = error instanceof SearchApiError ? error.message : '清理搜索运行时出现未知错误，请稍后重试' // 不展示持久化堆栈或路径。
   } finally { // 无论成功失败均解除当前条目操作锁。
     deletingRunId.value = '' // 允许用户继续处理其他历史条目或重试。
@@ -642,13 +677,13 @@ function closeTechnicalRoutes() { // 关闭路线弹层并释放当前结果。
       </form>
       <details v-if="showSearchHistory" class="search-history" :open="searchHistoryExpanded || searchHistoryLoading || Boolean(searchHistoryError)" @toggle="searchHistoryExpanded = $event.currentTarget.open">
         <summary>已保存的搜索运行 <span>{{ searchHistory.length }}</span></summary>
-        <p>显示本地搜索问题、运行状态与时间；不展示论文内容。</p>
+        <div class="history-header"><p>显示本地搜索问题、运行状态与时间；不展示论文内容。</p><button type="button" :disabled="searchHistoryLoading" @click="loadSearchHistory">{{ searchHistoryLoading ? '正在刷新…' : '刷新记录' }}</button></div>
         <p v-if="searchHistoryLoading" class="history-message">正在读取运行历史…</p>
         <p v-else-if="searchHistoryError" class="history-message is-error" role="alert">{{ searchHistoryError }}</p>
         <ul v-else-if="searchHistory.length">
           <li v-for="item in searchHistory" :key="item.run_id">
             <div><div class="history-title-row"><strong>{{ item.status }}</strong><p class="history-query" :title="item.query_text">{{ item.query_text }}</p></div><span>{{ `${item.current_round} / ${item.max_rounds} 轮 · ${formatHistoryTime(item.updated_at)}` }}</span><small>{{ item.stop_reason || (item.result_ready ? '结果已保存' : '结果尚未就绪') }}</small></div>
-            <div class="history-actions"><button type="button" :disabled="loading" @click="restoreSearchHistoryRun(item.run_id)">{{ item.result_ready ? '恢复结果' : '查看状态' }}</button><button type="button" class="history-delete" :disabled="deletingRunId === item.run_id || !['completed', 'failed', 'cancelled'].includes(item.status)" @click="removeSearchHistoryRun(item)">{{ deletingRunId === item.run_id ? '正在清理…' : '清理' }}</button></div>
+            <div class="history-actions"><button type="button" :disabled="loading" @click="restoreSearchHistoryRun(item.run_id)">查看状态</button><button type="button" :disabled="loading" @click="restartSearchHistoryRun(item)">重新检索</button><button type="button" class="history-delete" :disabled="deletingRunId === item.run_id || !['completed', 'failed', 'cancelled'].includes(item.status)" @click="removeSearchHistoryRun(item)">{{ deletingRunId === item.run_id ? '正在清理…' : '清理' }}</button></div>
           </li>
         </ul>
         <p v-else class="history-message">暂无可恢复的本地搜索运行。</p>
@@ -932,6 +967,36 @@ h1 em { /* 突出“编织”产品隐喻。 */
   color: #718496; /* 使用辅助文字色。 */
   font-size: 0.78rem; /* 提升隐私说明与状态文本的阅读舒适度。 */
   line-height: 1.55; /* 提升多行状态文本可读性。 */
+}
+
+.history-header { /* 并列历史隐私边界说明与显式刷新入口。 */
+  display: flex; /* 让说明与刷新操作在宽屏保持同一信息行。 */
+  align-items: center; /* 垂直对齐辅助文案和按钮。 */
+  justify-content: space-between; /* 将刷新操作置于说明右侧，便于发现。 */
+  gap: 0.75rem; /* 避免窄屏时说明文字贴近操作按钮。 */
+}
+
+.history-header > p { /* 仅收紧标题行中的说明段落，保留错误与空状态的既有样式。 */
+  flex: 1 1 auto; /* 允许说明占用剩余空间并自然换行。 */
+}
+
+.history-header button { /* 提供不触发外部检索的本地历史刷新入口。 */
+  flex: 0 0 auto; /* 不让长说明文字挤压按钮的可点击面积。 */
+  min-height: 2.1rem; /* 保持鼠标和触摸操作的舒适高度。 */
+  padding: 0.38rem 0.65rem; /* 为增大后的历史辅助字体保留适当留白。 */
+  border: 1px solid #b8ccdc; /* 与既有历史操作保持一致的低强调边框。 */
+  border-radius: 0.45rem; /* 复用历史操作按钮的圆角语言。 */
+  color: #2e6f95; /* 使用品牌蓝色表明这是读取操作。 */
+  background: #ffffff; /* 保持按钮与历史面板背景有可点击对比。 */
+  cursor: pointer; /* 明确该入口可刷新服务器状态。 */
+  font: inherit; /* 与页面字体和可访问性设置保持一致。 */
+  font-size: 0.76rem; /* 与历史操作按钮保持可读一致。 */
+  font-weight: 800; /* 在辅助区域中维持足够辨识度。 */
+}
+
+.history-header button:disabled { /* 读取请求进行中时避免并发刷新覆盖结果。 */
+  cursor: default; /* 禁用时不显示可点击暗示。 */
+  opacity: 0.5; /* 使用既有禁用视觉语言。 */
 }
 
 .search-history ul { /* 纵向组织最近运行索引项。 */
