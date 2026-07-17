@@ -51,7 +51,7 @@ def _build_test_settings() -> Settings:
 def test_search_params_quote_terms_and_map_submitted_date_range() -> None:
     """参数构造器应保护用户词语并将年份明确映射为提交日期近似过滤。"""
     params = build_arxiv_search_params(_build_query_intent())  # 构造不含网络或密钥的来源参数。
-    assert params["search_query"] == 'all:"forecasting" AND all:"Transformer" AND submittedDate:[202001010000 TO 202412312359]'  # 验证全字段短语、AND 语义和提交日期范围。
+    assert params["search_query"] == 'all:"forecasting" AND (all:"Transformer" OR all:"Transformers") AND submittedDate:[202001010000 TO 202412312359]'  # 验证核心概念 AND、词形 OR 与提交日期范围。
     assert params["max_results"] == 5  # 验证目标结果数量映射为来源单页限制。
 
 
