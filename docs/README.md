@@ -20,6 +20,7 @@
 - 第一阶段评测模块说明：`../evaluation/README.md`；
 - 合成 fixture、候选快照、JSONL 契约、检索/排序指标、效率与结构代理分、A/B/C/D 离线消融编排及报告均位于独立 `evaluation/` 目录；
 - 排序前候选快照固定在确定性规则过滤后、BGE-M3 前，并使用 SHA-256 封存；同一矩阵的 BGE-M3/Cross Encoder 配置共享快照哈希，计划生成不会执行模型；
+- 生产搜索已将来源路由与调用、身份融合/RRF 和规则过滤抽取为不依赖排序模型的 `CandidateGenerationService`，现有公共 API 仍继续执行完整排序链；
 - 评测模块不读取 `.env`，不调用生产搜索、学术 API、LLM 或本地模型；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 

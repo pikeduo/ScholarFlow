@@ -1156,4 +1156,20 @@ E. 同步 AGENTS.md。
 - 新增 `snapshot-check` 与 `ablation-plan` CLI，前者只读校验，后者只生成 `academic_api_calls=0`、`deepseek_calls=0` 的任务计划，不执行排序模型；
 - 合成快照和纯替身测试已覆盖篡改、重复候选、召回规模冲突、DeepSeek 禁用和 A/B/C/D 候选传递。
 
-第二阶段仍不包含生产候选快照导出、真实 BGE-M3/Cross Encoder 适配器、DeepSeek 对比、公开数据集下载或完整 benchmark。生产导出边界已确认位于规则过滤后、BGE-M3 前；下一阶段先抽取不执行 BGE-M3、Cross Encoder 或 DeepSeek 的内部候选生成服务，再决定独立导出器的显式执行入口；不得直接读取现有 SQLite 最终结果代替排序前快照。
+第二阶段仍不包含生产候选快照导出、真实 BGE-M3/Cross Encoder 适配器、DeepSeek 对比、公开数据集下载或完整 benchmark。生产导出边界已确认位于规则过滤后、BGE-M3 前；不得直接读取现有 SQLite 最终结果代替排序前快照。
+
+---
+
+## 20. 第三阶段内部候选边界实施状态（2026-07-18）
+
+生产搜索已完成行为保持型内部拆分，尚未增加快照导出命令或评测 HTTP API：
+
+- 新增 `CandidateGenerationService`，统一执行来源路由与调用、已规范化 `PaperRecord` 汇总、身份融合/RRF、确定性规则过滤和独立网页发现；
+- 新增 `CandidateGenerationResult`，分别保存学术来源与网页来源数量和错误，并校验成功映射数、身份去重后数量、合并数、过滤数和实际排序输入数；
+- 候选生成服务不依赖、构造或调用 BGE-M3、Cross Encoder、DeepSeek 和覆盖分析；
+- `MultiSourceRecallCoordinator` 改为先调用候选生成服务，再按原顺序执行 BGE-M3、Cross Encoder、DeepSeek 和覆盖分析；
+- 生产组合根分别缓存候选生成服务和完整排序协调器，现有公共 FastAPI 请求与响应契约不变；
+- `MultiSourceRecallResult.raw_paper_count` 因公共兼容仍保留原字段名，但其真实含义明确为适配器成功映射并进入身份融合的统一论文数，不代表供应商原始响应条目数；
+- 新增候选生成服务的纯替身测试，覆盖正常融合与过滤、来源异常、未注册来源和网页发现分流，不访问网络或模型。
+
+下一阶段只实现由用户显式触发的单轮快照导出适配层和文件写入边界。该入口必须接收已经准备好的 `QueryIntent`，默认拒绝网页发现，不运行 Query Agent、本地排序模型或 DeepSeek；实现前不得让现有离线命令隐式调用生产候选服务。

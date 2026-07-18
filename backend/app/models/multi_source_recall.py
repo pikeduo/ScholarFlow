@@ -14,11 +14,11 @@ class MultiSourceRecallResult(BaseModel):
 
     属性：
         route_plan：本次执行前生成的来源选择计划。
-        papers：完成跨来源身份融合后的统一论文记录。
+        papers：完成分层排序、约束核验和最终截断的论文记录。
         discoveries：不能合并为论文的补充网页发现项。
         source_counts：每个已选来源成功返回的条目数量。
         source_errors：来源调用失败或未注册时的安全错误摘要。
-        raw_paper_count：各学术来源返回并进入融合前的原始论文数量。
+        raw_paper_count：兼容字段，表示学术适配器成功映射并进入融合前的统一论文数量，不代表供应商原始响应条目数。
         merged_paper_count：被合并到其他身份组的重复来源记录数量。
         filtered_paper_count：融合后因确定性规则被移除的论文数量。
         filter_reason_counts：按首个未通过规则汇总的移除数量。
@@ -44,12 +44,12 @@ class MultiSourceRecallResult(BaseModel):
     query_planning_prompt_tokens: int = Field(default=0, ge=0)  # 保存查询规划输入 Token 数量。
     query_planning_completion_tokens: int = Field(default=0, ge=0)  # 保存查询规划输出 Token 数量。
     query_planning_duration_ms: int = Field(default=0, ge=0)  # 保存查询规划请求与解析耗时。
-    papers: list[PaperRecord] = Field(default_factory=list)  # 保存按首次身份组顺序排列的融合论文记录。
+    papers: list[PaperRecord] = Field(default_factory=list)  # 保存完成分层排序、约束核验和最终截断的论文记录。
     discoveries: list[SupplementalDiscoveryItem] = Field(default_factory=list)  # 保存独立于论文集合的网页发现结果。
     source_counts: dict[str, int] = Field(default_factory=dict)  # 保存每个来源的成功结果数。
     source_errors: dict[str, str] = Field(default_factory=dict)  # 保存不含密钥、路径和响应正文的来源错误摘要。
     cache_hit_count: int = Field(default=0, ge=0)  # 保存本轮来源响应 Redis 缓存的有效命中次数。
-    raw_paper_count: int = Field(default=0, ge=0)  # 保存跨来源融合前的原始学术论文数量。
+    raw_paper_count: int = Field(default=0, ge=0)  # 兼容保存适配器成功映射并进入融合前的统一论文数量。
     merged_paper_count: int = Field(default=0, ge=0)  # 保存因身份融合而被合并的重复来源记录数量。
     filtered_paper_count: int = Field(default=0, ge=0)  # 保存融合后因确定性规则被移除的论文数量。
     filter_reason_counts: dict[str, int] = Field(default_factory=dict)  # 保存按首个失败规则汇总的安全过滤统计。

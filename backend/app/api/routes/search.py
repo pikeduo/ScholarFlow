@@ -28,7 +28,8 @@ from backend.app.models.search_synthesis import SearchSynthesisReport  # 声明�
 from backend.app.models.search_run_history import SearchRunHistoryPage  # 声明包含搜索问题但不含论文内容的运行历史响应。
 from backend.app.models.paper import PaperSource  # 限制结果来源筛选只能使用已知学术来源。
 from backend.app.models.search_event import SearchProgressEvent  # 传递不含敏感查询和论文摘要的 SSE 事件。
-from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 执行动态路由、并发召回和跨来源融合。
+from backend.app.services.candidate_generation import CandidateGenerationService  # 装配规则过滤后、BGE-M3 前的共享候选生成边界。
+from backend.app.services.multi_source_recall import MultiSourceRecallCoordinator  # 在共享排序前候选上执行完整分层排序和覆盖分析。
 from backend.app.services.multi_round_search import MultiRoundSearchController  # 执行有限轮次的召回、缺口修复与保护性停止。
 from backend.app.services.search_run_store import SearchRunStateStore, SqliteSearchRunStateStore, SearchRunStoreError  # 装配 SQLite 状态持久化并映射安全读取错误。
 from backend.app.services.search_events import InMemorySearchRunEventPublisher  # 在单次流式请求内连接控制器和事件响应。
@@ -72,13 +73,13 @@ def get_openalex_search_service() -> OpenAlexSearchService:
 
 
 @lru_cache(maxsize=1)
-def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
-    """构造并在当前进程复用多源召回、融合、排序和网页补充协调器。
+def get_candidate_generation_service() -> CandidateGenerationService:
+    """构造并复用不包含任何模型排序的生产候选生成服务。
 
     返回：
-        MultiSourceRecallCoordinator：复用真实适配器、限流状态及本地模型实例的协调器。
+        CandidateGenerationService：复用真实适配器、来源限流、融合和规则过滤服务。
     """
-    return MultiSourceRecallCoordinator(  # 将适配器装配集中在 API 依赖层，避免服务层绑定具体供应商。
+    return CandidateGenerationService(  # 将真实来源适配器装配集中在组合根，服务层只依赖统一协议。
         source_router=SourceRouter(),  # 使用集中配置驱动的确定性来源选择规则。
         academic_adapters={  # 注册所有已实现的学术来源；路由器决定本次是否实际调用。
             "openalex": OpenAlexClient(),  # 注册固定主学术来源。
@@ -89,6 +90,16 @@ def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
         },
         web_discovery_adapters={"tavily": TavilyClient()},  # 注册独立网页补充来源且永不进入论文融合。
     )
+
+
+@lru_cache(maxsize=1)
+def get_multi_source_recall_coordinator() -> MultiSourceRecallCoordinator:
+    """构造并在当前进程复用候选生成、分层排序和覆盖分析协调器。
+
+    返回：
+        MultiSourceRecallCoordinator：复用共享候选服务及本地模型实例的协调器。
+    """
+    return MultiSourceRecallCoordinator(candidate_generation_service=get_candidate_generation_service())  # 公共搜索继续完整执行排序链，候选服务可被独立测试和未来显式导出复用。
 
 
 @lru_cache(maxsize=1)
