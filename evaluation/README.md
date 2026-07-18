@@ -1,6 +1,6 @@
 # ScholarFlow 离线评测模块
 
-本目录是与 `backend/` 生产搜索完全隔离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排。它只读取用户显式提供的本地 JSONL/JSON 文件；不会读取 `.env`，不会访问学术 API、LLM 或本地模型，也不提供数据集或模型下载命令。
+本目录是与 `backend/` 生产搜索流程分离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排，第三阶段提供唯一的受控在线候选导出入口。`fixture`、`snapshot-check` 和 `ablation-plan` 始终只读取用户显式提供的本地 JSONL/JSON 文件，不读取 `.env`，不访问学术 API、LLM 或本地模型。只有用户手动执行带 `--allow-online-sources` 的 `snapshot-export` 时，才会延迟装配生产学术来源；模块不提供数据集或模型下载命令。
 
 ## 第一阶段能力
 
@@ -27,6 +27,16 @@
 加载器要求 `snapshot_hash` 与规范化内容一致，并拒绝重复 `snapshot_id`、重复 `query_id`、重复论文、断裂排名、非确定性 RRF 顺序、来源计数漂移、过滤计数漂移和未声明来源。快照论文按 `rrf_score` 降序、`paper_id` 升序封存。现有 SQLite 中保存的是生产排序后的最终结果，不能直接作为此处排序前候选快照。
 
 `source_recall_count`、`semantic_top_k`、`cross_encoder_top_k`、`target_paper_count` 与 `evaluation_top_k` 是五个不同概念。前四者描述候选生成或排序流水线，`evaluation_top_k` 只控制对既有预测列表的评分截断，改变它不会生成候选或调用 API。
+
+## 第三阶段能力
+
+- `adapters/scholarflow_snapshot.py`：将生产 `CandidateGenerationResult` 映射为 `CandidateSnapshot`，不修改生产 API；
+- `runners/snapshot_export.py`：在来源调用前校验单轮、零网页、零本地模型和新输出路径，并将一份快照原子写成单条 JSONL；
+- `snapshot-export`：唯一可能读取生产配置并调用真实学术来源的 CLI，必须显式提供 `--allow-online-sources`；
+- 导出器只复用 `CandidateGenerationService` 的来源路由、规范化、身份融合/RRF 和确定性规则过滤，不创建 `SearchRunState`，不进入 BGE-M3、Cross Encoder、DeepSeek、覆盖分析或多轮搜索；
+- 导出结果将逻辑学术来源调用数、缓存命中和候选阶段耗时写入 `usage`；当前无法可靠观测的实际 HTTP 请求、重试和限流次数保持 `null`，LLM 调用和 Token 明确为零。
+
+输入 `QueryIntent` 必须由用户提前准备，并满足：`retrieval_round=1`、显式设置 `source_recall_count`、`requires_web_evidence=false`、`enable_semantic_ranking=false`、`enable_cross_encoder_ranking=false`。输出路径必须尚不存在，避免在线生成后覆盖已有快照。候选服务返回网页来源或网页发现项时，导出也会失败，不会把它们伪装为论文候选。
 
 ## 输入文件
 
@@ -74,6 +84,19 @@ python -m evaluation ablation-plan `
   --output evaluation/results/ablation-plan.json
 ```
 
+按需生成真实排序前候选快照时，由用户检查 `QueryIntent`、API 配置和输出路径后手动执行：
+
+```powershell
+python -m evaluation snapshot-export `
+  --query-intent evaluation/inputs/query-intent-q001.json `
+  --query-id q-001 `
+  --snapshot-id q-001-openalex-20260719 `
+  --output evaluation/snapshots/q-001-openalex-20260719.jsonl `
+  --allow-online-sources
+```
+
+该命令是上述离线命令的唯一在线例外，可能读取 `.env` 中的来源配置并调用真实学术 API。它不会调用 Query Agent、LLM 或本地排序模型，也不会下载模型或数据集。Codex 不自动执行该命令；真实运行及生成文件的内容审阅由用户负责。
+
 任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。真正执行 BGE-M3 或 Cross Encoder 时，调用方必须显式提供实现 `OfflineRankingScorer` 的适配器；当前模块没有真实模型适配器，也不会回退加载生产模型。
 
 输出目录被 Git 忽略，包含：
@@ -86,4 +109,4 @@ python -m evaluation ablation-plan `
 
 ## 后续边界
 
-当前模块不包含生产候选快照导出、公开数据集适配、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。生产侧已抽取 `CandidateGenerationService`，其边界固定为规则过滤后、BGE-M3 前，且不依赖或调用任何本地排序模型、DeepSeek 或覆盖分析。下一阶段只规划由用户显式执行的单轮快照导出器；在导出器落地前，该生产内部服务不会由离线评测命令自动调用。无论采用哪种方式，本地排序消融、Top-K、指标和报告调整都必须复用已封存快照。
+当前模块已包含由用户显式执行的单轮生产候选快照导出，但仍不包含公开数据集适配、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段优先实现公开评测数据到现有金标契约的纯离线适配边界；数据下载和完整转换仍由用户显式执行。

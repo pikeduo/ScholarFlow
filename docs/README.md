@@ -15,13 +15,14 @@
 9. `ScholarFlow_评测与测试规划.md`
 10. `acceptance/文献搜索端到端验收清单.md`
 
-## 已实现的离线评测入口
+## 已实现的评测入口
 
 - 第一阶段评测模块说明：`../evaluation/README.md`；
 - 合成 fixture、候选快照、JSONL 契约、检索/排序指标、效率与结构代理分、A/B/C/D 离线消融编排及报告均位于独立 `evaluation/` 目录；
 - 排序前候选快照固定在确定性规则过滤后、BGE-M3 前，并使用 SHA-256 封存；同一矩阵的 BGE-M3/Cross Encoder 配置共享快照哈希，计划生成不会执行模型；
 - 生产搜索已将来源路由与调用、身份融合/RRF 和规则过滤抽取为不依赖排序模型的 `CandidateGenerationService`，现有公共 API 仍继续执行完整排序链；
-- 评测模块不读取 `.env`，不调用生产搜索、学术 API、LLM 或本地模型；
+- `fixture`、`snapshot-check` 和 `ablation-plan` 保持完全离线，不读取 `.env`，不调用生产搜索、学术 API、LLM 或本地模型；
+- `snapshot-export` 是唯一受控在线例外：只在用户显式提供 `--allow-online-sources` 后读取已准备的单轮 `QueryIntent`、延迟装配 `CandidateGenerationService` 并写出一份排序前快照；它拒绝网页发现和已存在输出，不运行 Query Agent、BGE-M3、Cross Encoder 或 DeepSeek；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 
 ## 使用原则

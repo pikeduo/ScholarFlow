@@ -1156,7 +1156,7 @@ E. 同步 AGENTS.md。
 - 新增 `snapshot-check` 与 `ablation-plan` CLI，前者只读校验，后者只生成 `academic_api_calls=0`、`deepseek_calls=0` 的任务计划，不执行排序模型；
 - 合成快照和纯替身测试已覆盖篡改、重复候选、召回规模冲突、DeepSeek 禁用和 A/B/C/D 候选传递。
 
-第二阶段仍不包含生产候选快照导出、真实 BGE-M3/Cross Encoder 适配器、DeepSeek 对比、公开数据集下载或完整 benchmark。生产导出边界已确认位于规则过滤后、BGE-M3 前；不得直接读取现有 SQLite 最终结果代替排序前快照。
+第二阶段完成时尚不包含生产候选快照导出、真实 BGE-M3/Cross Encoder 适配器、DeepSeek 对比、公开数据集下载或完整 benchmark。生产导出边界已确认位于规则过滤后、BGE-M3 前；不得直接读取现有 SQLite 最终结果代替排序前快照。候选导出随后在第 21 节落地。
 
 ---
 
@@ -1172,4 +1172,23 @@ E. 同步 AGENTS.md。
 - `MultiSourceRecallResult.raw_paper_count` 因公共兼容仍保留原字段名，但其真实含义明确为适配器成功映射并进入身份融合的统一论文数，不代表供应商原始响应条目数；
 - 新增候选生成服务的纯替身测试，覆盖正常融合与过滤、来源异常、未注册来源和网页发现分流，不访问网络或模型。
 
-下一阶段只实现由用户显式触发的单轮快照导出适配层和文件写入边界。该入口必须接收已经准备好的 `QueryIntent`，默认拒绝网页发现，不运行 Query Agent、本地排序模型或 DeepSeek；实现前不得让现有离线命令隐式调用生产候选服务。
+该阶段完成后安排的下一项是由用户显式触发的单轮快照导出适配层和文件写入边界。该入口必须接收已经准备好的 `QueryIntent`，默认拒绝网页发现，不运行 Query Agent、本地排序模型或 DeepSeek；现有离线命令不得隐式调用生产候选服务。实施结果见第 21 节。
+
+---
+
+## 21. 第三阶段候选快照导出实施状态（2026-07-19）
+
+单轮在线候选已能由用户显式封存为离线消融输入，生产公共 API 和完整搜索流程未修改：
+
+- 新增生产结果到评测契约的适配器，将 `CandidateGenerationResult` 映射为 `CandidateSnapshot 1.1`，并按 RRF 降序、论文 ID 升序稳定封存；
+- 新增 `snapshot-export` CLI，必须同时提供已有 `QueryIntent` 文件、`query_id`、`snapshot_id`、尚不存在的输出路径和 `--allow-online-sources`；
+- 所有静态条件与输出冲突在候选服务装配前校验；未授权时不读取 QueryIntent、不读取生产配置，也不创建来源适配器；
+- 输入必须为第一轮，显式设置 `source_recall_count`，关闭网页发现、BGE-M3 和 Cross Encoder；导出链路不调用 Query Agent、DeepSeek、覆盖分析或多轮控制器；
+- 导出器只调用一次 `CandidateGenerationService.generate`，把规则过滤后的结果写成单条 UTF-8 JSONL，并以 SHA-256 校验内容；已存在目标不会被覆盖；
+- `usage.academic_api_calls` 表示路由学术来源的逻辑调用数，缓存命中和候选生成耗时按现有可观测值冻结；当前无法可靠聚合的实际 HTTP 请求、重试和限流次数保持 `null`，LLM 调用和 Token 固定为零；
+- `fixture`、`snapshot-check` 和 `ablation-plan` 仍为完全离线命令，不会因新增导出入口而装配生产服务；
+- 测试只注入合成候选生成器，覆盖映射、阶段计数、哈希、已有文件保护、不安全 QueryIntent 拒绝和 CLI 授权，不访问真实来源、LLM 或本地模型。
+
+用户手动命令和输入要求见 `../evaluation/README.md`。本入口不会下载数据集或模型，也不会由 Codex 自动运行。生成一次快照后，BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标和报告的任何调整都必须离线复用该快照，不得重新调用学术 API。
+
+下一阶段优先实现公开评测数据到现有 `GoldQuery`/fixture 契约的纯离线适配与校验边界，不自动下载 PaSa、RealScholarQuery 或其他数据集；真实数据准备和完整转换继续由用户显式执行。

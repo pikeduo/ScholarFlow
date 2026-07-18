@@ -1,4 +1,4 @@
-"""提供与生产搜索隔离的 ScholarFlow 完全离线评测能力。"""
+"""提供默认离线、仅显式命令可导出在线候选的 ScholarFlow 评测能力。"""
 
 from evaluation.runners.fixture import evaluate_records  # 暴露不访问网络的统一评测入口。
 

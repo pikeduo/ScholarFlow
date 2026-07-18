@@ -1,7 +1,10 @@
-"""提供只读取本地文件的离线 fixture 评测命令。"""
+"""提供默认离线、仅经显式授权才可在线生成候选快照的评测命令。"""
 
 import argparse  # 解析明确的本地输入与输出参数。
+import asyncio  # 仅在候选快照导出分支运行异步生产候选服务。
+from collections.abc import Callable  # 为测试注入不访问真实来源的候选服务工厂。
 from pathlib import Path  # 规范化用户传入路径。
+from typing import Any  # 避免离线命令导入生产候选服务类型。
 
 from evaluation.runners.fixture import run_fixture  # 调用完全离线运行入口。
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
@@ -9,9 +12,9 @@ from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只�
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """构建不包含下载、API 或模型命令的参数解析器。"""
-    parser = argparse.ArgumentParser(description="ScholarFlow 完全离线评测工具")  # 创建根命令。
-    subparsers = parser.add_subparsers(dest="command", required=True)  # 只暴露完全离线命令。
+    """构建默认离线并隔离唯一受控在线入口的参数解析器。"""
+    parser = argparse.ArgumentParser(description="ScholarFlow 离线评测与受控候选快照工具")  # 创建根命令。
+    subparsers = parser.add_subparsers(dest="command", required=True)  # 明确区分离线命令和受控在线命令。
     fixture_parser = subparsers.add_parser("fixture", help="读取本地 JSONL fixture 并生成报告")  # 创建离线 fixture 命令。
     fixture_parser.add_argument("--gold", type=Path, required=True, help="本地金标 JSONL 路径")  # 要求显式金标文件。
     fixture_parser.add_argument("--predictions", type=Path, required=True, help="本地预测 JSONL 路径")  # 要求显式预测文件。
@@ -23,12 +26,19 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--snapshots", type=Path, required=True, help="本地候选快照 JSONL 路径")  # 只读加载共享候选。
     plan_parser.add_argument("--matrix", type=Path, required=True, help="本地 A/B/C/D 矩阵 JSON 路径")  # 只读加载排序配置。
     plan_parser.add_argument("--output", type=Path, required=True, help="本地计划 JSON 输出路径")  # 要求显式输出文件。
+    export_parser = subparsers.add_parser("snapshot-export", help="显式授权一次候选生成并导出排序前快照")  # 创建唯一受控在线入口。
+    export_parser.add_argument("--query-intent", type=Path, required=True, help="已准备好的单轮 QueryIntent JSON 路径")  # 禁止隐式调用 Query Agent。
+    export_parser.add_argument("--query-id", required=True, help="评测数据集中的稳定查询标识")  # 要求显式关联评测查询。
+    export_parser.add_argument("--snapshot-id", required=True, help="本次候选快照的唯一标识")  # 要求显式指定复用键。
+    export_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的候选快照 JSONL 路径")  # 禁止覆盖已有在线候选。
+    export_parser.add_argument("--allow-online-sources", action="store_true", help="确认允许本次命令调用真实学术来源")  # 使用单独开关形成明确在线授权。
     return parser  # 返回可测试解析器。
 
 
-def main(argv: list[str] | None = None) -> int:
-    """运行指定离线命令并返回进程退出码。"""
-    args = build_parser().parse_args(argv)  # 解析调用参数。
+def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[], Any] | None = None) -> int:
+    """运行指定命令并返回进程退出码；测试可注入零网络候选服务。"""
+    parser = build_parser()  # 保留解析器以输出统一的授权错误。
+    args = parser.parse_args(argv)  # 解析调用参数。
     if args.command == "fixture":  # 第一阶段唯一受支持命令。
         summary = run_fixture(args.gold, args.predictions, args.output_dir, args.config)  # 只读取本地文件并写本地报告。
         print(f"[OK] 离线评测完成：{summary.retrieval.query_count} 条查询，报告目录 {args.output_dir}")  # 输出不含查询正文的安全摘要。
@@ -44,4 +54,19 @@ def main(argv: list[str] | None = None) -> int:
         write_ablation_plan(plan, args.output)  # 写出用户指定计划文件。
         print(f"[OK] 离线消融计划完成：{plan.task_count} 个任务，学术 API=0，DeepSeek=0")  # 明确资源边界。
         return 0  # 表示计划生成成功。
+    if args.command == "snapshot-export":  # 第三阶段唯一受控在线候选生成入口。
+        if not args.allow_online_sources:  # 未显式授权时不得读取配置或构造生产适配器。
+            parser.error("snapshot-export 必须显式提供 --allow-online-sources；该命令可能调用真实学术 API")  # 以标准 CLI 错误拒绝隐式在线执行。
+        from evaluation.runners.snapshot_export import export_candidate_snapshot_to_file, load_query_intent, validate_snapshot_export_request  # 延迟导入在线边界，保持其他命令不触碰生产服务。
+
+        query = load_query_intent(args.query_intent)  # 只读取用户显式提供的结构化查询文件。
+        validate_snapshot_export_request(query, query_id=args.query_id, snapshot_id=args.snapshot_id, output_path=args.output)  # 在创建来源客户端前完成全部静态预检。
+        if candidate_service_factory is None:  # 正常 CLI 执行才装配生产候选服务。
+            from backend.app.api.routes.search import get_candidate_generation_service  # 延迟读取生产配置和来源适配器工厂。
+
+            candidate_service_factory = get_candidate_generation_service  # 复用生产候选生成装配但不进入完整搜索流程。
+        generator = candidate_service_factory()  # 授权且预检成功后才创建候选服务。
+        snapshot = asyncio.run(export_candidate_snapshot_to_file(generator, query, query_id=args.query_id, snapshot_id=args.snapshot_id, output_path=args.output))  # 仅执行一次规则过滤前后的候选生成闭环。
+        print(f"[OK] 候选快照已封存：{snapshot.ranking_candidate_count} 篇，逻辑学术 API={snapshot.usage.academic_api_calls}，SHA-256={snapshot.snapshot_hash}")  # 输出不含查询和论文正文的安全摘要。
+        return 0  # 表示快照写入成功。
     raise ValueError(f"不支持的命令: {args.command}")  # 防止未来分支静默忽略。

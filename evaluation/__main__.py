@@ -1,4 +1,4 @@
-"""允许通过 ``python -m evaluation`` 运行完全离线评测。"""
+"""允许通过 ``python -m evaluation`` 运行离线评测或显式授权的候选导出。"""
 
 from evaluation.cli import main  # 导入命令入口。
 

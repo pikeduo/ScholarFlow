@@ -97,6 +97,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - BGE-M3 与 Cross Encoder 本地排序消融必须复用同一份已规范化、去重的候选快照，不得为不同排序配置重复调用学术 API。
 - 排序前候选快照必须明确标记为规范化、身份去重、RRF 与确定性规则过滤后且 BGE-M3 前的阶段，并以内容哈希封存；去重前、去重后、规则过滤数和排序输入数必须分别记录，未观测的供应商原始条目数不得用规范化数量或零代替；现有 SQLite 最终结果快照不得冒充排序前候选快照。
 - 生产侧排序前候选生成必须统一复用 `CandidateGenerationService`：该服务只负责来源路由与调用、身份融合/RRF、确定性规则过滤和独立网页发现，不得依赖或调用 BGE-M3、Cross Encoder、DeepSeek 或覆盖分析；生产搜索继续在其输出上执行完整排序链。
+- `python -m evaluation snapshot-export` 是唯一允许评测模块调用生产学术来源的命令：必须由用户显式提供 `--allow-online-sources`、已准备好的第一轮 `QueryIntent` 和尚不存在的输出路径；输入必须明确设置 `source_recall_count`，关闭网页发现、BGE-M3 与 Cross Encoder。该入口不得调用 Query Agent、DeepSeek、覆盖分析或多轮搜索，助手不得自动执行。
 - 调整指标、评分 Top-K 或报告格式只读取既有预测和候选快照，不得重新调用学术 API；只有来源查询、来源召回规模、`QueryIntent` 或多轮策略改变时才重新生成在线候选。
 - 第一轮本地排序消融关闭 DeepSeek；DeepSeek 仅用于开发集表现最好的少量配置，并单独记录调用数、Token 与费用。
 - 真实评测数据下载、学术 API、LLM、本地模型和完整 benchmark 必须由用户显式执行；离线测试只能使用合成 fixture 或 mock，不得读取 `.env`、访问网络或下载模型。
@@ -119,7 +120,7 @@ backend/              # 可直接从仓库根目录导入的 Python 包
     core/           # 配置、日志、异常与通用基础设施
   tests/           # Python 测试包，确保 pytest 从仓库根目录导入 backend
 frontend/           # Vue 3 应用
-evaluation/         # 与生产搜索隔离的离线契约、指标、fixture、报告和测试
+evaluation/         # 与生产流程分离的评测契约、离线编排及显式授权候选快照导出
 logs/                # 运行日志，不提交
 data/                # 本地数据、索引与数据库，不提交
 requirements.txt
