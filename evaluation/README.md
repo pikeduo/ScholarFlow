@@ -14,7 +14,7 @@
 
 ## 第二阶段能力
 
-- `contracts/snapshot.py`：规范化、去重、RRF 后且本地排序前的候选快照；
+- `contracts/snapshot.py`：规范化、去重、RRF、确定性规则过滤后且 BGE-M3 前的候选快照；
 - `runners/snapshot_loader.py`：只读 JSONL 加载、SHA-256、重复身份和阶段边界校验；
 - `contracts/ablation.py`：共享在线召回规模和评分口径的 A/B/C/D 矩阵；
 - `adapters/base.py`：不绑定模型库、不会自动加载模型的离线打分协议；
@@ -22,7 +22,9 @@
 - `config/ablation_default.json`：DeepSeek 全部关闭的标准第一轮矩阵；
 - `fixtures/candidate_snapshots.jsonl`：已封存且不代表真实结果的纯合成快照。
 
-候选快照的 `snapshot_stage` 固定为 `normalized_deduplicated_rrf`。加载器要求 `snapshot_hash` 与规范化内容一致，并拒绝重复 `snapshot_id`、重复 `query_id`、重复论文、断裂排名、逆序 RRF 和未声明来源。现有 SQLite 中保存的是生产排序后的最终结果，不能直接作为此处排序前候选快照。
+候选快照契约版本为 `1.1`，`snapshot_stage` 固定为 `pre_semantic_ranking`，对应生产链路中确定性规则过滤完成后、BGE-M3 调用前的候选集合。`normalized_candidate_count` 表示成功映射为统一论文记录的数量，`deduplicated_candidate_count` 表示身份去重和 RRF 后、规则过滤前的数量，`filtered_candidate_count` 表示规则过滤移除数量，`ranking_candidate_count` 表示实际进入离线排序的数量。四者不得互相替代；只有确实观测到供应商原始响应条目数时才填写 `raw_candidate_count`，否则保持 `null`。
+
+加载器要求 `snapshot_hash` 与规范化内容一致，并拒绝重复 `snapshot_id`、重复 `query_id`、重复论文、断裂排名、非确定性 RRF 顺序、来源计数漂移、过滤计数漂移和未声明来源。快照论文按 `rrf_score` 降序、`paper_id` 升序封存。现有 SQLite 中保存的是生产排序后的最终结果，不能直接作为此处排序前候选快照。
 
 `source_recall_count`、`semantic_top_k`、`cross_encoder_top_k`、`target_paper_count` 与 `evaluation_top_k` 是五个不同概念。前四者描述候选生成或排序流水线，`evaluation_top_k` 只控制对既有预测列表的评分截断，改变它不会生成候选或调用 API。
 
@@ -84,4 +86,4 @@ python -m evaluation ablation-plan `
 
 ## 后续边界
 
-当前模块不包含生产候选快照导出、公开数据集适配、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。下一阶段需要先确认生产导出边界，再实现独立快照导出器或真实本地模型适配器；无论采用哪种方式，本地排序消融、Top-K、指标和报告调整都必须复用已封存快照。
+当前模块不包含生产候选快照导出、公开数据集适配、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。生产导出边界已确认位于规则过滤后、BGE-M3 前；下一阶段先抽取不执行任何排序模型或 DeepSeek 的内部候选生成服务，再规划由用户显式执行的独立导出器。无论采用哪种方式，本地排序消融、Top-K、指标和报告调整都必须复用已封存快照。

@@ -22,7 +22,7 @@ class CandidateSourceRecord(BaseModel):
 
 
 class CandidatePaper(EvaluationPaper):
-    """保存规范化、去重且已完成 RRF 的排序前论文候选。"""
+    """保存规范化、去重、RRF 和规则过滤后的排序前论文候选。"""
 
     model_config = ConfigDict(extra="forbid")  # 防止候选元数据被静默丢弃。
 
@@ -37,12 +37,12 @@ class CandidatePaper(EvaluationPaper):
 
 
 class CandidateSnapshot(BaseModel):
-    """保存一次在线候选生成后可被所有离线排序配置复用的不可变输入。"""
+    """保存规则过滤后、BGE-M3 前可被所有离线排序配置复用的不可变输入。"""
 
     model_config = ConfigDict(extra="forbid")  # 快照完整性校验必须覆盖全部输入字段。
 
-    schema_version: Literal["1.0"] = "1.0"  # 固定第二阶段快照契约版本。
-    snapshot_stage: Literal["normalized_deduplicated_rrf"] = "normalized_deduplicated_rrf"  # 明确禁止把最终结果冒充排序前快照。
+    schema_version: Literal["1.1"] = "1.1"  # 固定已对齐生产规则过滤边界的快照契约版本。
+    snapshot_stage: Literal["pre_semantic_ranking"] = "pre_semantic_ranking"  # 明确快照位于规则过滤后、BGE-M3 前。
     snapshot_id: str = Field(min_length=1)  # 保存候选快照唯一标识。
     snapshot_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # 保存不含自身字段的规范化内容哈希。
     query_id: str = Field(min_length=1)  # 关联数据集查询标识。
@@ -52,10 +52,14 @@ class CandidateSnapshot(BaseModel):
     source_recall_count: int = Field(ge=1, le=100)  # 保存每来源每轮召回上限。
     target_paper_count: int = Field(ge=1, le=100)  # 保存在线运行期望的最终论文数量。
     sources_used: list[str] = Field(min_length=1)  # 保存实际参与候选生成的学术来源。
-    raw_candidate_count: int = Field(ge=0)  # 保存来源返回记录总数。
-    normalized_candidate_count: int = Field(ge=0)  # 保存规范化后、身份去重前数量。
-    deduplicated_candidate_count: int = Field(ge=0)  # 保存去重并完成 RRF 后数量。
-    papers: list[CandidatePaper] = Field(default_factory=list)  # 保存严格按 RRF 顺序排列的候选。
+    raw_candidate_count: int | None = Field(default=None, ge=0)  # 仅在适配器确实观测供应商原始条目数时保存，否则保持空值。
+    normalized_candidate_count: int = Field(ge=0)  # 保存已映射为统一论文记录、身份去重前的数量。
+    deduplicated_candidate_count: int = Field(ge=0)  # 保存身份去重并完成 RRF 后、规则过滤前的数量。
+    filtered_candidate_count: int = Field(ge=0)  # 保存被确定性规则过滤移除的论文数量。
+    ranking_candidate_count: int = Field(ge=0)  # 保存实际进入 BGE-M3 或离线排序消融的候选数量。
+    source_counts: dict[str, int] = Field(default_factory=dict)  # 保存各学术来源成功映射为统一论文记录的数量。
+    filter_reason_counts: dict[str, int] = Field(default_factory=dict)  # 保存按首个失败规则汇总的过滤数量。
+    papers: list[CandidatePaper] = Field(default_factory=list)  # 保存严格按 RRF 和论文 ID 稳定排序的过滤后候选。
     usage: EvaluationUsage = Field(default_factory=EvaluationUsage)  # 保存在线候选生成阶段已冻结用量。
     stop_reason: str | None = None  # 保存在线候选生成停止原因。
     warnings: list[str] = Field(default_factory=list)  # 保存来源降级或字段缺失警告。
@@ -73,20 +77,37 @@ class CandidateSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def validate_snapshot_boundaries(self) -> "CandidateSnapshot":
-        """校验候选数量、排名、RRF 顺序、来源和时间边界。"""
+        """校验候选阶段数量、过滤统计、排名、来源和时间边界。"""
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:  # 快照时间必须可跨机器复核。
             raise ValueError("created_at 必须包含明确时区")  # 拒绝本地模糊时间。
         if len(set(self.sources_used)) != len(self.sources_used):  # 来源列表不得重复扩大来源计数。
             raise ValueError("sources_used 不得包含重复来源")  # 返回稳定数据错误。
-        if not self.raw_candidate_count >= self.normalized_candidate_count >= self.deduplicated_candidate_count:  # 各阶段数量只能递减或保持。
-            raise ValueError("候选数量必须满足 raw >= normalized >= deduplicated")  # 防止流水线阶段统计倒置。
-        if self.deduplicated_candidate_count != len(self.papers):  # 去重后数量必须与实际列表一致。
-            raise ValueError("deduplicated_candidate_count 必须等于 papers 数量")  # 防止报告与候选内容漂移。
+        if self.raw_candidate_count is not None and self.raw_candidate_count < self.normalized_candidate_count:  # 已观测原始条目不得少于成功映射记录。
+            raise ValueError("raw_candidate_count 必须大于等于 normalized_candidate_count")  # 防止原始与规范化阶段倒置。
+        if self.normalized_candidate_count < self.deduplicated_candidate_count:  # 身份去重不能增加候选数量。
+            raise ValueError("normalized_candidate_count 必须大于等于 deduplicated_candidate_count")  # 防止去重统计倒置。
+        if self.deduplicated_candidate_count != self.filtered_candidate_count + self.ranking_candidate_count:  # 过滤前候选必须完整分为移除和保留两部分。
+            raise ValueError("deduplicated_candidate_count 必须等于 filtered_candidate_count 加 ranking_candidate_count")  # 防止过滤统计丢失候选。
+        if self.ranking_candidate_count != len(self.papers):  # 排序输入数量必须与实际列表一致。
+            raise ValueError("ranking_candidate_count 必须等于 papers 数量")  # 防止报告与排序输入漂移。
+        if set(self.source_counts) != set(self.sources_used):  # 每个执行过的学术来源都必须有明确成功映射数量。
+            raise ValueError("source_counts 必须完整覆盖且只能包含 sources_used")  # 防止网页来源或未声明来源混入学术候选统计。
+        if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in self.source_counts.values()):  # 来源数量必须是非负整数。
+            raise ValueError("source_counts 必须只包含非负整数")  # 拒绝布尔值、负数或非整数计数。
+        if sum(self.source_counts.values()) != self.normalized_candidate_count:  # 来源成功映射数量应与融合服务输入数量一致。
+            raise ValueError("source_counts 总和必须等于 normalized_candidate_count")  # 防止错误使用供应商原始响应数量。
+        if any(not reason.strip() for reason in self.filter_reason_counts):  # 空白过滤原因无法审计具体确定性规则。
+            raise ValueError("filter_reason_counts 不能包含空白原因")  # 拒绝无法解释的过滤统计。
+        if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in self.filter_reason_counts.values()):  # 过滤原因数量必须是非负整数。
+            raise ValueError("filter_reason_counts 必须只包含非负整数")  # 拒绝无效过滤数量。
+        if sum(self.filter_reason_counts.values()) != self.filtered_candidate_count:  # 每篇移除论文只记录首个失败规则。
+            raise ValueError("filter_reason_counts 总和必须等于 filtered_candidate_count")  # 防止过滤原因遗漏或重复计数。
         expected_ranks = list(range(1, len(self.papers) + 1))  # 构造连续一基 RRF 排名。
         if [paper.snapshot_rank for paper in self.papers] != expected_ranks:  # 快照顺序与显式排名必须一致。
             raise ValueError("snapshot_rank 必须按 papers 顺序从 1 连续递增")  # 拒绝断裂或重复排名。
-        if any(left.rrf_score < right.rrf_score for left, right in zip(self.papers, self.papers[1:])):  # RRF 分数不得逆序。
-            raise ValueError("papers 必须按 rrf_score 降序保存")  # 保证关闭本地模型时基线确定。
+        expected_order = sorted(self.papers, key=lambda paper: (-paper.rrf_score, paper.paper_id))  # 复用生产 BGE 跳过和降级路径的稳定比较器。
+        if [paper.paper_id for paper in self.papers] != [paper.paper_id for paper in expected_order]:  # 分数相同时也必须按论文 ID 稳定排序。
+            raise ValueError("papers 必须按 rrf_score 降序、paper_id 升序保存")  # 保证跨机器和关闭本地模型时基线确定。
         available_sources = set(self.sources_used)  # 建立来源覆盖集合。
         for paper in self.papers:  # 校验每篇论文的来源溯源。
             paper_sources = {paper.source, *(record.source for record in paper.source_records)}  # 汇总主来源和多源记录。

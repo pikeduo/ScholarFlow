@@ -50,6 +50,8 @@ def test_default_matrix_has_abcd_and_zero_deepseek() -> None:
 def test_abcd_reuses_snapshot_and_routes_expected_candidate_sets() -> None:
     """四组配置应从同一快照开始，并按阶段开关传递正确候选集合。"""
     snapshot = load_candidate_snapshots(SNAPSHOT_FIXTURE)[0]  # 读取唯一已封存快照。
+    assert snapshot.snapshot_stage == "pre_semantic_ranking"  # 确认四组实验共享规则过滤后、BGE-M3 前的候选集合。
+    assert snapshot.ranking_candidate_count == len(snapshot.papers) == 4  # 明确离线排序输入不等同于过滤前去重数量。
     original_hash = compute_snapshot_hash(snapshot)  # 保存运行前内容摘要。
     matrix = build_standard_ablation_matrix(semantic_top_k=2, cross_encoder_top_k=2, target_paper_count=2)  # 使用小规模截断便于断言。
     semantic = _RecordingScorer("stub-bge", {"candidate-a": 0.7, "candidate-b": 0.2, "candidate-c": 0.9, "candidate-d": 0.1})  # 令 BGE 顺序为 C、A、B、D。

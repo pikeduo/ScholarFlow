@@ -345,6 +345,7 @@ AutoScholarQuery dev 固定 20 条
 → 规范化
 → 去重
 → RRF
+→ 确定性规则过滤
 → 保存候选快照
 ```
 
@@ -362,6 +363,13 @@ AutoScholarQuery dev 固定 20 条
   "source_recall_count": 50,
   "target_paper_count": 20,
   "sources_used": ["openalex"],
+  "raw_candidate_count": null,
+  "normalized_candidate_count": 50,
+  "deduplicated_candidate_count": 45,
+  "filtered_candidate_count": 5,
+  "ranking_candidate_count": 40,
+  "source_counts": {"openalex": 50},
+  "filter_reason_counts": {"exclude": 5},
   "papers": [],
   "usage": {
     "academic_api_calls": 1,
@@ -378,6 +386,8 @@ AutoScholarQuery dev 固定 20 条
   "warnings": []
 }
 ```
+
+快照契约版本 `1.1` 的 `snapshot_stage` 固定为 `pre_semantic_ranking`。`normalized_candidate_count` 是成功映射为统一论文记录、身份去重前的数量，`deduplicated_candidate_count` 是身份去重与 RRF 后、规则过滤前的数量，`filtered_candidate_count` 是确定性规则移除数量，`ranking_candidate_count` 是实际保存并进入本地排序的数量。只有来源适配层确实观测到供应商原始响应条目数时才填写 `raw_candidate_count`，否则必须保持 `null`。
 
 ### 5.3 快照复用规则
 
@@ -1136,9 +1146,9 @@ E. 同步 AGENTS.md。
 
 候选快照和离线排序消融编排已落地，仍未修改生产 API 或搜索工作流：
 
-- 新增 `CandidateSnapshot` 契约，阶段固定为 `normalized_deduplicated_rrf`，明确表示规范化、身份去重、RRF 后且 BGE-M3/Cross Encoder 前；
-- 快照保存 `source_recall_count`、`target_paper_count`、来源、阶段候选数量、冻结 QueryIntent、在线 usage、停止原因和带时区时间；
-- 快照以不含 `snapshot_hash` 自身的规范化 JSON 计算 SHA-256，加载时校验哈希、连续排名、RRF 顺序、来源覆盖和论文身份唯一性；
+- 新增 `CandidateSnapshot` 契约并升级为 `1.1`，阶段固定为 `pre_semantic_ranking`，明确表示规范化、身份去重、RRF 与确定性规则过滤后且 BGE-M3/Cross Encoder 前；
+- 快照保存 `source_recall_count`、`target_paper_count`、来源、成功映射数、身份去重后数量、规则过滤数、实际排序输入数、冻结 QueryIntent、在线 usage、停止原因和带时区时间；未观测的供应商原始条目数保持空值；
+- 快照以不含 `snapshot_hash` 自身的规范化 JSON 计算 SHA-256，加载时校验哈希、连续排名、RRF 与论文 ID 稳定顺序、来源计数、过滤计数、来源覆盖和论文身份唯一性；
 - 新增标准 A/B/C/D 矩阵，四组共享 `source_recall_count` 与 `evaluation_top_k`，并强制关闭 DeepSeek；
 - A 保持 RRF，B 执行 BGE-M3，C 的 Cross Encoder 直接读取完整快照，D 的 Cross Encoder 读取 BGE-M3 保留候选；
 - 离线运行器只依赖显式注入的 `OfflineRankingScorer`，不会实例化、下载或加载真实模型；
@@ -1146,4 +1156,4 @@ E. 同步 AGENTS.md。
 - 新增 `snapshot-check` 与 `ablation-plan` CLI，前者只读校验，后者只生成 `academic_api_calls=0`、`deepseek_calls=0` 的任务计划，不执行排序模型；
 - 合成快照和纯替身测试已覆盖篡改、重复候选、召回规模冲突、DeepSeek 禁用和 A/B/C/D 候选传递。
 
-第二阶段仍不包含生产候选快照导出、真实 BGE-M3/Cross Encoder 适配器、DeepSeek 对比、公开数据集下载或完整 benchmark。下一阶段应先由用户确认生产候选快照导出的数据边界，再决定是否增加独立导出器；不得直接读取现有 SQLite 最终结果代替排序前快照。
+第二阶段仍不包含生产候选快照导出、真实 BGE-M3/Cross Encoder 适配器、DeepSeek 对比、公开数据集下载或完整 benchmark。生产导出边界已确认位于规则过滤后、BGE-M3 前；下一阶段先抽取不执行 BGE-M3、Cross Encoder 或 DeepSeek 的内部候选生成服务，再决定独立导出器的显式执行入口；不得直接读取现有 SQLite 最终结果代替排序前快照。
