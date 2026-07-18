@@ -56,7 +56,7 @@
 ## 第五阶段能力
 
 - `contracts/pasa.py`：严格解析经本地文件样例确认的 `AutoScholarQuery/dev.jsonl` 字段：`qid`、`question`、`answer`、`answer_arxiv_id`、`source_meta`；
-- `adapters/pasa.py`：按索引配对标题和 arXiv ID，扁平化来源标量元数据，并复用通用金标去重与命名空间规则；
+- `adapters/pasa.py`：按索引配对标题和 arXiv ID，先按统一身份规则保留 PaSa 重复标注的首次论文并记录 `pasa_duplicate_answer_count`，再复用通用命名空间规则；
 - `runners/pasa_import.py`：只读转换已下载的 PaSa 开发集，原子写入新的 `GoldQuery` JSONL；
 - `pasa-gold-import`：当前只接受 `--split auto-dev`，避免未确认 RealScholarQuery 原始字段时进行猜测性解析。
 

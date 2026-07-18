@@ -29,17 +29,23 @@ def test_pasa_conversion_preserves_titles_arxiv_ids_and_source_metadata() -> Non
     assert [paper.arxiv_id for paper in gold_queries[0].relevant_papers] == ["2401.00001", "2401.00002v2"]  # arXiv 标识必须与同索引标题配对。
     assert gold_queries[0].metadata["pasa_source_published_time"] == "20260719"  # 来源标量需写入命名空间化元数据。
     assert gold_queries[0].metadata["pasa_schema_version"] == PASA_AUTOSCHOLARQUERY_SCHEMA_VERSION  # 映射规则版本必须被冻结。
+    assert gold_queries[0].metadata["pasa_duplicate_answer_count"] == 0  # 无重复来源标注时也应冻结零计数供统一审计。
 
 
-def test_pasa_contract_rejects_misaligned_ids_unknown_fields_and_duplicates() -> None:
-    """字段错位、未知字段和重复论文不得静默进入评测金标。"""
+def test_pasa_contract_rejects_misaligned_ids_and_unknown_fields() -> None:
+    """字段错位和未知字段不得被适配器猜测或静默忽略。"""
     with pytest.raises(ValidationError, match="answer_arxiv_id 非空时必须与 answer 长度一致"):  # 有 arXiv 列表时必须可逐项配对。
         _record(answer_arxiv_id=["2401.00001"])
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):  # 未确认字段版本不得被适配器猜测或忽略。
         _record(unexpected_field="unsupported")
-    duplicate_record = _record(answer=["Same Paper", "Same Paper"], answer_arxiv_id=["2401.11111", "2401.11111v2"])  # 构造统一 arXiv 规则可识别的重复金标论文。
-    with pytest.raises(ValueError, match="重复相关论文"):  # 通用导入器必须拒绝重复而非静默合并。
-        convert_pasa_records([duplicate_record], split="auto-dev")
+
+
+def test_pasa_conversion_deduplicates_source_answers_and_records_count() -> None:
+    """PaSa 原始重复标注应保留首次论文，并将移除数量写入审计元数据。"""
+    duplicate_record = _record(answer=["Same Paper", "Same Paper"], answer_arxiv_id=["2401.11111", "2401.11111v2"])  # 构造统一 arXiv 规则可识别的同论文不同版本标识。
+    gold_queries = convert_pasa_records([duplicate_record], split="auto-dev")  # 执行零网络的 PaSa 专用去重。
+    assert [paper.arxiv_id for paper in gold_queries[0].relevant_papers] == ["2401.11111"]  # 必须保留首次出现的原始论文标识和顺序。
+    assert gold_queries[0].metadata["pasa_duplicate_answer_count"] == 1  # 必须审计而非静默隐藏来源重复项。
 
 
 def test_pasa_file_import_writes_goldquery_and_protects_existing_output(tmp_path: Path) -> None:
