@@ -9,6 +9,7 @@ from typing import Any  # 避免离线命令导入生产候选服务类型。
 from evaluation.runners.dataset_import import import_prepared_dataset_gold  # 转换用户本地准备的数据集金标而不下载原始数据。
 from evaluation.runners.fixture import run_fixture  # 调用完全离线运行入口。
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
+from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 
 
@@ -32,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
     dataset_parser.add_argument("--split", required=True, help="人工确认的切分标识，例如 dev-small")  # 禁止随机抽样或猜测切分。
     dataset_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的 GoldQuery JSONL 路径")  # 禁止覆盖已经人工审阅的金标。
+    pasa_parser = subparsers.add_parser("pasa-gold-import", help="将已下载的 PaSa AutoScholarQuery JSONL 转换为 GoldQuery")  # 创建仅支持已确认字段版本的本地 PaSa 导入命令。
+    pasa_parser.add_argument("--input", type=Path, required=True, help="用户已下载的 PaSa AutoScholarQuery 或同字段版本 JSONL 路径")  # 只读取用户明确指定的本地原始数据。
+    pasa_parser.add_argument("--split", required=True, choices=["auto-dev"], help="当前已确认字段版本的 PaSa 数据切分")  # 未确认 RealScholarQuery 字段前只允许本地已验证的 AutoScholarQuery 开发集。
+    pasa_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的 GoldQuery JSONL 路径")  # 禁止覆盖已经审阅的 PaSa 转换结果。
     export_parser = subparsers.add_parser("snapshot-export", help="显式授权一次候选生成并导出排序前快照")  # 创建唯一受控在线入口。
     export_parser.add_argument("--query-intent", type=Path, required=True, help="已准备好的单轮 QueryIntent JSON 路径")  # 禁止隐式调用 Query Agent。
     export_parser.add_argument("--query-id", required=True, help="评测数据集中的稳定查询标识")  # 要求显式关联评测查询。
@@ -64,6 +69,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         gold_queries = import_prepared_dataset_gold(args.input, dataset_id=args.dataset, split=args.split, output_path=args.output)  # 只转换用户本地已准备数据，不下载或调用任何服务。
         print(f"[OK] 数据集金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文和论文内容的安全摘要。
         return 0  # 表示零网络导入成功。
+    if args.command == "pasa-gold-import":  # 第五阶段已确认 PaSa 原始格式的完全离线转换入口。
+        gold_queries = import_pasa_gold(args.input, split=args.split, output_path=args.output)  # 只读取用户已下载的 PaSa 文件，不访问网络或补全论文元数据。
+        print(f"[OK] PaSa 金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含 PaSa 查询或论文正文的安全摘要。
+        return 0  # 表示本地 PaSa 导入成功。
     if args.command == "snapshot-export":  # 第三阶段唯一受控在线候选生成入口。
         if not args.allow_online_sources:  # 未显式授权时不得读取配置或构造生产适配器。
             parser.error("snapshot-export 必须显式提供 --allow-online-sources；该命令可能调用真实学术 API")  # 以标准 CLI 错误拒绝隐式在线执行。

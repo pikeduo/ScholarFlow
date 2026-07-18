@@ -1224,3 +1224,18 @@ E. 同步 AGENTS.md。
 - 脚本不由 Codex 自动运行，用户必须先在 Hugging Face 页面接受数据集条款并手动完成登录。
 
 该脚本只解决“取得用户有权访问的原始文件”，不改变现有 `prepared-dataset-gold-v1` 契约，也不自动解析 PaSa 原始字段。下一步仍需用户提供特定 PaSa revision 的字段说明或脱敏样例后，再实现原生格式适配器。
+
+---
+
+## 24. PaSa AutoScholarQuery 原生金标导入实施状态（2026-07-19）
+
+用户已在本地显式下载 `AutoScholarQuery/dev.jsonl`，并确认当前记录字段为 `qid`、`question`、`answer`、`answer_arxiv_id` 与 `source_meta`。已新增完全离线的 `pasa-gold-import`：
+
+- 只接受上述已确认字段且拒绝未知字段，避免对 gated 数据集做猜测性兼容；
+- 标题与 arXiv ID 必须按相同索引配对；非空 ID 列表长度不一致、空白标题/标识均直接报错；
+- PaSa `source_meta` 的标量字段会加 `pasa_source_` 前缀，另冻结原始映射版本；
+- 转换结果仍复用 `prepared-dataset-gold-v1` 的数据集命名空间、论文身份去重和原子新文件写入边界；
+- 当前 CLI 仅允许 `--split auto-dev`，输入和输出全部由用户显式指定；不读取 `.env`，不访问网络、API、LLM、模型或论文数据库；
+- 合成离线测试覆盖字段配对、未知字段、重复论文、已有输出保护和 CLI 闭环，不使用真实 PaSa 内容。
+
+`RealScholarQuery/test.jsonl` 的原始字段尚未在本地确认，不能假定与 AutoScholarQuery 相同。下一步如需支持它，先由用户显式下载该文件并提供允许读取的样例，再新增独立契约和适配器。

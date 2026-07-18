@@ -1,4 +1,4 @@
-"""允许通过 ``python -m evaluation`` 运行离线评测、数据集金标导入或受控候选导出。"""
+"""允许通过 ``python -m evaluation`` 运行离线评测、通用或 PaSa 金标导入及受控候选导出。"""
 
 from evaluation.cli import main  # 导入命令入口。
 

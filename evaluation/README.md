@@ -53,6 +53,24 @@
 
 `metadata` 只允许 JSON 标量值，且不得包含 `dataset`、`split`、`source_query_id` 或 `import_schema_version`；这些字段由导入器统一写入。导入器拒绝重复 `source_query_id` 和按 ScholarFlow 统一身份规则重复的相关论文，不会补全缺失 DOI、标题或作者，更不会访问外部来源验证论文。
 
+## 第五阶段能力
+
+- `contracts/pasa.py`：严格解析经本地文件样例确认的 `AutoScholarQuery/dev.jsonl` 字段：`qid`、`question`、`answer`、`answer_arxiv_id`、`source_meta`；
+- `adapters/pasa.py`：按索引配对标题和 arXiv ID，扁平化来源标量元数据，并复用通用金标去重与命名空间规则；
+- `runners/pasa_import.py`：只读转换已下载的 PaSa 开发集，原子写入新的 `GoldQuery` JSONL；
+- `pasa-gold-import`：当前只接受 `--split auto-dev`，避免未确认 RealScholarQuery 原始字段时进行猜测性解析。
+
+转换命令完全离线，不读取 `.env`，不访问论文 API、LLM 或本地模型：
+
+```powershell
+python -m evaluation pasa-gold-import `
+  --input data/evaluation/pasa/AutoScholarQuery/dev.jsonl `
+  --split auto-dev `
+  --output evaluation/inputs/pasa-auto-dev.gold.jsonl
+```
+
+`answer` 与 `answer_arxiv_id` 非空时必须等长；适配器不会通过 `paper_database/id2paper.json` 补全或猜测缺失字段。RealScholarQuery/test.jsonl 的原始结构尚未在本地确认，后续须先检查样例再新增独立适配器。
+
 ## 输入文件
 
 金标 JSONL 每行符合 `GoldQuery`：
@@ -154,4 +172,4 @@ python -m evaluation snapshot-export `
 
 ## 后续边界
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本，以及不猜测第三方原始格式的公开数据集金标准备导入边界；仍不包含原生 PaSa/RealScholarQuery 解析器、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应在用户提供特定数据集版本的字段说明或脱敏样例后，再实现对应原生格式适配器；数据下载和完整转换仍由用户显式执行。
+当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；仍不包含 RealScholarQuery 原生解析器、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应在用户提供或下载 RealScholarQuery 样例后，再确认其独立适配器；数据下载和完整 benchmark 仍由用户显式执行。
