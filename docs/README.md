@@ -18,7 +18,8 @@
 ## 已实现的离线评测入口
 
 - 第一阶段评测模块说明：`../evaluation/README.md`；
-- 合成 fixture、JSONL 契约、检索/排序指标、效率与结构代理分、JSON/JSONL/Markdown 报告均位于独立 `evaluation/` 目录；
+- 合成 fixture、候选快照、JSONL 契约、检索/排序指标、效率与结构代理分、A/B/C/D 离线消融编排及报告均位于独立 `evaluation/` 目录；
+- 排序前候选快照使用 SHA-256 封存；同一矩阵的 BGE-M3/Cross Encoder 配置共享快照哈希，计划生成不会执行模型；
 - 评测模块不读取 `.env`，不调用生产搜索、学术 API、LLM 或本地模型；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 

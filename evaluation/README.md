@@ -1,6 +1,6 @@
 # ScholarFlow 离线评测模块
 
-本目录是与 `backend/` 生产搜索完全隔离的第一阶段评测模块。它只读取用户显式提供的本地 JSONL/JSON 文件，计算检索、排序、效率与结构指标，并写出本地报告；不会读取 `.env`，不会访问学术 API、LLM 或本地模型，也不提供数据集或模型下载命令。
+本目录是与 `backend/` 生产搜索完全隔离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排。它只读取用户显式提供的本地 JSONL/JSON 文件；不会读取 `.env`，不会访问学术 API、LLM 或本地模型，也不提供数据集或模型下载命令。
 
 ## 第一阶段能力
 
@@ -11,6 +11,18 @@
 - `reports/`：UTF-8 JSON、JSONL 与 Markdown 报告；
 - `fixtures/`：不代表真实成绩的纯合成验收数据；
 - `tests/`：完全离线的契约、指标与报告测试。
+
+## 第二阶段能力
+
+- `contracts/snapshot.py`：规范化、去重、RRF 后且本地排序前的候选快照；
+- `runners/snapshot_loader.py`：只读 JSONL 加载、SHA-256、重复身份和阶段边界校验；
+- `contracts/ablation.py`：共享在线召回规模和评分口径的 A/B/C/D 矩阵；
+- `adapters/base.py`：不绑定模型库、不会自动加载模型的离线打分协议；
+- `runners/offline_ranking.py`：从同一快照深拷贝开始的 BGE-M3/Cross Encoder 消融编排；
+- `config/ablation_default.json`：DeepSeek 全部关闭的标准第一轮矩阵；
+- `fixtures/candidate_snapshots.jsonl`：已封存且不代表真实结果的纯合成快照。
+
+候选快照的 `snapshot_stage` 固定为 `normalized_deduplicated_rrf`。加载器要求 `snapshot_hash` 与规范化内容一致，并拒绝重复 `snapshot_id`、重复 `query_id`、重复论文、断裂排名、逆序 RRF 和未声明来源。现有 SQLite 中保存的是生产排序后的最终结果，不能直接作为此处排序前候选快照。
 
 `source_recall_count`、`semantic_top_k`、`cross_encoder_top_k`、`target_paper_count` 与 `evaluation_top_k` 是五个不同概念。前四者描述候选生成或排序流水线，`evaluation_top_k` 只控制对既有预测列表的评分截断，改变它不会生成候选或调用 API。
 
@@ -44,6 +56,24 @@ python -m evaluation fixture `
   --output-dir evaluation/results/fixture
 ```
 
+只读校验合成候选快照：
+
+```powershell
+python -m evaluation snapshot-check `
+  --snapshots evaluation/fixtures/candidate_snapshots.jsonl
+```
+
+生成 A/B/C/D 任务计划但不执行模型：
+
+```powershell
+python -m evaluation ablation-plan `
+  --snapshots evaluation/fixtures/candidate_snapshots.jsonl `
+  --matrix evaluation/config/ablation_default.json `
+  --output evaluation/results/ablation-plan.json
+```
+
+任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。真正执行 BGE-M3 或 Cross Encoder 时，调用方必须显式提供实现 `OfflineRankingScorer` 的适配器；当前模块没有真实模型适配器，也不会回退加载生产模型。
+
 输出目录被 Git 忽略，包含：
 
 - `report.json`：完整机器可读汇总与查询明细；
@@ -54,4 +84,4 @@ python -m evaluation fixture `
 
 ## 后续边界
 
-第一阶段不包含候选快照采集、公开数据集适配、BGE-M3/Cross Encoder 推理或 DeepSeek 对比。下一阶段应先定义规范化、去重后的候选快照契约；在线搜索只负责生成一次快照，本地排序消融、Top-K、指标和报告调整复用该快照。
+当前模块不包含生产候选快照导出、公开数据集适配、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。下一阶段需要先确认生产导出边界，再实现独立快照导出器或真实本地模型适配器；无论采用哪种方式，本地排序消融、Top-K、指标和报告调整都必须复用已封存快照。

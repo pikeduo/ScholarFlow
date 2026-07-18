@@ -1,12 +1,14 @@
 """定义离线预测、排序配置和结构化输出契约。"""
 
-from pydantic import BaseModel, Field, model_validator  # 提供配置范围与候选数量关系校验。
+from pydantic import BaseModel, ConfigDict, Field, model_validator  # 提供配置范围与候选数量关系校验。
 
 from evaluation.contracts.common import ClassificationRecord, EvaluationPaper, EvaluationUsage, RelationRecord  # 复用公共预测字段。
 
 
 class RankingConfig(BaseModel):
     """明确区分在线召回、本地排序、最终输出和评分截断数量。"""
+
+    model_config = ConfigDict(extra="forbid")  # 拒绝候选数量或开关字段拼写错误被静默忽略。
 
     source_recall_count: int = Field(default=50, ge=1, le=100)  # 保存每来源每轮召回上限。
     semantic_ranking_enabled: bool = False  # 保存是否执行 BGE-M3 推理。
@@ -40,6 +42,8 @@ class RankingConfig(BaseModel):
 
 class PredictionRecord(BaseModel):
     """保存某条查询的一次离线预测及其可选观测信息。"""
+
+    model_config = ConfigDict(extra="forbid")  # 保持预测 JSONL 数据契约严格可审计。
 
     query_id: str = Field(min_length=1)  # 关联金标查询标识。
     snapshot_id: str | None = None  # 关联未来排序前候选快照，第一阶段允许为空。
