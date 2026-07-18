@@ -1,6 +1,6 @@
 # ScholarFlow 离线评测模块
 
-本目录是与 `backend/` 生产搜索流程分离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排，第三阶段提供唯一的受控在线候选导出入口。`fixture`、`snapshot-check` 和 `ablation-plan` 始终只读取用户显式提供的本地 JSONL/JSON 文件，不读取 `.env`，不访问学术 API、LLM 或本地模型。只有用户手动执行带 `--allow-online-sources` 的 `snapshot-export` 时，才会延迟装配生产学术来源；模块不提供数据集或模型下载命令。
+本目录是与 `backend/` 生产搜索流程分离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排，第三阶段提供唯一的受控在线候选导出入口，第四阶段提供本地准备数据集金标导入。`fixture`、`snapshot-check`、`ablation-plan` 和 `dataset-gold-import` 始终只读取用户显式提供的本地 JSONL/JSON 文件，不读取 `.env`，不访问学术 API、LLM 或本地模型。只有用户手动执行带 `--allow-online-sources` 的 `snapshot-export` 时，才会延迟装配生产学术来源；模块不提供数据集或模型下载命令。
 
 ## 第一阶段能力
 
@@ -37,6 +37,21 @@
 - 导出结果将逻辑学术来源调用数、缓存命中和候选阶段耗时写入 `usage`；当前无法可靠观测的实际 HTTP 请求、重试和限流次数保持 `null`，LLM 调用和 Token 明确为零。
 
 输入 `QueryIntent` 必须由用户提前准备，并满足：`retrieval_round=1`、显式设置 `source_recall_count`、`requires_web_evidence=false`、`enable_semantic_ranking=false`、`enable_cross_encoder_ranking=false`。输出路径必须尚不存在，避免在线生成后覆盖已有快照。候选服务返回网页来源或网页发现项时，导出也会失败，不会把它们伪装为论文候选。
+
+## 第四阶段能力
+
+- `contracts/dataset.py`：定义 `prepared-dataset-gold-v1` 的严格本地输入契约；
+- `adapters/prepared_dataset.py`：为 `dataset_id:split:source_query_id` 分配稳定命名空间，并冻结来源、切分与转换版本元数据；
+- `runners/dataset_import.py`：只读转换、统一身份去重校验和拒绝覆盖的原子 JSONL 写入；
+- `dataset-gold-import`：将用户手动准备的公开数据集查询金标转换为现有 `GoldQuery` JSONL，供 `fixture` 评分器直接使用。
+
+该阶段刻意不猜测 PaSa、RealScholarQuery 或其他公开数据集的原始字段格式与版本。用户先在本地将已下载且有权使用的数据整理为每行一条 `prepared-dataset-gold-v1` 记录：
+
+```json
+{"source_query_id":"pasa-dev-001","query":"example academic query","relevant_papers":[{"doi":"10.1000/example","title":"Example Paper","year":2024,"authors":["Author A"]}],"metadata":{"source_version":"user-confirmed"}}
+```
+
+`metadata` 只允许 JSON 标量值，且不得包含 `dataset`、`split`、`source_query_id` 或 `import_schema_version`；这些字段由导入器统一写入。导入器拒绝重复 `source_query_id` 和按 ScholarFlow 统一身份规则重复的相关论文，不会补全缺失 DOI、标题或作者，更不会访问外部来源验证论文。
 
 ## 输入文件
 
@@ -84,6 +99,18 @@ python -m evaluation ablation-plan `
   --output evaluation/results/ablation-plan.json
 ```
 
+将用户本地准备的数据集金标转换为评分器可读取的 `GoldQuery`：
+
+```powershell
+python -m evaluation dataset-gold-import `
+  --input evaluation/fixtures/prepared_dataset_gold.jsonl `
+  --dataset synthetic-public `
+  --split dev `
+  --output evaluation/results/synthetic-public-dev.gold.jsonl
+```
+
+真实 PaSa 或其他公开数据应由用户手动下载并保留在 `data/evaluation/` 的受 Git 忽略目录；先按上面的准备格式导出一个本地 JSONL，再执行导入命令。Codex 不下载、读取或提交这些真实数据。导入结果可直接替换 `fixture --gold` 的金标输入。
+
 按需生成真实排序前候选快照时，由用户检查 `QueryIntent`、API 配置和输出路径后手动执行：
 
 ```powershell
@@ -109,4 +136,4 @@ python -m evaluation snapshot-export `
 
 ## 后续边界
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出，但仍不包含公开数据集适配、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段优先实现公开评测数据到现有金标契约的纯离线适配边界；数据下载和完整转换仍由用户显式执行。
+当前模块已包含由用户显式执行的单轮生产候选快照导出，以及不猜测第三方原始格式的公开数据集金标准备导入边界；仍不包含原生 PaSa/RealScholarQuery 解析器、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应在用户提供特定数据集版本的字段说明或脱敏样例后，再实现对应原生格式适配器；数据下载和完整转换仍由用户显式执行。

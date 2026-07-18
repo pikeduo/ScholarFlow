@@ -1191,4 +1191,20 @@ E. 同步 AGENTS.md。
 
 用户手动命令和输入要求见 `../evaluation/README.md`。本入口不会下载数据集或模型，也不会由 Codex 自动运行。生成一次快照后，BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标和报告的任何调整都必须离线复用该快照，不得重新调用学术 API。
 
-下一阶段优先实现公开评测数据到现有 `GoldQuery`/fixture 契约的纯离线适配与校验边界，不自动下载 PaSa、RealScholarQuery 或其他数据集；真实数据准备和完整转换继续由用户显式执行。
+该阶段完成后安排的下一项是公开评测数据到现有 `GoldQuery`/fixture 契约的纯离线适配与校验边界，不自动下载 PaSa、RealScholarQuery 或其他数据集；实施结果见第 22 节，真实数据准备和完整转换继续由用户显式执行。
+
+---
+
+## 22. 第四阶段本地数据集金标导入实施状态（2026-07-19）
+
+已新增完全离线的 `prepared-dataset-gold-v1` 导入边界，将用户手动准备的公开数据集金标转换为既有 `GoldQuery` JSONL：
+
+- 输入记录只包含 `source_query_id`、查询、相关论文和可 JSON 序列化的来源标量元数据；
+- CLI 要求用户显式指定 `dataset`、`split`、输入与尚不存在的输出路径，输出查询标识固定为 `dataset:split:source_query_id`；
+- 导入器冻结 `dataset`、`split`、`source_query_id` 和转换版本，拒绝来源元数据覆盖这些保留字段；
+- 导入前校验重复原始查询标识，并以现有 DOI、arXiv、PMID、平台 ID、标题回退规则拒绝重复相关论文；不静默去重或补全；
+- 输入和输出均为本地 UTF-8 JSONL，输出通过同目录临时文件发布且不得覆盖已有结果；
+- 不读取 `.env`，不下载、访问或猜测 PaSa、RealScholarQuery 或其他公开数据集的原始格式，也不调用学术 API、LLM 或模型；
+- 合成 fixture 与纯离线测试覆盖命名空间、审计元数据、重复边界、已有文件保护和 CLI 闭环。
+
+本阶段不宣称支持任何未经用户确认字段版本的原生公开数据集。下一步需由用户提供特定数据集版本的字段说明或脱敏样例后，才针对该版本新增独立原生适配器；数据下载和完整 benchmark 仍由用户显式执行。

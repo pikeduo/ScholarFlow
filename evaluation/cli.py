@@ -6,6 +6,7 @@ from collections.abc import Callable  # 为测试注入不访问真实来源的�
 from pathlib import Path  # 规范化用户传入路径。
 from typing import Any  # 避免离线命令导入生产候选服务类型。
 
+from evaluation.runners.dataset_import import import_prepared_dataset_gold  # 转换用户本地准备的数据集金标而不下载原始数据。
 from evaluation.runners.fixture import run_fixture  # 调用完全离线运行入口。
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
@@ -26,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--snapshots", type=Path, required=True, help="本地候选快照 JSONL 路径")  # 只读加载共享候选。
     plan_parser.add_argument("--matrix", type=Path, required=True, help="本地 A/B/C/D 矩阵 JSON 路径")  # 只读加载排序配置。
     plan_parser.add_argument("--output", type=Path, required=True, help="本地计划 JSON 输出路径")  # 要求显式输出文件。
+    dataset_parser = subparsers.add_parser("dataset-gold-import", help="将用户本地准备的数据集金标转换为 GoldQuery JSONL")  # 创建完全离线数据集适配命令。
+    dataset_parser.add_argument("--input", type=Path, required=True, help="用户已准备的 dataset-gold-v1 JSONL 路径")  # 只读取用户明确指定的本地输入。
+    dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
+    dataset_parser.add_argument("--split", required=True, help="人工确认的切分标识，例如 dev-small")  # 禁止随机抽样或猜测切分。
+    dataset_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的 GoldQuery JSONL 路径")  # 禁止覆盖已经人工审阅的金标。
     export_parser = subparsers.add_parser("snapshot-export", help="显式授权一次候选生成并导出排序前快照")  # 创建唯一受控在线入口。
     export_parser.add_argument("--query-intent", type=Path, required=True, help="已准备好的单轮 QueryIntent JSON 路径")  # 禁止隐式调用 Query Agent。
     export_parser.add_argument("--query-id", required=True, help="评测数据集中的稳定查询标识")  # 要求显式关联评测查询。
@@ -39,7 +45,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
     """运行指定命令并返回进程退出码；测试可注入零网络候选服务。"""
     parser = build_parser()  # 保留解析器以输出统一的授权错误。
     args = parser.parse_args(argv)  # 解析调用参数。
-    if args.command == "fixture":  # 第一阶段唯一受支持命令。
+    if args.command == "fixture":  # 第一阶段离线评分命令。
         summary = run_fixture(args.gold, args.predictions, args.output_dir, args.config)  # 只读取本地文件并写本地报告。
         print(f"[OK] 离线评测完成：{summary.retrieval.query_count} 条查询，报告目录 {args.output_dir}")  # 输出不含查询正文的安全摘要。
         return 0  # 表示运行成功。
@@ -54,6 +60,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         write_ablation_plan(plan, args.output)  # 写出用户指定计划文件。
         print(f"[OK] 离线消融计划完成：{plan.task_count} 个任务，学术 API=0，DeepSeek=0")  # 明确资源边界。
         return 0  # 表示计划生成成功。
+    if args.command == "dataset-gold-import":  # 第四阶段完全离线数据集金标转换入口。
+        gold_queries = import_prepared_dataset_gold(args.input, dataset_id=args.dataset, split=args.split, output_path=args.output)  # 只转换用户本地已准备数据，不下载或调用任何服务。
+        print(f"[OK] 数据集金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文和论文内容的安全摘要。
+        return 0  # 表示零网络导入成功。
     if args.command == "snapshot-export":  # 第三阶段唯一受控在线候选生成入口。
         if not args.allow_online_sources:  # 未显式授权时不得读取配置或构造生产适配器。
             parser.error("snapshot-export 必须显式提供 --allow-online-sources；该命令可能调用真实学术 API")  # 以标准 CLI 错误拒绝隐式在线执行。
