@@ -1208,3 +1208,19 @@ E. 同步 AGENTS.md。
 - 合成 fixture 与纯离线测试覆盖命名空间、审计元数据、重复边界、已有文件保护和 CLI 闭环。
 
 本阶段不宣称支持任何未经用户确认字段版本的原生公开数据集。下一步需由用户提供特定数据集版本的字段说明或脱敏样例后，才针对该版本新增独立原生适配器；数据下载和完整 benchmark 仍由用户显式执行。
+
+---
+
+## 23. PaSa 选择性下载脚本实施状态（2026-07-19）
+
+已新增 `scripts/download_pasa_dataset.py`，仅供用户显式下载已获授权的 PaSa 数据：
+
+- 使用 `huggingface_hub.snapshot_download` 和 `repo_type="dataset"` 请求 `CarlanLark/pasa-dataset`；
+- 默认只允许下载 `AutoScholarQuery/dev.jsonl`，可通过可重复的 `--subset` 增加 `RealScholarQuery/test.jsonl`、`paper_database/id2paper.json` 或显式选择 `all`；
+- 支持 `--output-dir`、`--revision` 和 `--force`，默认输出到受 Git 忽略的 `data/evaluation/pasa/`；
+- 通过 `token=True` 仅使用本机 `hf auth login` 保存的凭据，代码、日志和参数均不保存或输出 Token；
+- 对 gated 条款/未授权、未登录、网络或超时、仓库或文件缺失、以及下载后本地文件缺失分别输出可操作的安全错误；
+- 下载完成仅报告实际文件路径与字节大小；离线测试注入 mock 下载函数，不联网；
+- 脚本不由 Codex 自动运行，用户必须先在 Hugging Face 页面接受数据集条款并手动完成登录。
+
+该脚本只解决“取得用户有权访问的原始文件”，不改变现有 `prepared-dataset-gold-v1` 契约，也不自动解析 PaSa 原始字段。下一步仍需用户提供特定 PaSa revision 的字段说明或脱敏样例后，再实现原生格式适配器。

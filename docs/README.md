@@ -23,6 +23,7 @@
 - 生产搜索已将来源路由与调用、身份融合/RRF 和规则过滤抽取为不依赖排序模型的 `CandidateGenerationService`，现有公共 API 仍继续执行完整排序链；
 - `fixture`、`snapshot-check` 和 `ablation-plan` 保持完全离线，不读取 `.env`，不调用生产搜索、学术 API、LLM 或本地模型；
 - `dataset-gold-import` 同样完全离线：只把用户已准备的公开数据集金标 JSONL 校验并转换为现有 `GoldQuery`，不下载、猜测或解析未经确认的第三方原始格式；
+- `scripts/download_pasa_dataset.py` 是用户显式执行的 PaSa gated 数据集选择性下载工具：默认仅下载 `AutoScholarQuery/dev.jsonl`，可选增加 RealScholarQuery 与论文 ID 映射，使用本机 `hf auth login` 凭据且不保存 Token；
 - `snapshot-export` 是唯一受控在线例外：只在用户显式提供 `--allow-online-sources` 后读取已准备的单轮 `QueryIntent`、延迟装配 `CandidateGenerationService` 并写出一份排序前快照；它拒绝网页发现和已存在输出，不运行 Query Agent、BGE-M3、Cross Encoder 或 DeepSeek；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 

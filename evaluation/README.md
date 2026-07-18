@@ -111,6 +111,24 @@ python -m evaluation dataset-gold-import `
 
 真实 PaSa 或其他公开数据应由用户手动下载并保留在 `data/evaluation/` 的受 Git 忽略目录；先按上面的准备格式导出一个本地 JSONL，再执行导入命令。Codex 不下载、读取或提交这些真实数据。导入结果可直接替换 `fixture --gold` 的金标输入。
 
+PaSa 是 gated 数据集。用户在 Hugging Face 页面接受 `CarlanLark/pasa-dataset` 条款并完成本机 `hf auth login` 后，可手动运行选择性下载脚本；脚本不保存或输出 Token，默认只下载 `AutoScholarQuery/dev.jsonl`：
+
+```powershell
+python scripts/download_pasa_dataset.py
+```
+
+按需增加 RealScholarQuery 测试集和论文 ID 映射，或冻结特定 revision：
+
+```powershell
+python scripts/download_pasa_dataset.py `
+  --subset auto `
+  --subset real `
+  --subset paper-database `
+  --revision main
+```
+
+脚本只向 `snapshot_download` 传递这三个预定义相对路径的 `allow_patterns`，不会下载完整仓库；`--force` 才会要求重新下载。默认输出目录是受 Git 忽略的 `data/evaluation/pasa/`，完成后会显示每个文件的绝对路径和大小。
+
 按需生成真实排序前候选快照时，由用户检查 `QueryIntent`、API 配置和输出路径后手动执行：
 
 ```powershell
@@ -136,4 +154,4 @@ python -m evaluation snapshot-export `
 
 ## 后续边界
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出，以及不猜测第三方原始格式的公开数据集金标准备导入边界；仍不包含原生 PaSa/RealScholarQuery 解析器、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应在用户提供特定数据集版本的字段说明或脱敏样例后，再实现对应原生格式适配器；数据下载和完整转换仍由用户显式执行。
+当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本，以及不猜测第三方原始格式的公开数据集金标准备导入边界；仍不包含原生 PaSa/RealScholarQuery 解析器、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应在用户提供特定数据集版本的字段说明或脱敏样例后，再实现对应原生格式适配器；数据下载和完整转换仍由用户显式执行。
