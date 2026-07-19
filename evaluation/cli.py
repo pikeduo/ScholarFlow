@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
     if args.command == "snapshot-export":  # 第三阶段唯一受控在线候选生成入口。
         if not args.allow_online_sources:  # 未显式授权时不得读取配置或构造生产适配器。
             parser.error("snapshot-export 必须显式提供 --allow-online-sources；该命令可能调用真实学术 API")  # 以标准 CLI 错误拒绝隐式在线执行。
-        from evaluation.runners.snapshot_export import export_candidate_snapshot_to_file, load_query_intent, validate_snapshot_export_request  # 延迟导入在线边界，保持其他命令不触碰生产服务。
+        from evaluation.runners.snapshot_export import AllAcademicSourcesFailedError, export_candidate_snapshot_to_file, load_query_intent, validate_snapshot_export_request  # 延迟导入在线边界，保持其他命令不触碰生产服务。
 
         query = load_query_intent(args.query_intent)  # 只读取用户显式提供的结构化查询文件。
         validate_snapshot_export_request(query, query_id=args.query_id, snapshot_id=args.snapshot_id, output_path=args.output)  # 在创建来源客户端前完成全部静态预检。
@@ -97,7 +97,11 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
 
             candidate_service_factory = get_candidate_generation_service  # 复用生产候选生成装配但不进入完整搜索流程。
         generator = candidate_service_factory()  # 授权且预检成功后才创建候选服务。
-        snapshot = asyncio.run(export_candidate_snapshot_to_file(generator, query, query_id=args.query_id, snapshot_id=args.snapshot_id, output_path=args.output))  # 仅执行一次规则过滤前后的候选生成闭环。
+        try:  # 全部学术来源失败属于预期的不可封存结果边界，应以稳定退出码返回而非输出成功摘要。
+            snapshot = asyncio.run(export_candidate_snapshot_to_file(generator, query, query_id=args.query_id, snapshot_id=args.snapshot_id, output_path=args.output))  # 仅执行一次规则过滤前后的候选生成闭环。
+        except AllAcademicSourcesFailedError as error:  # 候选服务已完成调用，但不存在可用于离线排序的候选快照。
+            print(f"[ERROR] {error}")  # 输出不含查询、密钥和供应商原始错误正文的失败摘要。
+            return 1  # 让 CLI 向调用脚本报告失败，且不输出 [OK]。
         print(f"[OK] 候选快照已封存：{snapshot.ranking_candidate_count} 篇，逻辑学术 API={snapshot.usage.academic_api_calls}，SHA-256={snapshot.snapshot_hash}")  # 输出不含查询和论文正文的安全摘要。
         return 0  # 表示快照写入成功。
     raise ValueError(f"不支持的命令: {args.command}")  # 防止未来分支静默忽略。

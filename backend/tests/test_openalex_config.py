@@ -24,6 +24,14 @@ def test_settings_rejects_missing_openalex_api_key_when_required() -> None:
         settings.require_openalex_api_key()  # 模拟未来适配器在请求前读取密钥。
 
 
+def test_settings_rejects_openalex_base_url_with_query_or_fragment() -> None:
+    """OpenAlex 基地址不得携带会污染每次请求的查询参数或片段。"""
+    with pytest.raises(ValueError, match="不得包含查询参数或片段"):  # 断言 query string 在配置加载阶段被拒绝。
+        Settings(_env_file=None, openalex_api_base_url="https://api.openalex.org?filter=publication_year:2024")  # 模拟遗留筛选条件进入基地址。
+    with pytest.raises(ValueError, match="不得包含查询参数或片段"):  # 断言 fragment 同样不能进入 HTTP 基地址。
+        Settings(_env_file=None, openalex_api_base_url="https://api.openalex.org#debug")  # 模拟错误复制的地址片段。
+
+
 def test_settings_preserves_arxiv_connection_configuration() -> None:
     """arXiv 无密钥配置应保留 HTTPS 地址、超时与三秒间隔基线。"""
     settings = Settings(  # 构造不读取用户本地 .env 的 arXiv 隔离配置。

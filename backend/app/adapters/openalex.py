@@ -69,7 +69,7 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
 
     params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
         "search": " ".join(search_terms),  # 使用 OpenAlex 全文搜索表达结构化意图。
-        "sort": "relevance_score:desc",  # 按 OpenAlex 排序指南使用显式降序语法优先返回与搜索词最相关的论文。
+        "sort": "-relevance_score",  # 显式保持 OpenAlex 相关性降序，避免部署默认值变化影响来源原始排名。
         "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段。
     }
@@ -92,7 +92,7 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     search_text = " ".join(search_terms) or query.normalized_query  # 缺少拆分词时退回已校验的规范化查询。
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
-        "sort": "relevance_score:desc",  # 按 OpenAlex 排序指南使用显式降序语法保持来源按相关性优先的原始排名。
+        "sort": "-relevance_score",  # 显式保持 OpenAlex 相关性降序，确保 QueryIntent 入口的来源排名稳定。
         "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
     }
@@ -207,7 +207,8 @@ class OpenAlexClient(AcademicSearchAdapter):
                 payload = response.json()  # 解码 JSON 响应供后续结构校验。
         except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
             error_message, error_category = _map_openalex_http_error(error.response.status_code, error.response)  # 仅从供应商正文提取白名单参数名，绝不回显正文。
-            logger.error("OpenAlex 请求失败，状态码=%d，错误类别=%s", error.response.status_code, error_category)  # 输出可观测但不含查询、密钥和响应正文的分类信息。
+            parameter_names = _safe_openalex_request_parameter_names(request_params)  # 仅保留真实发送的参数名称，排除所有参数值。
+            logger.error("OpenAlex 请求失败，状态码=%d，错误类别=%s，实际参数=%s", error.response.status_code, error_category, parameter_names)  # 输出可观测但不含查询、密钥和响应正文的分类信息。
             raise OpenAlexClientError(error_message) from None  # 隐藏原始请求 URL、参数和供应商响应体。
         except httpx.RequestError as error:  # 捕获超时、连接和传输错误。
             logger.error("OpenAlex 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
@@ -241,7 +242,7 @@ def _map_openalex_http_error(status_code: int, response: httpx.Response | None =
     if status_code == 400:  # 400 表示请求形状或参数不被来源接受，不能安全回显响应正文。
         parameter_hint = _extract_openalex_safe_parameter_hint(response)  # 从白名单中提取可安全展示的参数名。
         if parameter_hint is not None:  # 仅在供应商错误文本明确提到已知参数时增加定位信息。
-            return f"OpenAlex 请求参数无效（HTTP 400，参数={parameter_hint}）", f"invalid_request:{parameter_hint}"  # 保留参数名而不泄露其值或完整错误文本。
+            return f"OpenAlex 请求参数无效（HTTP 400，供应商提示={parameter_hint}）", f"invalid_request:{parameter_hint}"  # 明确该名称来自供应商提示，不将其误表述为已确认的实际参数。
         return "OpenAlex 请求参数无效（HTTP 400）", "invalid_request"  # 无可靠安全提示时维持既有泛化错误。
     if status_code in {401, 403}:  # 认证或授权问题需要用户在本机检查配置，但不得打印密钥。
         return f"OpenAlex 认证或访问权限无效（HTTP {status_code}）", "authentication_or_authorization"  # 合并同类部署错误以避免泄露供应商细节。
@@ -276,6 +277,17 @@ def _extract_openalex_safe_parameter_hint(response: httpx.Response | None) -> st
         if any(_contains_openalex_parameter_alias(diagnostic_text, alias) for alias in aliases):  # 命中只说明供应商文本提到了安全参数名。
             return parameter_name  # 返回固定白名单名称而非供应商原文。
     return None  # 未命中时拒绝猜测并继续隐藏供应商诊断正文。
+
+
+def _safe_openalex_request_parameter_names(params: Mapping[str, object]) -> str:
+    """返回实际请求参数的稳定名称列表，不暴露任何参数值。
+
+    参数：
+        params：已经注入认证信息、即将发送给 HTTP 客户端的参数映射。
+    返回：
+        str：按字典序排列、以逗号分隔的参数名称。
+    """
+    return ",".join(sorted(str(parameter_name) for parameter_name in params))  # 参数名可定位配置污染，排序保证日志和离线断言稳定。
 
 
 def _contains_openalex_parameter_alias(diagnostic_text: str, alias: str) -> bool:

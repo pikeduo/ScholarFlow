@@ -24,10 +24,28 @@ class CandidateGenerator(Protocol):
         ...  # 生产服务和纯测试替身均可实现该协议。
 
 
+class AllAcademicSourcesFailedError(RuntimeError):
+    """表示本次候选生成的全部计划学术来源均失败，因而不能封存评测快照。"""
+
+
 def load_query_intent(path: Path) -> QueryIntent:
     """以 UTF-8 只读加载用户显式准备的单个 QueryIntent JSON 文件。"""
     payload = path.read_text(encoding="utf-8")  # 不读取 .env、数据库或其他隐式输入。
     return QueryIntent.model_validate_json(payload)  # 使用生产领域契约执行完整字段和冲突校验。
+
+
+def validate_candidate_generation_result(result: CandidateGenerationResult) -> None:
+    """确认候选生成结果至少有一个计划学术来源成功完成。
+
+    参数：
+        result：生产候选服务返回的规则过滤后结果。
+    异常：
+        AllAcademicSourcesFailedError：全部计划学术来源均有安全错误摘要时抛出。
+    """
+    planned_sources = set(result.route_plan.academic_sources)  # 固化本次路由实际计划调用的学术来源集合。
+    failed_sources = set(result.academic_source_errors)  # 读取生产候选服务已记录的失败学术来源集合。
+    if planned_sources and planned_sources.issubset(failed_sources):  # 所有计划来源都失败时，零候选不代表可评测的空召回结果。
+        raise AllAcademicSourcesFailedError("所有计划学术来源均失败，未写出候选快照")  # 阻止失败审计产物进入后续离线评测。
 
 
 def validate_snapshot_export_request(query: QueryIntent, *, query_id: str, snapshot_id: str, output_path: Path | None = None) -> None:
@@ -70,11 +88,14 @@ async def export_candidate_snapshot(
         clock：测试可注入的单调时钟。
     返回：
         CandidateSnapshot：包含在线候选、阶段统计、usage 和 SHA-256 的快照。
+    异常：
+        AllAcademicSourcesFailedError：全部计划学术来源失败时抛出且不构造快照。
     """
     validate_snapshot_export_request(query, query_id=query_id, snapshot_id=snapshot_id)  # 在任何来源调用前检查安全边界。
     started_at = clock()  # 记录候选服务调用前的单调时间。
     result = await generator.generate(query)  # 只调用到规则过滤后的共享生产候选边界。
     latency_ms = max(0.0, (clock() - started_at) * 1000.0)  # 转换为非负毫秒并排除本地文件写入耗时。
+    validate_candidate_generation_result(result)  # 全部计划学术来源失败时拒绝把失败产物封存为零候选快照。
     return build_candidate_snapshot(result, query_id=query_id, snapshot_id=snapshot_id, latency_ms=latency_ms, created_at=created_at or datetime.now(timezone.utc))  # 映射并封存快照。
 
 

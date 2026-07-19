@@ -3,6 +3,7 @@
 from functools import lru_cache  # 缓存配置实例避免重复解析环境变量。
 from pathlib import Path  # 使用跨平台路径表示日志目录。
 from typing import Literal  # 限制本地模型设备策略的公开取值。
+from urllib.parse import urlsplit  # 安全拆分 API 基地址，避免将查询参数带入每次请求。
 
 from pydantic import Field, SecretStr, field_validator, model_validator  # 声明配置字段、敏感值与字段校验。
 from pydantic_settings import BaseSettings, SettingsConfigDict  # 支持环境变量配置模型。
@@ -126,6 +127,23 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():  # 避免将空字符串误认为有效密钥。
             return None  # 让缺失密钥在实际调用前得到明确提示。
         return value  # 保留由 Pydantic 转换为 SecretStr 的有效密钥。
+
+    @field_validator("openalex_api_base_url")
+    @classmethod
+    def validate_openalex_api_base_url(cls, value: str) -> str:
+        """拒绝携带查询参数或片段的 OpenAlex 基地址，避免隐式污染所有请求。
+
+        参数：
+            value：环境变量或构造参数提供的 OpenAlex 服务根地址。
+        返回：
+            str：不含查询参数和片段的 HTTPS 基地址。
+        异常：
+            ValueError：地址携带查询参数或片段时抛出。
+        """
+        parsed_url = urlsplit(value)  # 只解析 URL 结构，不记录或暴露用户配置内容。
+        if parsed_url.query or parsed_url.fragment:  # 基地址不得承担一次性筛选条件或其他请求状态。
+            raise ValueError("SCHOLARFLOW_OPENALEX_API_BASE_URL 不得包含查询参数或片段")  # 阻止 filter 等参数被隐式拼入请求。
+        return value  # 保留合法代理前缀或标准服务根地址。
 
     @field_validator("semantic_scholar_api_key", mode="before")
     @classmethod

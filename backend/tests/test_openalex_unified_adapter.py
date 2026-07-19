@@ -57,7 +57,8 @@ def test_search_params_fall_back_to_normalized_query() -> None:
     )
     params = build_openalex_search_params(query)  # 构造不含网络或密钥的来源参数。
     assert params["search"] == "复杂问题"  # 验证不会向来源发送空搜索参数。
-    assert params["sort"] == "relevance_score:desc"  # 验证统一 QueryIntent 入口按排序指南使用显式降序语法。
+    assert params["sort"] == "-relevance_score"  # 验证统一 QueryIntent 入口显式请求相关性降序。
+    assert "filter" not in params  # 验证未指定年份范围时不会隐式加入来源过滤条件。
 
 
 def test_client_implements_unified_adapter_and_maps_provenance() -> None:
@@ -68,7 +69,7 @@ def test_client_implements_unified_adapter_and_maps_provenance() -> None:
         """校验统一入口请求参数并返回本地成功响应。"""
         assert request.url.path == "/works"  # 验证客户端调用 OpenAlex 论文搜索端点。
         assert request.url.params["search"] == "forecasting Transformer"  # 验证查询意图按确定顺序映射为全文搜索词。
-        assert request.url.params["sort"] == "relevance_score:desc"  # 验证网络请求按排序指南发送显式降序相关性参数。
+        assert request.url.params["sort"] == "-relevance_score"  # 验证网络请求显式发送相关性降序参数。
         assert request.url.params["per_page"] == "5"  # 验证目标结果数量映射为来源单页限制。
         assert request.url.params["filter"] == "publication_year:2020-2024"  # 验证年份范围映射为来源过滤。
         return httpx.Response(200, json={"results": [fixture]}, request=request)  # 返回不依赖网络的 OpenAlex 响应。

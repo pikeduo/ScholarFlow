@@ -12,7 +12,7 @@ from backend.app.models.query_intent import QueryIntent  # 构造无需 Query Ag
 from backend.app.models.source_routing import SourceRoutePlan  # 构造只包含学术来源的固定路由。
 from evaluation.cli import main  # 验证显式在线授权命令边界。
 from evaluation.contracts.snapshot import compute_snapshot_hash  # 复核导出内容哈希。
-from evaluation.runners.snapshot_export import export_candidate_snapshot, export_candidate_snapshot_to_file  # 执行纯替身候选导出。
+from evaluation.runners.snapshot_export import AllAcademicSourcesFailedError, export_candidate_snapshot, export_candidate_snapshot_to_file  # 执行纯替身候选导出并验证来源失败边界。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 验证写出的单条 JSONL 可被严格加载。
 
 
@@ -43,6 +43,39 @@ def _result(query: QueryIntent | None = None) -> CandidateGenerationResult:
     second = PaperRecord(paper_id="p2", title="Second Paper", abstract="Second abstract", authors=[PaperAuthor(name="Bob")], year=2022, venue="Venue B", doi="10.1000/p2", source="openalex", openalex_id="W2", keywords=["graph"], source_records=[PaperSourceRecord(source="openalex", external_id="W2", raw_rank=2, matched_subqueries=["graph neural network survey"])], rrf_score=0.02)  # 先放置较低 RRF 候选以验证稳定重排。
     first = PaperRecord(paper_id="p1", title="First Paper", abstract="First abstract", authors=[PaperAuthor(name="Alice")], year=2023, venue="Venue A", doi="10.1000/p1", source="openalex", openalex_id="W1", open_access_url="https://example.test/p1", keywords=["survey"], source_records=[PaperSourceRecord(source="openalex", external_id="W1", raw_rank=1, matched_subqueries=["graph neural network survey"])], rrf_score=0.03)  # 构造较高 RRF 候选。
     return CandidateGenerationResult(route_plan=SourceRoutePlan(academic_sources=["openalex"], selection_reasons={"openalex": "合成主来源"}), query_intent=actual_query, papers=[second, first], academic_source_counts={"openalex": 3}, web_discovery_source_counts={}, cache_hit_count=1, normalized_candidate_count=3, deduplicated_candidate_count=2, merged_candidate_count=1, filtered_candidate_count=0, filter_reason_counts={}, work_family_count=0)  # 保持来源、融合、过滤数量严格守恒。
+
+
+def _empty_result(
+    query: QueryIntent | None = None,
+    *,
+    academic_sources: tuple[str, ...] = ("openalex",),
+    academic_source_errors: dict[str, str] | None = None,
+) -> CandidateGenerationResult:
+    """构造来源成功为空或部分失败的零候选结果，不访问任何真实服务。
+
+    参数：
+        query：可选的冻结单轮 QueryIntent。
+        academic_sources：本轮路由计划中的学术来源顺序。
+        academic_source_errors：仅包含实际失败来源的安全错误摘要。
+    返回：
+        CandidateGenerationResult：满足生产阶段数量契约的零候选合成结果。
+    """
+    actual_query = query or _query()  # 默认使用可导出的单轮查询。
+    source_errors = dict(academic_source_errors or {})  # 复制测试输入以避免调用后断言被外部修改。
+    return CandidateGenerationResult(  # 构造能够区分成功空结果和来源失败的最小生产边界结果。
+        route_plan=SourceRoutePlan(academic_sources=list(academic_sources), selection_reasons={source: "合成来源" for source in academic_sources}),  # 冻结全部计划学术来源。
+        query_intent=actual_query,  # 保持替身实际消费的意图与导出输入一致。
+        papers=[],  # 成功空结果或全失败结果都没有可排序论文。
+        academic_source_counts={source: 0 for source in academic_sources},  # 所有来源均成功映射零篇或失败前未映射到论文。
+        web_discovery_source_counts={},  # 快照导出固定不启用网页发现。
+        academic_source_errors=source_errors,  # 仅记录测试指定的安全来源错误。
+        normalized_candidate_count=0,  # 没有成功映射的统一论文记录。
+        deduplicated_candidate_count=0,  # 无输入时身份融合后仍为空。
+        merged_candidate_count=0,  # 无论文可合并。
+        filtered_candidate_count=0,  # 无论文可进入规则过滤。
+        filter_reason_counts={},  # 无过滤论文时原因统计必须为空。
+        work_family_count=0,  # 无排序输入时不存在版本族。
+    )
 
 
 def test_export_maps_and_seals_pre_ranking_snapshot() -> None:
@@ -78,6 +111,35 @@ def test_export_writes_one_loadable_jsonl_and_refuses_existing_target(tmp_path: 
     with pytest.raises(FileExistsError, match="输出已存在"):  # 已有快照不得被覆盖。
         asyncio.run(export_candidate_snapshot_to_file(blocked_generator, blocked_generator.result.query_intent, query_id="q-001", snapshot_id="snapshot-002", output_path=output_path))
     assert blocked_generator.calls == 0  # 目标冲突必须发生在任何来源调用之前。
+
+
+def test_export_rejects_all_failed_academic_sources_without_writing_snapshot(tmp_path: Path) -> None:
+    """全部计划学术来源失败时必须拒绝封存零候选失败产物。"""
+    output_path = tmp_path / "all-failed.snapshot.jsonl"  # 指定尚不存在的候选快照路径。
+    generator = FakeCandidateGenerator(_empty_result(academic_source_errors={"openalex": "OpenAlex 请求参数无效（HTTP 400）"}))  # 构造唯一计划来源失败的零网络替身。
+    with pytest.raises(AllAcademicSourcesFailedError, match="所有计划学术来源均失败"):  # 断言明确拒绝失败产物。
+        asyncio.run(export_candidate_snapshot_to_file(generator, generator.result.query_intent, query_id="q-all-failed", snapshot_id="snapshot-all-failed", output_path=output_path))  # 执行仅命中替身的导出边界。
+    assert generator.calls == 1  # 静态预检通过后应恰好观察到一次候选服务调用。
+    assert not output_path.exists()  # 全部来源失败时不得留下可被评测读取的快照文件。
+
+
+def test_export_allows_successful_empty_academic_result(tmp_path: Path) -> None:
+    """学术 API 成功但确实返回零篇时仍应封存可评测的空快照。"""
+    output_path = tmp_path / "successful-empty.snapshot.jsonl"  # 指定尚不存在的候选快照路径。
+    generator = FakeCandidateGenerator(_empty_result())  # 构造来源成功且无结果的零网络替身。
+    snapshot = asyncio.run(export_candidate_snapshot_to_file(generator, generator.result.query_intent, query_id="q-empty", snapshot_id="snapshot-empty", output_path=output_path))  # 执行并写出成功空结果快照。
+    assert generator.calls == 1  # 成功空结果仍只调用一次候选服务。
+    assert snapshot.ranking_candidate_count == 0 and snapshot.papers == []  # 明确保存可评测的真实空候选集合。
+    assert output_path.exists() and load_candidate_snapshots(output_path)[0].snapshot_id == "snapshot-empty"  # 验证空快照仍符合正式加载器契约。
+
+
+def test_export_allows_partial_academic_source_success_and_preserves_error(tmp_path: Path) -> None:
+    """部分来源失败但仍有计划来源成功完成时应封存快照并保留安全错误。"""
+    output_path = tmp_path / "partial-success.snapshot.jsonl"  # 指定尚不存在的候选快照路径。
+    generator = FakeCandidateGenerator(_empty_result(academic_sources=("openalex", "semantic_scholar"), academic_source_errors={"openalex": "OpenAlex 请求参数无效（HTTP 400）"}))  # 构造 OpenAlex 失败而 Semantic Scholar 成功返回零篇的替身。
+    snapshot = asyncio.run(export_candidate_snapshot_to_file(generator, generator.result.query_intent, query_id="q-partial", snapshot_id="snapshot-partial", output_path=output_path))  # 执行并封存部分成功结果。
+    assert generator.calls == 1 and output_path.exists()  # 部分成功应保留一次候选调用和新快照文件。
+    assert snapshot.warnings == ["学术来源降级 openalex: OpenAlex 请求参数无效（HTTP 400）"]  # 验证来源失败以安全摘要随快照保留。
 
 
 @pytest.mark.parametrize(
@@ -126,6 +188,20 @@ def test_cli_exports_with_injected_generator_without_network(tmp_path: Path) -> 
     assert exit_code == 0  # CLI 应成功返回。
     assert generator.calls == 1  # 整个命令只生成一次候选。
     assert load_candidate_snapshots(output_path)[0].query_id == "q-001"  # 写出结果可由正式快照加载器消费。
+
+
+def test_cli_returns_nonzero_without_ok_when_all_academic_sources_failed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """全部计划学术来源失败时 CLI 必须返回非零且不得把失败产物写成成功快照。"""
+    query = _query()  # 构造可通过静态导出预检的本地 QueryIntent。
+    query_path = tmp_path / "query-intent.json"  # 指定纯本地结构化查询输入。
+    query_path.write_text(query.model_dump_json(), encoding="utf-8")  # 写入无需网络和密钥的测试输入。
+    output_path = tmp_path / "all-failed.snapshot.jsonl"  # 指定尚不存在的目标快照文件。
+    generator = FakeCandidateGenerator(_empty_result(query, academic_source_errors={"openalex": "OpenAlex 请求参数无效（HTTP 400）"}))  # 构造唯一计划来源失败的零网络替身。
+    exit_code = main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-all-failed", "--snapshot-id", "snapshot-all-failed", "--output", str(output_path), "--allow-online-sources"], candidate_service_factory=lambda: generator)  # 通过显式授权执行完全离线替身 CLI。
+    captured = capsys.readouterr()  # 获取 CLI 的标准输出以核验成功标记不会误报。
+    assert exit_code == 1 and generator.calls == 1  # 验证失败边界向调用方返回稳定非零状态。
+    assert "[ERROR]" in captured.out and "[OK]" not in captured.out  # 验证 CLI 只报告失败而不伪装为成功。
+    assert not output_path.exists()  # 验证失败结果不会写成可被评测读取的 JSONL 文件。
 
 
 def test_cli_rejects_existing_output_before_creating_generator(tmp_path: Path) -> None:
