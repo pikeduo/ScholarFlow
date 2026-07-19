@@ -32,7 +32,7 @@
 - `evaluation/adapters/bge_m3.py` 与 `evaluation/adapters/cross_encoder.py` 分别提供可注入的本地 BGE-M3、Cross Encoder 适配器：两者只接受用户已准备且含 `config.json` 的本地目录，构造与空候选不加载模型；真实评分仍须由用户显式执行，未实现 DeepSeek 适配器；
 - `ablation-execute` 只读取计划内候选集合、矩阵与 `ablation-plan`：A/B/C/D 的本地模型实验需显式本地模型授权；独立 E DeepSeek 实验还必须显式提供 `--allow-deepseek`、调用前预估与确认哈希。两者都原子归档 `OfflineAblationResult` JSONL 与输入/输出 SHA-256 manifest；DeepSeek 调用数按已尝试小批次计，失败批次也留档，而 Token/费用只累计成功返回的 usage；
 - `ablation-score` 完全离线地核验归档结果 SHA-256，并按实验转换为 `PredictionRecord`、生成独立预测与指标报告；不重新加载模型或调用学术 API；
-- `coverage-diagnose` 完全离线地按正式 `papers_match-v1` 规则比较 GoldQuery 与共享排序前候选快照，输出输入 SHA-256、逐查询身份覆盖计数和零命中边界；它不重跑排序、不加载模型、不调用 DeepSeek 或学术 API；
+- `coverage-diagnose` 完全离线地按正式 `papers_match-v1` 规则比较 GoldQuery 与排序前候选快照，默认要求完整共享集合对齐；少量 Query Agent 新快照可用显式 `--query-id` 进行局部诊断，`coverage-diagnostic-v2` 会冻结完整输入 SHA-256 与实际 `selected_query_ids`，且局部结论不得外推到开发集；它不重跑排序、不加载模型、不调用 DeepSeek 或学术 API；
 - `query-agent-plan` 是另一条受控、用户显式授权的查询策略入口：它只读取既有 `query-intent-manifest-v1` 指向的 QueryIntent，并仅将 `original_query` 和其中已显式设置的条件交给生产 Query Agent；严格不读取 Gold 标题、作者、arXiv ID、候选快照或评分报告，且不调用学术 API 或本地模型。输出新的第一轮 QueryIntent 与逐条 Token、费用、耗时、哈希审计，后续候选快照必须由用户另行显式导出；
 - `usage-forecast` 在真实 Query Agent、单轮候选快照或 DeepSeek E 组调用前只读生成调用次数、Token/费用上限与确认 SHA-256；不读取 `.env`、不访问网络、不创建模型或来源客户端；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。

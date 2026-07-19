@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_parser = subparsers.add_parser("coverage-diagnose", help="只读诊断金标与排序前候选快照的身份覆盖")  # 创建零 API、零模型的零命中定位入口。
     coverage_parser.add_argument("--gold", type=Path, required=True, help="已封存 GoldQuery JSONL 路径")  # 使用评分相同的金标输入。
     coverage_parser.add_argument("--snapshots", type=Path, required=True, help="已封存共享 CandidateSnapshot JSONL 路径")  # 只读取 BGE-M3 前快照。
+    coverage_parser.add_argument("--query-id", action="append", default=[], help="可重复的局部诊断查询标识；省略时要求 Gold 与快照完整集合相同")  # 支持独立审计一个新查询策略快照而不伪造混合集合。
     coverage_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的候选覆盖诊断目录")  # 禁止覆盖已审阅诊断。
     forecast_parser = subparsers.add_parser("usage-forecast", help="只读预估下一次 Query Agent 或候选快照调用的资源上限")  # 创建不访问网络的调用前预检入口。
     forecast_parser.add_argument("--operation", choices=["query-agent-plan", "snapshot-export", "ablation-deepseek"], required=True, help="待预估的真实调用类型")  # 明确三类外部调用的不同计算口径。
@@ -191,7 +192,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         print(f"[OK] 离线消融评分完成：{len(score_manifest['experiment_ids'])} 组实验，学术 API=0，DeepSeek=0，本地模型=0")  # 明确评分阶段不会重新执行模型。
         return 0  # 表示各组预测、报告和评分 manifest 已原子发布。
     if args.command == "coverage-diagnose":  # 在任何新在线候选或 DeepSeek 比较前定位零命中边界。
-        summary = diagnose_candidate_coverage(gold_path=args.gold, snapshots_path=args.snapshots, output_dir=args.output_dir)  # 只比较本地金标和已封存快照。
+        summary = diagnose_candidate_coverage(gold_path=args.gold, snapshots_path=args.snapshots, output_dir=args.output_dir, query_ids=args.query_id)  # 只比较完整集合或显式局部范围的本地输入。
         print(f"[OK] 候选覆盖诊断完成：{summary.query_count} 条查询，零命中查询={summary.zero_match_query_count}，学术 API=0，DeepSeek=0，本地模型=0")  # 明确本命令不新增候选或排序。
         return 0  # 表示三份诊断文件均已发布。
     if args.command == "usage-forecast":  # 所有真实调用前的完全离线预估入口。

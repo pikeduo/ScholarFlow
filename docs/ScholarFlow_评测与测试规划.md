@@ -1306,8 +1306,8 @@ E. 同步 AGENTS.md。
 
 针对首次 A/B/C/D 评分全部为零检索命中的情况，新增 `python -m evaluation coverage-diagnose`：
 
-- 它只读取已封存 GoldQuery JSONL 与同一份共享 `CandidateSnapshot` JSONL，先要求两侧 `query_id` 集合完全相同，再复用正式 `papers_match-v1` 规则审计金标—候选身份匹配；
-- 输出目录必须不存在，发布 `diagnostic.json`、`query_diagnostics.jsonl` 与 `diagnostic.md`，冻结两个输入的原始字节 SHA-256，并按查询记录金标数、候选数、强标识符数量、匹配数量和事实性标记；输出不复制查询正文或论文正文；
+- 它只读取已封存 GoldQuery JSONL 与排序前 `CandidateSnapshot` JSONL：默认要求两侧 `query_id` 集合完全相同；对少量 Query Agent 新快照可显式重复提供 `--query-id`，仅要求这些选中 ID 在两侧均存在，禁止把新快照复制进旧集合伪造同一 QueryIntent 来源；
+- 输出目录必须不存在，发布 `diagnostic.json`、`query_diagnostics.jsonl` 与 `diagnostic.md`；`coverage-diagnostic-v2` 冻结两个输入的原始字节 SHA-256 和实际 `selected_query_ids`，并按查询记录金标数、候选数、强标识符数量、匹配数量和事实性标记；输出不复制查询正文或论文正文，局部诊断不能外推为开发集结论；
 - 该诊断不读取 `.env`，不重跑 BGE-M3/Cross Encoder，不调用 DeepSeek、学术 API 或本地模型；它不对零命中归因，只用于先区分“现有身份规则下无覆盖”和“标识符可比性不足”等可观测事实；
 - 只有诊断结果确认需要改变来源查询、来源召回规模、QueryIntent 或多轮策略时，才由用户决定是否显式重新生成在线候选；只修复离线身份映射、评分或报告时仍必须复用现有快照。
 

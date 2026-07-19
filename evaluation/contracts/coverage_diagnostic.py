@@ -23,10 +23,11 @@ class QueryCoverageDiagnostic(BaseModel):
 class CoverageDiagnosticSummary(BaseModel):
     """保存整个共享候选集合的零命中覆盖诊断汇总。"""
 
-    schema_version: str = "coverage-diagnostic-v1"  # 固定机器可读报告结构版本。
+    schema_version: str = "coverage-diagnostic-v2"  # 固定机器可读报告结构版本，并记录局部诊断范围。
     matching_rule: str = "papers_match-v1"  # 冻结与正式检索指标完全相同的论文匹配规则。
     gold_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")  # 保存金标原始字节摘要。
     snapshots_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")  # 保存候选集合原始字节摘要。
+    selected_query_ids: list[str] = Field(min_length=1)  # 保存本次实际比较的稳定查询标识顺序，不复制查询正文。
     query_count: int = Field(ge=1)  # 保存已严格对齐的查询数量。
     total_gold_paper_count: int = Field(ge=0)  # 保存全体金标论文数量。
     total_candidate_paper_count: int = Field(ge=0)  # 保存全体排序输入候选数量。

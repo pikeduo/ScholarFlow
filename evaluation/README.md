@@ -254,6 +254,16 @@ python -m evaluation coverage-diagnose `
 
 输出的 `diagnostic.json` 冻结金标和候选集合 SHA-256，`query_diagnostics.jsonl` 按查询记录强标识符可比性、匹配数和事实性标记，`diagnostic.md` 供人工摘要阅读。它严格复用 `papers_match-v1`，不输出查询正文或论文正文；零命中不能单独归因于来源、查询、规范化或排序。
 
+当只为少量 Query Agent 策略查询生成了新快照时，不得把它复制进旧集合后伪造同一 QueryIntent 来源。可通过可重复的 `--query-id` 进行局部离线诊断；报告使用 `coverage-diagnostic-v2`，冻结完整输入哈希和实际 `selected_query_ids`，结论只适用于该局部范围：
+
+```powershell
+python -m evaluation coverage-diagnose `
+  --gold evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --snapshots evaluation/inputs/pasa-auto-dev-ranking20-query-agent-v4-snapshots/002_AutoScholarQuery_dev_950.snapshot.jsonl `
+  --query-id pasa:auto-dev:AutoScholarQuery_dev_950 `
+  --output-dir evaluation/results/pasa-auto-dev-ranking20-query-agent-v4-950-coverage-diagnostic
+```
+
 若覆盖诊断表明需要补足隐含术语，用户可单独、一次性选择少量查询运行 Query Agent。此命令不是第一轮 A/B/C/D 排序消融的一部分：它会产生新的检索表达式和后续新的候选快照，不能与旧快照上的离线报告混合。
 
 ```powershell
