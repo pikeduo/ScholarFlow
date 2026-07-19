@@ -9,6 +9,7 @@ from typing import Any  # 避免离线命令导入生产候选服务类型。
 from evaluation.runners.dataset_import import import_prepared_dataset_gold  # 转换用户本地准备的数据集金标而不下载原始数据。
 from evaluation.runners.fixture import run_fixture  # 调用完全离线运行入口。
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
+from evaluation.runners.offline_execution import execute_ablation_to_files  # 执行用户显式授权的本地排序并原子归档。
 from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
@@ -37,6 +38,18 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--snapshots", type=Path, required=True, help="本地候选快照 JSONL 路径")  # 只读加载共享候选。
     plan_parser.add_argument("--matrix", type=Path, required=True, help="本地 A/B/C/D 矩阵 JSON 路径")  # 只读加载排序配置。
     plan_parser.add_argument("--output", type=Path, required=True, help="本地计划 JSON 输出路径")  # 要求显式输出文件。
+    execution_parser = subparsers.add_parser("ablation-execute", help="按已有计划执行明确选择的离线排序实验并原子归档")  # 创建不访问学术 API 的本地模型执行入口。
+    execution_parser.add_argument("--run-id", required=True, help="本次离线结果归档的稳定人工标识")  # 要求用户显式标识每次模型执行。
+    execution_parser.add_argument("--snapshots", type=Path, required=True, help="已封存的共享候选快照 JSONL 路径")  # 只读加载既有集合。
+    execution_parser.add_argument("--matrix", type=Path, required=True, help="已审核的 A/B/C/D 矩阵 JSON 路径")  # 只读加载配置。
+    execution_parser.add_argument("--plan", type=Path, required=True, help="已有 ablation-plan JSON 路径")  # 强制执行前复核计划输入。
+    execution_parser.add_argument("--experiment", action="append", required=True, help="可重复的矩阵 experiment_id；当前仅支持 A、B")  # 要求用户明确选择本次任务子集。
+    execution_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的 OfflineAblationResult JSONL 路径")  # 禁止覆盖历史模型结果。
+    execution_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的离线执行 manifest JSON 路径")  # 同时冻结输入与结果哈希。
+    execution_parser.add_argument("--allow-local-models", action="store_true", help="确认允许本次命令加载用户提供的本地模型")  # 对真实模型加载使用单独显式授权。
+    execution_parser.add_argument("--bge-model-path", type=Path, default=None, help="用户已准备且含 config.json 的本地 BGE-M3 目录")  # 不接受远程仓库名。
+    execution_parser.add_argument("--bge-device", choices=["cpu", "cuda"], default="cpu", help="实际 BGE-M3 本地推理设备")  # 保证结果设备字段明确。
+    execution_parser.add_argument("--bge-batch-size", type=int, default=8, help="BGE-M3 首轮本地文档编码批大小")  # 允许用户按硬件调整而不改变候选快照。
     dataset_parser = subparsers.add_parser("dataset-gold-import", help="将用户本地准备的数据集金标转换为 GoldQuery JSONL")  # 创建完全离线数据集适配命令。
     dataset_parser.add_argument("--input", type=Path, required=True, help="用户已准备的 dataset-gold-v1 JSONL 路径")  # 只读取用户明确指定的本地输入。
     dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
@@ -93,6 +106,24 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         write_ablation_plan(plan, args.output)  # 写出用户指定计划文件。
         print(f"[OK] 离线消融计划完成：{plan.task_count} 个任务，学术 API=0，DeepSeek=0")  # 明确资源边界。
         return 0  # 表示计划生成成功。
+    if args.command == "ablation-execute":  # 执行用户明确选择的计划内本地排序子集。
+        matrix = load_ablation_matrix(args.matrix)  # 只读检查所选实验是否需要本地 BGE-M3。
+        selected = [experiment for experiment in matrix.experiments if experiment.experiment_id in args.experiment]  # 不按命令行顺序改变矩阵的稳定顺序。
+        requires_bge = any(experiment.ranking_config.semantic_ranking_enabled for experiment in selected)  # 判断是否会实际加载本地模型。
+        if requires_bge and not args.allow_local_models:  # 模型任务必须有独立显式授权。
+            parser.error("ablation-execute 执行 BGE-M3 必须显式提供 --allow-local-models")  # 在构造评分器前拒绝。
+        if requires_bge and args.bge_model_path is None:  # 不允许调用方遗漏已准备的本地模型目录。
+            parser.error("ablation-execute 执行 BGE-M3 必须提供 --bge-model-path")  # 不下载或猜测模型位置。
+        if not requires_bge and args.bge_model_path is not None:  # 基线 A 不应无意义地装配模型。
+            parser.error("未选择 BGE-M3 实验时不得提供 --bge-model-path")  # 避免用户误以为模型已执行。
+        semantic_scorer = None  # 仅在本次实际选择 BGE-M3 时创建本地评分器。
+        if requires_bge:  # 所有静态授权和路径条件通过后才延迟导入评分适配器。
+            from evaluation.adapters.bge_m3 import BgeM3OfflineScorer  # 保持其他 CLI 命令不触碰模型库。
+
+            semantic_scorer = BgeM3OfflineScorer(args.bge_model_path, device=args.bge_device, batch_size=args.bge_batch_size)  # 构造期只校验本地目录，不加载模型。
+        manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer)  # 只执行已计划快照上的明确本地实验。
+        print(f"[OK] 离线排序结果已归档：{manifest.task_count} 个任务，学术 API=0，DeepSeek=0，本地阶段={','.join(manifest.local_model_stages) or 'none'}")  # 输出不含查询正文、模型路径或论文内容的安全摘要。
+        return 0  # 表示结果与 manifest 均已原子发布。
     if args.command == "dataset-gold-import":  # 第四阶段完全离线数据集金标转换入口。
         gold_queries = import_prepared_dataset_gold(args.input, dataset_id=args.dataset, split=args.split, output_path=args.output)  # 只转换用户本地已准备数据，不下载或调用任何服务。
         print(f"[OK] 数据集金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文和论文内容的安全摘要。

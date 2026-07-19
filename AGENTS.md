@@ -108,6 +108,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 第一轮本地排序消融关闭 DeepSeek；DeepSeek 仅用于开发集表现最好的少量配置，并单独记录调用数、Token 与费用。
 - 真实评测数据下载、学术 API、LLM、本地模型和完整 benchmark 必须由用户显式执行；离线测试只能使用合成 fixture 或 mock，不得读取 `.env`、访问网络或下载模型。
 - 评测 BGE-M3 适配器只能接受用户明确提供且已完整存在的本地模型目录（至少含 `config.json`），不得把远程仓库名交给模型库；构造和空候选评分不得加载模型，实际模型执行仍须由用户显式触发并以 `OfflineRankingScorer` 注入离线运行器。
+- `python -m evaluation ablation-execute` 只允许读取已有候选集合、矩阵和 `ablation-plan`，并以新 JSONL 与新 manifest 原子归档；启用 BGE-M3 的实验必须同时显式提供 `--allow-local-models` 与本地模型目录。当前只允许执行 A/B，C/D 必须在 Cross Encoder 适配器独立落地后才可执行；执行、评分和报告调整均不得重调学术 API。
 - 赛题未公开完整效率和结构化评分公式时，相关本地分数和综合分必须标记为代理分，不得宣称为官方得分。
 - 修改评测架构、目录、数据契约或执行命令时，必须同步更新评测规划、`docs/README.md` 与本节长期规则。
 

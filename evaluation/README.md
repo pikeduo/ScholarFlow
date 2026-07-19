@@ -204,6 +204,26 @@ python -m evaluation snapshot-collection-assemble `
 
 任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。`evaluation.adapters.bge_m3.BgeM3OfflineScorer` 已实现为可注入的 BGE-M3 适配器：它只接受用户明确提供、已存在且含 `config.json` 的本地模型目录，不接受远程仓库名；构造及空候选评分不加载模型，首次非空 `score` 才延迟导入并加载本地模型。调用方仍必须由用户显式创建并传给 `run_offline_experiment` 或 `run_ablation_matrix`，不会回退加载生产模型。Cross Encoder 适配器和 DeepSeek 对比尚未实现。
 
+执行已审核的计划内 A/B 子集时，用户必须显式运行 `ablation-execute`。该命令会复核集合快照、矩阵与 `ablation-plan` 的快照 ID/SHA-256 对应关系；输出 JSONL 和 manifest 都必须尚不存在，并通过同目录临时文件原子发布。B 实验还必须明确授权本地模型并给出已准备的本地目录：
+
+```powershell
+python -m evaluation ablation-execute `
+  --run-id pasa-auto-dev-ranking-v1-bge-v1 `
+  --snapshots evaluation/inputs/pasa-auto-dev-ranking20.candidate-snapshots.jsonl `
+  --matrix evaluation/config/ablation_default.json `
+  --plan evaluation/results/pasa-auto-dev-ranking20-ablation-plan.json `
+  --experiment A `
+  --experiment B `
+  --bge-model-path D:\models\bge-m3 `
+  --bge-device cpu `
+  --bge-batch-size 8 `
+  --allow-local-models `
+  --output evaluation/results/pasa-auto-dev-ranking20-ab.results.jsonl `
+  --manifest evaluation/results/pasa-auto-dev-ranking20-ab.manifest.json
+```
+
+该命令只在用户手动执行时加载本地模型；不会读取 `.env`、调用学术 API、DeepSeek 或 Cross Encoder。当前 C/D 会被明确拒绝，不能以 RRF 或 BGE 结果替代；Cross Encoder 适配器完成前不得尝试执行它们。
+
 输出目录被 Git 忽略，包含：
 
 - `report.json`：完整机器可读汇总与查询明细；
