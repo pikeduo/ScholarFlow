@@ -1195,6 +1195,8 @@ E. 同步 AGENTS.md。
 
 用户手动命令和输入要求见 `../evaluation/README.md`。本入口不会下载数据集或模型，也不会由 Codex 自动运行。生成一次快照后，BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标和报告的任何调整都必须离线复用该快照，不得重新调用学术 API。
 
+当开发集已存在 20 份单查询快照时，必须先使用 `python -m evaluation snapshot-collection-assemble` 组装为一个共享 JSONL 与集合 manifest，再生成消融计划。组装器只接受 `query-intent-manifest-v1`，按其 `query_id_order` 固定输出顺序，逐份复用正式快照加载器验证 SHA-256、身份去重及来源统计，并要求 `source_recall_count`、`target_paper_count` 和快照内 QueryIntent 与 manifest 一致。带“学术来源降级”警告的历史失败产物会被排除；同一查询存在多个其余有效重试时必须通过 `--snapshot-override query_id=目录内相对路径` 显式冻结选择。候选数量低于 `target_paper_count` 的真实成功快照仍保留并在集合 manifest 记录，不能以此重调学术 API。
+
 该阶段完成后安排的下一项是公开评测数据到现有 `GoldQuery`/fixture 契约的纯离线适配与校验边界，不自动下载 PaSa、RealScholarQuery 或其他数据集；实施结果见第 22 节，真实数据准备和完整转换继续由用户显式执行。
 
 ---

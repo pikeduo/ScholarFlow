@@ -28,6 +28,7 @@
 - `scripts/download_pasa_dataset.py` 是用户显式执行的 PaSa gated 数据集选择性下载工具：默认仅下载 `AutoScholarQuery/dev.jsonl`，可选增加 RealScholarQuery 与论文 ID 映射，使用本机 `hf auth login` 凭据且不保存 Token；
 - `snapshot-export` 是唯一受控在线例外：只在用户显式提供 `--allow-online-sources` 后读取已准备的单轮 `QueryIntent`、延迟装配 `CandidateGenerationService` 并写出一份排序前快照；它拒绝网页发现和已存在输出，不运行 Query Agent、BGE-M3、Cross Encoder 或 DeepSeek；
 - `scripts/export_pasa_snapshot_batch.ps1` 仅供用户显式手动运行：默认 `-BatchSize 1`，按已封存 PaSa QueryIntent manifest 选择下一条缺少有效快照的查询，导出后立即离线校验；失败即停且不会自动跑完整开发集；
+- `snapshot-collection-assemble` 完全离线地将 20 份单查询快照按 QueryIntent manifest 顺序组装为唯一共享 JSONL 与审计 manifest；来源降级失败产物被排除，多个成功重试必须由用户显式选择；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 
 ## 使用原则

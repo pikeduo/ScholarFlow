@@ -188,6 +188,20 @@ python -m evaluation snapshot-export `
 
 该脚本仅编排已有 `snapshot-export`，仍会显式传递 `--allow-online-sources`；因此必须由用户在正确的项目环境中手动运行。不要直接运行旧的 `evaluation/inputs/*-snapshot-export-commands.ps1` 命令清单，它会顺序执行全部命令且不具备已验证快照跳过与逐条复核边界。
 
+当 20 条单查询快照均已完成后，先离线组装为唯一共享候选集合，再生成 A/B/C/D 计划。组装器会按 QueryIntent manifest 的稳定顺序校验每份 SHA-256、`source_recall_count`、`target_paper_count` 和来源降级警告；多个成功重试必须由 `--snapshot-override` 明确选择。以下命令固定第 001 条使用最终验证的 retry7，其余查询自动选择唯一有效快照：
+
+```powershell
+python -m evaluation snapshot-collection-assemble `
+  --collection-id pasa-auto-dev-ranking-v1 `
+  --query-intent-manifest evaluation/inputs/pasa-auto-dev-ranking20-query-intents.manifest.json `
+  --snapshot-dir evaluation/inputs/pasa-auto-dev-ranking20-snapshots `
+  --snapshot-override "pasa:auto-dev:AutoScholarQuery_dev_806=001_AutoScholarQuery_dev_806.retry7.snapshot.jsonl" `
+  --output evaluation/inputs/pasa-auto-dev-ranking20.candidate-snapshots.jsonl `
+  --manifest evaluation/inputs/pasa-auto-dev-ranking20.candidate-snapshots.manifest.json
+```
+
+该命令只读取本地文件并写出新的 JSONL / manifest，不读取 `.env`、不调用学术 API、LLM 或本地模型；两个输出都不得预先存在。历史带“学术来源降级”警告的零候选失败产物会被排除，而候选数量少于 `target_paper_count` 的真实成功快照仍被保留并写入集合 manifest。
+
 任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。真正执行 BGE-M3 或 Cross Encoder 时，调用方必须显式提供实现 `OfflineRankingScorer` 的适配器；当前模块没有真实模型适配器，也不会回退加载生产模型。
 
 输出目录被 Git 忽略，包含：

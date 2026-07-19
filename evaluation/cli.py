@@ -12,6 +12,7 @@ from evaluation.runners.offline_ranking import build_ablation_plan, load_ablatio
 from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
+from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 按冻结顺序组装多份单查询快照而不访问外部资源。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +26,13 @@ def build_parser() -> argparse.ArgumentParser:
     fixture_parser.add_argument("--config", type=Path, default=None, help="可选的本地评测 JSON 配置")  # 允许调整 Top-K 和代理阈值。
     snapshot_parser = subparsers.add_parser("snapshot-check", help="只读校验候选快照契约、去重和 SHA-256")  # 创建快照检查命令。
     snapshot_parser.add_argument("--snapshots", type=Path, required=True, help="本地候选快照 JSONL 路径")  # 要求用户显式指定快照文件。
+    collection_parser = subparsers.add_parser("snapshot-collection-assemble", help="离线组装按 QueryIntent manifest 冻结顺序排列的候选快照集合")  # 创建完全离线的多文件快照集合入口。
+    collection_parser.add_argument("--collection-id", required=True, help="本次共享候选集合的稳定人工标识")  # 要求用户显式冻结集合用途与版本。
+    collection_parser.add_argument("--query-intent-manifest", type=Path, required=True, help="已封存 QueryIntent manifest JSON 路径")  # 只读取其中冻结的 query_id 顺序和候选参数。
+    collection_parser.add_argument("--snapshot-dir", type=Path, required=True, help="单查询候选快照所在目录")  # 只扫描用户显式指定目录内的 JSONL。
+    collection_parser.add_argument("--snapshot-override", action="append", default=[], help="可重复的 query_id=目录内相对快照路径，用于选择多个成功重试中的唯一版本")  # 禁止脚本自行猜测重试选择。
+    collection_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的集合 CandidateSnapshot JSONL 路径")  # 禁止覆盖已用于后续排序的集合。
+    collection_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的集合审计 manifest JSON 路径")  # 要求同时封存选择映射和哈希。
     plan_parser = subparsers.add_parser("ablation-plan", help="组合本地快照和矩阵，只生成零 API、零 DeepSeek 计划")  # 创建消融计划命令。
     plan_parser.add_argument("--snapshots", type=Path, required=True, help="本地候选快照 JSONL 路径")  # 只读加载共享候选。
     plan_parser.add_argument("--matrix", type=Path, required=True, help="本地 A/B/C/D 矩阵 JSON 路径")  # 只读加载排序配置。
@@ -66,6 +74,18 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         snapshots = load_candidate_snapshots(args.snapshots)  # 核验契约、身份去重和哈希。
         print(f"[OK] 候选快照校验完成：{len(snapshots)} 份，未执行学术 API、LLM 或本地模型")  # 输出不含查询和论文正文的安全摘要。
         return 0  # 表示校验成功。
+    if args.command == "snapshot-collection-assemble":  # 将用户已完成的单查询快照离线组装为共享排序输入。
+        overrides = parse_snapshot_overrides(args.snapshot_override)  # 在读取目录前校验多重重试的显式选择语法。
+        collection_manifest = assemble_candidate_snapshot_collection(  # 只读取本地 manifest 和快照，并写入新集合文件。
+            collection_id=args.collection_id,
+            query_intent_manifest_path=args.query_intent_manifest,
+            snapshot_directory=args.snapshot_dir,
+            snapshot_overrides=overrides,
+            output_path=args.output,
+            manifest_path=args.manifest,
+        )
+        print(f"[OK] 候选快照集合已封存：{len(collection_manifest.query_id_order)} 条，学术 API=0，LLM=0，本地模型=0")  # 明确组装不触发任何在线或模型资源。
+        return 0  # 表示集合 JSONL 与 manifest 已写出。
     if args.command == "ablation-plan":  # 第二阶段生成不执行模型的本地任务计划。
         snapshots = load_candidate_snapshots(args.snapshots)  # 只读加载并核验共享候选。
         matrix = load_ablation_matrix(args.matrix)  # 加载统一来源召回和评分配置。

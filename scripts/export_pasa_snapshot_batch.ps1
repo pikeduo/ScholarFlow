@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     按已封存 QueryIntent manifest 每次导出有限数量的 PaSa 排序前候选快照。
 
