@@ -1286,3 +1286,9 @@ E. 同步 AGENTS.md。
 - 离线测试以合成快照和替身 BGE 覆盖 A/B 执行、归档、同名输出拒绝与 C/D 拒绝，不访问网络、不读取 `.env`、不加载真实模型。
 
 当前 80 个 A/B/C/D 计划任务中，A/B 共 40 个已具备用户显式执行的实现边界；C/D 的 40 个仍待 Cross Encoder 适配器。后续指标和报告只读取这些归档 JSONL 与既有金标，不得重新调用学术 API；下一独立闭环是 Cross Encoder 本地适配器及其同等授权边界。
+
+---
+
+## 28. 消融结果离线评分实施状态（2026-07-19）
+
+已新增 `python -m evaluation ablation-score`：它先核验 `OfflineAblationResult` JSONL 与执行 manifest 的结果 SHA-256，再按实验将已归档 `PredictionRecord` 按 GoldQuery 顺序写入独立预测文件，并复用既有指标、代理分和报告写入器生成独立报告。评分输出目录必须尚不存在，临时目录内全部实验成功后才原子发布。该命令不读取 `.env`、不加载 BGE-M3/Cross Encoder、不调用 DeepSeek 或学术 API；修改 `evaluation_top_k`、代理分配置或报告格式只需重新运行评分，不得重建候选快照。

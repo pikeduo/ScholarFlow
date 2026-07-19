@@ -10,6 +10,7 @@ from evaluation.runners.dataset_import import import_prepared_dataset_gold  # �
 from evaluation.runners.fixture import run_fixture  # 调用完全离线运行入口。
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
 from evaluation.runners.offline_execution import execute_ablation_to_files  # 执行用户显式授权的本地排序并原子归档。
+from evaluation.runners.ablation_scoring import score_ablation_results  # 将已归档结果完全离线地分组评分并生成报告。
 from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
@@ -50,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     execution_parser.add_argument("--bge-model-path", type=Path, default=None, help="用户已准备且含 config.json 的本地 BGE-M3 目录")  # 不接受远程仓库名。
     execution_parser.add_argument("--bge-device", choices=["cpu", "cuda"], default="cpu", help="实际 BGE-M3 本地推理设备")  # 保证结果设备字段明确。
     execution_parser.add_argument("--bge-batch-size", type=int, default=8, help="BGE-M3 首轮本地文档编码批大小")  # 允许用户按硬件调整而不改变候选快照。
+    score_parser = subparsers.add_parser("ablation-score", help="将已归档离线结果转为预测并按实验生成评分报告")  # 创建不加载模型的结果评分入口。
+    score_parser.add_argument("--results", type=Path, required=True, help="已有 OfflineAblationResult JSONL 路径")  # 只读加载用户已执行的归档结果。
+    score_parser.add_argument("--run-manifest", type=Path, required=True, help="与结果配套的 offline-ranking-run manifest 路径")  # 强制核验结果字节哈希。
+    score_parser.add_argument("--gold", type=Path, required=True, help="已封存 GoldQuery JSONL 路径")  # 只读加载评分金标。
+    score_parser.add_argument("--config", type=Path, default=None, help="可选评测 Top-K 与代理分配置 JSON 路径")  # 只影响离线评分口径。
+    score_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的实验预测与报告目录")  # 禁止覆盖已经审阅的报告。
     dataset_parser = subparsers.add_parser("dataset-gold-import", help="将用户本地准备的数据集金标转换为 GoldQuery JSONL")  # 创建完全离线数据集适配命令。
     dataset_parser.add_argument("--input", type=Path, required=True, help="用户已准备的 dataset-gold-v1 JSONL 路径")  # 只读取用户明确指定的本地输入。
     dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
@@ -124,6 +131,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer)  # 只执行已计划快照上的明确本地实验。
         print(f"[OK] 离线排序结果已归档：{manifest.task_count} 个任务，学术 API=0，DeepSeek=0，本地阶段={','.join(manifest.local_model_stages) or 'none'}")  # 输出不含查询正文、模型路径或论文内容的安全摘要。
         return 0  # 表示结果与 manifest 均已原子发布。
+    if args.command == "ablation-score":  # 对既有归档结果进行完全离线的实验分组评分。
+        score_manifest = score_ablation_results(results_path=args.results, run_manifest_path=args.run_manifest, gold_path=args.gold, config_path=args.config, output_dir=args.output_dir)  # 不加载本地模型或调用任何在线资源。
+        print(f"[OK] 离线消融评分完成：{len(score_manifest['experiment_ids'])} 组实验，学术 API=0，DeepSeek=0，本地模型=0")  # 明确评分阶段不会重新执行模型。
+        return 0  # 表示各组预测、报告和评分 manifest 已原子发布。
     if args.command == "dataset-gold-import":  # 第四阶段完全离线数据集金标转换入口。
         gold_queries = import_prepared_dataset_gold(args.input, dataset_id=args.dataset, split=args.split, output_path=args.output)  # 只转换用户本地已准备数据，不下载或调用任何服务。
         print(f"[OK] 数据集金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文和论文内容的安全摘要。

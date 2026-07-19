@@ -224,6 +224,17 @@ python -m evaluation ablation-execute `
 
 该命令只在用户手动执行时加载本地模型；不会读取 `.env`、调用学术 API、DeepSeek 或 Cross Encoder。当前 C/D 会被明确拒绝，不能以 RRF 或 BGE 结果替代；Cross Encoder 适配器完成前不得尝试执行它们。
 
+执行完成后，使用 `ablation-score` 对已有 A/B 结果评分；该命令只读取本地归档和金标，不加载模型：
+
+```powershell
+python -m evaluation ablation-score `
+  --results evaluation/results/pasa-auto-dev-ranking20-ab.results.jsonl `
+  --run-manifest evaluation/results/pasa-auto-dev-ranking20-ab.manifest.json `
+  --gold evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --config evaluation/config/default.json `
+  --output-dir evaluation/results/pasa-auto-dev-ranking20-ab-score
+```
+
 输出目录被 Git 忽略，包含：
 
 - `report.json`：完整机器可读汇总与查询明细；

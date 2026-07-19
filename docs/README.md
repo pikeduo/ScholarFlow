@@ -31,6 +31,7 @@
 - `snapshot-collection-assemble` 完全离线地将 20 份单查询快照按 QueryIntent manifest 顺序组装为唯一共享 JSONL 与审计 manifest；来源降级失败产物被排除，多个成功重试必须由用户显式选择；
 - `evaluation/adapters/bge_m3.py` 提供可注入 `OfflineRankingScorer` 的本地 BGE-M3 适配器：只接受用户已准备且含 `config.json` 的本地目录，构造与空候选不加载模型；真实评分仍须由用户显式执行，当前尚未提供 Cross Encoder 或 DeepSeek 适配器；
 - `ablation-execute` 只在用户显式授权本地模型后执行计划内 A/B 子集，并把 `OfflineAblationResult` JSONL 与输入/输出 SHA-256 manifest 原子归档；当前会明确拒绝需要 Cross Encoder 的 C/D；
+- `ablation-score` 完全离线地核验归档结果 SHA-256，并按实验转换为 `PredictionRecord`、生成独立预测与指标报告；不重新加载模型或调用学术 API；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 
 ## 使用原则
