@@ -16,19 +16,6 @@ from backend.app.repositories.source_cache import SourceResponseCache, get_sourc
 from backend.app.repositories.source_rate_limiter import SourceCooldownError, SourceRateLimiter  # 将统一冷却状态转换为既有领域异常。
 
 
-OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
-    "id",  # 获取来源内稳定论文标识。
-    "doi",  # 获取跨来源 DOI 标识。
-    "title",  # 获取论文标题。
-    "publication_year",  # 获取年份过滤和展示字段。
-    "cited_by_count",  # 获取基础质量信号。
-    "abstract_inverted_index",  # 获取可还原的摘要。
-    "authorships",  # 获取作者和机构信息。
-    "primary_location",  # 获取期刊或会议名称。
-    "referenced_works",  # 获取引文图谱关系。
-    "ids",  # 兼容嵌套外部标识。
-)
-
 _OPENALEX_SAFE_ERROR_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (  # 仅允许向日志和调用方暴露的请求参数名称及其文本别名。
     ("api_key", ("api_key", "api key")),  # API 密钥仅显示参数名，绝不显示任何值。
     ("filter", ("filter",)),  # OpenAlex 常在 400 中报告过滤表达式问题。
@@ -70,7 +57,6 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
     params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
         "search": " ".join(search_terms),  # 使用 OpenAlex 全文搜索表达结构化意图。
         "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
-        "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段。
     }
     if query.year_range:  # 仅在用户明确指定年份范围时添加 API 过滤。
         params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 年份范围过滤语法。
@@ -92,7 +78,6 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
         "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
-        "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
     }
     if query.year_range:  # 用户明确给出年份范围时才添加来源过滤条件。
         params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 支持的发表年份范围语法。

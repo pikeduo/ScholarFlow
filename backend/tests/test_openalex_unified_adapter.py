@@ -70,6 +70,7 @@ def test_client_implements_unified_adapter_and_maps_provenance() -> None:
         assert request.url.path == "/works"  # 验证客户端调用 OpenAlex 论文搜索端点。
         assert request.url.params["search"] == "forecasting Transformer"  # 验证查询意图按确定顺序映射为全文搜索词。
         assert "sort" not in request.url.params  # 验证网络请求复用 OpenAlex 搜索默认相关性顺序，不发送冗余排序参数。
+        assert "select" not in request.url.params  # 验证网络请求接收完整 Work 响应，避免选择字段与来源版本不兼容。
         assert request.url.params["per_page"] == "5"  # 验证目标结果数量映射为来源单页限制。
         assert request.url.params["filter"] == "publication_year:2020-2024"  # 验证年份范围映射为来源过滤。
         return httpx.Response(200, json={"results": [fixture]}, request=request)  # 返回不依赖网络的 OpenAlex 响应。
