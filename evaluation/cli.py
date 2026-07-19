@@ -51,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     execution_parser.add_argument("--bge-model-path", type=Path, default=None, help="用户已准备且含 config.json 的本地 BGE-M3 目录")  # 不接受远程仓库名。
     execution_parser.add_argument("--bge-device", choices=["cpu", "cuda"], default="cpu", help="实际 BGE-M3 本地推理设备")  # 保证结果设备字段明确。
     execution_parser.add_argument("--bge-batch-size", type=int, default=8, help="BGE-M3 首轮本地文档编码批大小")  # 允许用户按硬件调整而不改变候选快照。
+    execution_parser.add_argument("--cross-encoder-model-path", type=Path, default=None, help="用户已准备且含 config.json 的本地 Cross Encoder 目录")  # 不接受远程仓库名。
+    execution_parser.add_argument("--cross-encoder-device", choices=["cpu", "cuda"], default="cpu", help="实际 Cross Encoder 本地推理设备")  # 保证阶段设备明确。
+    execution_parser.add_argument("--cross-encoder-batch-size", type=int, default=8, help="Cross Encoder 本地推理批大小")  # 允许用户按硬件调整。
     score_parser = subparsers.add_parser("ablation-score", help="将已归档离线结果转为预测并按实验生成评分报告")  # 创建不加载模型的结果评分入口。
     score_parser.add_argument("--results", type=Path, required=True, help="已有 OfflineAblationResult JSONL 路径")  # 只读加载用户已执行的归档结果。
     score_parser.add_argument("--run-manifest", type=Path, required=True, help="与结果配套的 offline-ranking-run manifest 路径")  # 强制核验结果字节哈希。
@@ -117,18 +120,28 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         matrix = load_ablation_matrix(args.matrix)  # 只读检查所选实验是否需要本地 BGE-M3。
         selected = [experiment for experiment in matrix.experiments if experiment.experiment_id in args.experiment]  # 不按命令行顺序改变矩阵的稳定顺序。
         requires_bge = any(experiment.ranking_config.semantic_ranking_enabled for experiment in selected)  # 判断是否会实际加载本地模型。
-        if requires_bge and not args.allow_local_models:  # 模型任务必须有独立显式授权。
-            parser.error("ablation-execute 执行 BGE-M3 必须显式提供 --allow-local-models")  # 在构造评分器前拒绝。
+        requires_cross = any(experiment.ranking_config.cross_encoder_ranking_enabled for experiment in selected)  # 判断是否会实际加载本地重排模型。
+        if (requires_bge or requires_cross) and not args.allow_local_models:  # 任一本地模型任务必须有独立显式授权。
+            parser.error("ablation-execute 执行本地模型必须显式提供 --allow-local-models")  # 在构造评分器前拒绝。
         if requires_bge and args.bge_model_path is None:  # 不允许调用方遗漏已准备的本地模型目录。
             parser.error("ablation-execute 执行 BGE-M3 必须提供 --bge-model-path")  # 不下载或猜测模型位置。
         if not requires_bge and args.bge_model_path is not None:  # 基线 A 不应无意义地装配模型。
             parser.error("未选择 BGE-M3 实验时不得提供 --bge-model-path")  # 避免用户误以为模型已执行。
+        if requires_cross and args.cross_encoder_model_path is None:
+            parser.error("ablation-execute 执行 Cross Encoder 必须提供 --cross-encoder-model-path")  # 不下载或猜测模型位置。
+        if not requires_cross and args.cross_encoder_model_path is not None:
+            parser.error("未选择 Cross Encoder 实验时不得提供 --cross-encoder-model-path")  # 避免无意义模型装配。
         semantic_scorer = None  # 仅在本次实际选择 BGE-M3 时创建本地评分器。
         if requires_bge:  # 所有静态授权和路径条件通过后才延迟导入评分适配器。
             from evaluation.adapters.bge_m3 import BgeM3OfflineScorer  # 保持其他 CLI 命令不触碰模型库。
 
             semantic_scorer = BgeM3OfflineScorer(args.bge_model_path, device=args.bge_device, batch_size=args.bge_batch_size)  # 构造期只校验本地目录，不加载模型。
-        manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer)  # 只执行已计划快照上的明确本地实验。
+        cross_encoder_scorer = None  # 仅在本次选择 C/D 时创建本地重排器。
+        if requires_cross:
+            from evaluation.adapters.cross_encoder import CrossEncoderOfflineScorer  # 保持其他命令不触碰本地模型库。
+
+            cross_encoder_scorer = CrossEncoderOfflineScorer(args.cross_encoder_model_path, device=args.cross_encoder_device, batch_size=args.cross_encoder_batch_size)  # 构造期只校验目录，不加载模型。
+        manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer)  # 只执行已计划快照上的明确本地实验。
         print(f"[OK] 离线排序结果已归档：{manifest.task_count} 个任务，学术 API=0，DeepSeek=0，本地阶段={','.join(manifest.local_model_stages) or 'none'}")  # 输出不含查询正文、模型路径或论文内容的安全摘要。
         return 0  # 表示结果与 manifest 均已原子发布。
     if args.command == "ablation-score":  # 对既有归档结果进行完全离线的实验分组评分。
