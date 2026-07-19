@@ -8,9 +8,11 @@ from pathlib import Path  # 处理用户显式提供的本地路径。
 from tempfile import NamedTemporaryFile  # 避免写入半截正式结果文件。
 
 from evaluation.adapters.base import OfflineRankingScorer  # 接收调用方显式提供的本地评分器。
+from evaluation.adapters.deepseek import DeepSeekOfflineReranker  # 接收调用方显式装配的异步 DeepSeek 核验器。
 from evaluation.contracts.ablation import AblationMatrix, AblationPlan, OfflineAblationResult  # 复用现有计划和运行结果契约。
 from evaluation.contracts.offline_run import OfflineRankingRunManifest  # 输出独立可审计的执行 manifest。
-from evaluation.runners.offline_ranking import load_ablation_matrix, run_ablation_matrix  # 复用同快照深拷贝与稳定排序逻辑。
+from evaluation.runners.offline_ranking import load_ablation_matrix, run_ablation_matrix, run_offline_experiment  # 复用同快照深拷贝与稳定排序逻辑。
+from evaluation.runners.deepseek_execution import run_deepseek_offline_experiment  # 执行封存候选上的异步 DeepSeek 核验。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读加载并复核候选集合。
 
 
@@ -57,6 +59,30 @@ def execute_ablation_to_files(*, run_id: str, snapshots_path: Path, matrix_path:
     _write_new_text_file(output_path, serialized_results, "离线排序结果")  # 先原子发布完整 JSONL。
     _write_new_text_file(manifest_path, json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n", "离线排序 manifest")  # 再发布配套审计记录。
     return manifest  # 返回安全摘要所需的任务数量与阶段信息。
+
+
+async def execute_deepseek_ablation_to_files(*, run_id: str, snapshots_path: Path, matrix_path: Path, plan_path: Path, experiment_ids: list[str], output_path: Path, manifest_path: Path, deepseek_reranker: DeepSeekOfflineReranker, forecast_sha256: str, semantic_scorer: OfflineRankingScorer | None = None, cross_encoder_scorer: OfflineRankingScorer | None = None) -> OfflineRankingRunManifest:
+    """执行含 DeepSeek 的计划子集，并在全部任务成功后原子归档。"""
+    _validate_new_output_paths(output_path, manifest_path)  # 真实 LLM 调用前先保护历史归档。
+    snapshots = load_candidate_snapshots(snapshots_path)  # 只读加载封存候选，不调用学术 API。
+    matrix = load_ablation_matrix(matrix_path)  # 读取用户审核的矩阵配置。
+    plan = _load_ablation_plan(plan_path)  # 读取既有离线任务计划。
+    selected_matrix = _select_supported_experiments(matrix, experiment_ids)  # 保持矩阵实验顺序。
+    _validate_plan_inputs(plan, snapshots, matrix, selected_matrix)  # 确保未替换候选或计划。
+    results: list[OfflineAblationResult] = []  # 先在内存累积，避免失败时发布半截文件。
+    for snapshot in snapshots:  # 按冻结快照顺序执行所有实验。
+        for experiment in selected_matrix.experiments:  # 按矩阵稳定顺序执行实验。
+            if experiment.ranking_config.deepseek_enabled:  # 只有明确启用的实验才可能调用 LLM。
+                result = await run_deepseek_offline_experiment(snapshot, matrix.matrix_id, experiment, deepseek_reranker=deepseek_reranker, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer)  # 调用受控异步核验阶段。
+            else:  # 基线与纯本地实验继续使用既有零 LLM 路径。
+                result = run_offline_experiment(snapshot, matrix.matrix_id, experiment, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer)  # 不改变 A/B/C/D 的本地结果。
+            results.append(result)  # 所有任务成功前仅保留内存对象。
+    serialized_results = "".join(result.model_dump_json() + "\n" for result in results)  # 以稳定顺序冻结全部结果字节。
+    deepseek_traces = [trace for result in results for trace in result.stage_traces if trace.stage == "deepseek" and trace.enabled]  # 收集实际执行的 LLM 阶段。
+    manifest = OfflineRankingRunManifest(run_id=run_id.strip(), matrix_id=matrix.matrix_id, matrix_sha256=_sha256_file(matrix_path), ablation_plan_sha256=_sha256_file(plan_path), snapshots_sha256=_sha256_file(snapshots_path), result_sha256=hashlib.sha256(serialized_results.encode("utf-8")).hexdigest(), selected_experiment_ids=[item.experiment_id for item in selected_matrix.experiments], snapshot_ids=[snapshot.snapshot_id for snapshot in snapshots], snapshot_hashes={snapshot.snapshot_id: snapshot.snapshot_hash or "" for snapshot in snapshots}, task_count=len(results), local_model_stages=sorted({trace.stage for result in results for trace in result.stage_traces if trace.enabled and trace.stage in {"bge_m3", "cross_encoder"}}), deepseek_calls=len(deepseek_traces), deepseek_prompt_tokens=sum(trace.prompt_tokens or 0 for trace in deepseek_traces), deepseek_completion_tokens=sum(trace.completion_tokens or 0 for trace in deepseek_traces), deepseek_estimated_cost_cny=round(sum(trace.estimated_cost_cny or 0.0 for trace in deepseek_traces), 8), deepseek_forecast_sha256=forecast_sha256, created_at=datetime.now(timezone.utc))  # 将实际 LLM 用量与用户确认预估绑定到原子归档。
+    _write_new_text_file(output_path, serialized_results, "DeepSeek 离线排序结果")  # 全部任务成功后才发布 JSONL。
+    _write_new_text_file(manifest_path, json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n", "DeepSeek 离线排序 manifest")  # 再发布配套审计 manifest。
+    return manifest  # 返回不含查询正文的执行摘要。
 
 
 def _select_supported_experiments(matrix: AblationMatrix, requested_ids: list[str]) -> AblationMatrix:
