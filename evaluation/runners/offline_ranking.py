@@ -113,7 +113,9 @@ def _build_usage(snapshot: CandidateSnapshot, traces: list[RankingStageTrace]) -
 def run_offline_experiment(snapshot: CandidateSnapshot, matrix_id: str, experiment: AblationExperiment, *, semantic_scorer: OfflineRankingScorer | None = None, cross_encoder_scorer: OfflineRankingScorer | None = None) -> OfflineAblationResult:
     """在一份快照上执行一个配置，不实例化模型或访问生产搜索。"""
     before_hash = validate_snapshot_integrity(snapshot)  # 运行前确认输入快照未被修改。
-    config = experiment.ranking_config  # 读取已通过 DeepSeek 禁用校验的排序配置。
+    config = experiment.ranking_config  # 读取已通过候选数量与开关边界校验的排序配置。
+    if config.deepseek_enabled:  # 同步本地执行器不能静默跳过异步 LLM 阶段。
+        raise ValueError("启用 DeepSeek 的实验必须使用受控异步执行器")  # 阻止配置已启用却生成零 LLM 用量的伪结果。
     if config.source_recall_count != snapshot.source_recall_count:  # 单实验也必须保持在线召回规模一致。
         raise ValueError("ranking_config.source_recall_count 与候选快照不一致")  # 防止复用错误快照。
     if config.semantic_ranking_enabled and semantic_scorer is None:  # 启用 BGE-M3 时必须由用户显式注入适配器。
