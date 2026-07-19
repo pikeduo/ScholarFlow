@@ -30,6 +30,19 @@ class _StubBgeScorer:
         return RankingScoreBatch(scores=[float(index) for index, _paper in enumerate(papers)], model_name="stub-bge", latency_ms=1.0, device="cpu", batch_size=2)  # 返回稳定且等长的合成分数。
 
 
+class _StubCrossEncoderScorer:
+    """记录调用并返回反向分数的零模型 Cross Encoder 替身。"""
+
+    def __init__(self) -> None:
+        """初始化内存调用计数，不加载模型或读取网络。"""
+        self.calls = 0  # 保存测试期实际评分次数。
+
+    def score(self, _query: str, _query_intent: Mapping[str, object], papers: Sequence[CandidatePaper]) -> RankingScoreBatch:
+        """按输入候选返回稳定分数，验证 C/D 的显式注入边界。"""
+        self.calls += 1  # 记录每个启用 Cross Encoder 的实验调用。
+        return RankingScoreBatch(scores=[float(len(papers) - index) for index, _paper in enumerate(papers)], model_name="stub-cross", latency_ms=1.0, device="cpu", batch_size=2)  # 返回严格等长的合成分数。
+
+
 def _matrix_and_plan(tmp_path: Path) -> tuple[Path, Path]:
     """写入与合成快照匹配的矩阵和计划，不触发任何模型。"""
     matrix = build_standard_ablation_matrix(semantic_top_k=4, cross_encoder_top_k=2, target_paper_count=2)  # 构造可执行的标准四组矩阵。
@@ -59,13 +72,18 @@ def test_executes_ab_plan_subset_and_archives_atomic_results(tmp_path: Path) -> 
         execute_ablation_to_files(run_id="fixture-ab", snapshots_path=SNAPSHOTS_PATH, matrix_path=matrix_path, plan_path=plan_path, experiment_ids=["A"], output_path=output_path, manifest_path=tmp_path / "another.manifest.json")  # 验证输出保护先于模型执行。
 
 
-def test_rejects_cross_encoder_experiments_without_writing_outputs(tmp_path: Path) -> None:
-    """当前未实现 Cross Encoder 时，C/D 必须明确失败且不留下归档文件。"""
+def test_executes_cross_encoder_experiments_only_with_explicit_scorer(tmp_path: Path) -> None:
+    """C/D 必须复用同一快照，并要求调用方显式注入 Cross Encoder 评分器。"""
     matrix_path, plan_path = _matrix_and_plan(tmp_path)  # 准备正常输入以隔离阶段拒绝原因。
     output_path = tmp_path / "cross.jsonl"  # 选择理论输出位置。
     manifest_path = tmp_path / "cross.manifest.json"  # 选择理论 manifest 位置。
 
-    with pytest.raises(ValueError, match="需要 Cross Encoder"):  # 禁止伪造 C 或 D 的模型结果。
-        execute_ablation_to_files(run_id="fixture-cross", snapshots_path=SNAPSHOTS_PATH, matrix_path=matrix_path, plan_path=plan_path, experiment_ids=["C"], output_path=output_path, manifest_path=manifest_path)  # 不注入未实现的精排器。
+    with pytest.raises(ValueError, match="必须显式提供 cross_encoder_scorer"):  # 缺少显式授权评分器时必须在写输出前失败。
+        execute_ablation_to_files(run_id="fixture-cross", snapshots_path=SNAPSHOTS_PATH, matrix_path=matrix_path, plan_path=plan_path, experiment_ids=["C"], output_path=output_path, manifest_path=manifest_path)  # 不注入本地精排器。
     assert not output_path.exists()  # 验证失败不写半截结果。
     assert not manifest_path.exists()  # 验证失败不写误导性审计记录。
+    scorer = _StubCrossEncoderScorer()  # 注入不加载真实模型的替身。
+    manifest = execute_ablation_to_files(run_id="fixture-cross", snapshots_path=SNAPSHOTS_PATH, matrix_path=matrix_path, plan_path=plan_path, experiment_ids=["C", "D"], output_path=output_path, manifest_path=manifest_path, semantic_scorer=_StubBgeScorer(), cross_encoder_scorer=scorer)  # C/D 复用同一快照并分别执行需要的阶段。
+    assert manifest.selected_experiment_ids == ["C", "D"]  # 验证矩阵稳定顺序。
+    assert manifest.local_model_stages == ["bge_m3", "cross_encoder"]  # 验证 D 的 BGE 与 C/D 的 Cross 阶段均被冻结。
+    assert scorer.calls == 2  # C 与 D 各执行一次 Cross Encoder 评分。

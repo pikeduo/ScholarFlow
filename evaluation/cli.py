@@ -11,6 +11,7 @@ from evaluation.runners.fixture import run_fixture  # 调用完全离线运行�
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
 from evaluation.runners.offline_execution import execute_ablation_to_files  # 执行用户显式授权的本地排序并原子归档。
 from evaluation.runners.ablation_scoring import score_ablation_results  # 将已归档结果完全离线地分组评分并生成报告。
+from evaluation.runners.coverage_diagnostic import diagnose_candidate_coverage  # 比较金标与共享候选快照的身份覆盖而不重新排序。
 from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
@@ -44,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     execution_parser.add_argument("--snapshots", type=Path, required=True, help="已封存的共享候选快照 JSONL 路径")  # 只读加载既有集合。
     execution_parser.add_argument("--matrix", type=Path, required=True, help="已审核的 A/B/C/D 矩阵 JSON 路径")  # 只读加载配置。
     execution_parser.add_argument("--plan", type=Path, required=True, help="已有 ablation-plan JSON 路径")  # 强制执行前复核计划输入。
-    execution_parser.add_argument("--experiment", action="append", required=True, help="可重复的矩阵 experiment_id；当前仅支持 A、B")  # 要求用户明确选择本次任务子集。
+    execution_parser.add_argument("--experiment", action="append", required=True, help="可重复的矩阵 experiment_id；支持 A、B、C、D")  # 要求用户明确选择本次任务子集。
     execution_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的 OfflineAblationResult JSONL 路径")  # 禁止覆盖历史模型结果。
     execution_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的离线执行 manifest JSON 路径")  # 同时冻结输入与结果哈希。
     execution_parser.add_argument("--allow-local-models", action="store_true", help="确认允许本次命令加载用户提供的本地模型")  # 对真实模型加载使用单独显式授权。
@@ -60,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     score_parser.add_argument("--gold", type=Path, required=True, help="已封存 GoldQuery JSONL 路径")  # 只读加载评分金标。
     score_parser.add_argument("--config", type=Path, default=None, help="可选评测 Top-K 与代理分配置 JSON 路径")  # 只影响离线评分口径。
     score_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的实验预测与报告目录")  # 禁止覆盖已经审阅的报告。
+    coverage_parser = subparsers.add_parser("coverage-diagnose", help="只读诊断金标与排序前候选快照的身份覆盖")  # 创建零 API、零模型的零命中定位入口。
+    coverage_parser.add_argument("--gold", type=Path, required=True, help="已封存 GoldQuery JSONL 路径")  # 使用评分相同的金标输入。
+    coverage_parser.add_argument("--snapshots", type=Path, required=True, help="已封存共享 CandidateSnapshot JSONL 路径")  # 只读取 BGE-M3 前快照。
+    coverage_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的候选覆盖诊断目录")  # 禁止覆盖已审阅诊断。
     dataset_parser = subparsers.add_parser("dataset-gold-import", help="将用户本地准备的数据集金标转换为 GoldQuery JSONL")  # 创建完全离线数据集适配命令。
     dataset_parser.add_argument("--input", type=Path, required=True, help="用户已准备的 dataset-gold-v1 JSONL 路径")  # 只读取用户明确指定的本地输入。
     dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
@@ -148,6 +153,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         score_manifest = score_ablation_results(results_path=args.results, run_manifest_path=args.run_manifest, gold_path=args.gold, config_path=args.config, output_dir=args.output_dir)  # 不加载本地模型或调用任何在线资源。
         print(f"[OK] 离线消融评分完成：{len(score_manifest['experiment_ids'])} 组实验，学术 API=0，DeepSeek=0，本地模型=0")  # 明确评分阶段不会重新执行模型。
         return 0  # 表示各组预测、报告和评分 manifest 已原子发布。
+    if args.command == "coverage-diagnose":  # 在任何新在线候选或 DeepSeek 比较前定位零命中边界。
+        summary = diagnose_candidate_coverage(gold_path=args.gold, snapshots_path=args.snapshots, output_dir=args.output_dir)  # 只比较本地金标和已封存快照。
+        print(f"[OK] 候选覆盖诊断完成：{summary.query_count} 条查询，零命中查询={summary.zero_match_query_count}，学术 API=0，DeepSeek=0，本地模型=0")  # 明确本命令不新增候选或排序。
+        return 0  # 表示三份诊断文件均已发布。
     if args.command == "dataset-gold-import":  # 第四阶段完全离线数据集金标转换入口。
         gold_queries = import_prepared_dataset_gold(args.input, dataset_id=args.dataset, split=args.split, output_path=args.output)  # 只转换用户本地已准备数据，不下载或调用任何服务。
         print(f"[OK] 数据集金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文和论文内容的安全摘要。

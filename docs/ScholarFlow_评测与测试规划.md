@@ -1292,3 +1292,21 @@ E. 同步 AGENTS.md。
 ## 28. 消融结果离线评分实施状态（2026-07-19）
 
 已新增 `python -m evaluation ablation-score`：它先核验 `OfflineAblationResult` JSONL 与执行 manifest 的结果 SHA-256，再按实验将已归档 `PredictionRecord` 按 GoldQuery 顺序写入独立预测文件，并复用既有指标、代理分和报告写入器生成独立报告。评分输出目录必须尚不存在，临时目录内全部实验成功后才原子发布。该命令不读取 `.env`、不加载 BGE-M3/Cross Encoder、不调用 DeepSeek 或学术 API；修改 `evaluation_top_k`、代理分配置或报告格式只需重新运行评分，不得重建候选快照。
+
+---
+
+## 29. Cross Encoder 执行与零命中候选覆盖诊断实施状态（2026-07-19）
+
+离线执行器现已支持标准 A/B/C/D 矩阵的 Cross Encoder 阶段：
+
+- 新增独立 `CrossEncoderOfflineScorer`，只接受用户已下载、含 `config.json` 的本地目录；构造和空候选不导入或加载模型，非空评分才延迟调用本地 `FlagReranker`；
+- C（RRF + Cross Encoder）直接读取同一份排序前候选快照，D（RRF + BGE-M3 + Cross Encoder）只读取该快照中的 BGE-M3 保留候选；二者均不重新调用学术 API；
+- `ablation-execute` 选择 C/D 时必须同时显式提供 `--allow-local-models` 与 `--cross-encoder-model-path`；D 另需 BGE-M3 目录，缺少任一评分器时在写出输出前失败；
+- 修正 CLI 参数说明和离线测试，使其与当前 A/B/C/D 实现一致；DeepSeek 仍不在第一轮矩阵内。
+
+针对首次 A/B/C/D 评分全部为零检索命中的情况，新增 `python -m evaluation coverage-diagnose`：
+
+- 它只读取已封存 GoldQuery JSONL 与同一份共享 `CandidateSnapshot` JSONL，先要求两侧 `query_id` 集合完全相同，再复用正式 `papers_match-v1` 规则审计金标—候选身份匹配；
+- 输出目录必须不存在，发布 `diagnostic.json`、`query_diagnostics.jsonl` 与 `diagnostic.md`，冻结两个输入的原始字节 SHA-256，并按查询记录金标数、候选数、强标识符数量、匹配数量和事实性标记；输出不复制查询正文或论文正文；
+- 该诊断不读取 `.env`，不重跑 BGE-M3/Cross Encoder，不调用 DeepSeek、学术 API 或本地模型；它不对零命中归因，只用于先区分“现有身份规则下无覆盖”和“标识符可比性不足”等可观测事实；
+- 只有诊断结果确认需要改变来源查询、来源召回规模、QueryIntent 或多轮策略时，才由用户决定是否显式重新生成在线候选；只修复离线身份映射、评分或报告时仍必须复用现有快照。

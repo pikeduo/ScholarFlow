@@ -202,9 +202,9 @@ python -m evaluation snapshot-collection-assemble `
 
 该命令只读取本地文件并写出新的 JSONL / manifest，不读取 `.env`、不调用学术 API、LLM 或本地模型；两个输出都不得预先存在。历史带“学术来源降级”警告的零候选失败产物会被排除，而候选数量少于 `target_paper_count` 的真实成功快照仍被保留并写入集合 manifest。
 
-任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。`evaluation.adapters.bge_m3.BgeM3OfflineScorer` 已实现为可注入的 BGE-M3 适配器：它只接受用户明确提供、已存在且含 `config.json` 的本地模型目录，不接受远程仓库名；构造及空候选评分不加载模型，首次非空 `score` 才延迟导入并加载本地模型。调用方仍必须由用户显式创建并传给 `run_offline_experiment` 或 `run_ablation_matrix`，不会回退加载生产模型。Cross Encoder 适配器和 DeepSeek 对比尚未实现。
+任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。`evaluation.adapters.bge_m3.BgeM3OfflineScorer` 与 `evaluation.adapters.cross_encoder.CrossEncoderOfflineScorer` 分别实现为可注入的 BGE-M3、Cross Encoder 适配器：两者只接受用户明确提供、已存在且含 `config.json` 的本地模型目录，不接受远程仓库名；构造及空候选评分不加载模型，首次非空 `score` 才延迟导入并加载本地模型。调用方必须显式创建评分器或通过 CLI 提供对应本地目录，绝不回退加载生产模型。DeepSeek 对比尚未实现。
 
-执行已审核的计划内 A/B 子集时，用户必须显式运行 `ablation-execute`。该命令会复核集合快照、矩阵与 `ablation-plan` 的快照 ID/SHA-256 对应关系；输出 JSONL 和 manifest 都必须尚不存在，并通过同目录临时文件原子发布。B 实验还必须明确授权本地模型并给出已准备的本地目录：
+执行已审核的计划内 A/B/C/D 子集时，用户必须显式运行 `ablation-execute`。该命令会复核集合快照、矩阵与 `ablation-plan` 的快照 ID/SHA-256 对应关系；输出 JSONL 和 manifest 都必须尚不存在，并通过同目录临时文件原子发布。B/D 需要 BGE-M3，本地 Cross Encoder 则用于 C/D：
 
 ```powershell
 python -m evaluation ablation-execute `
@@ -222,7 +222,7 @@ python -m evaluation ablation-execute `
   --manifest evaluation/results/pasa-auto-dev-ranking20-ab.manifest.json
 ```
 
-该命令只在用户手动执行时加载本地模型；不会读取 `.env`、调用学术 API、DeepSeek 或 Cross Encoder。当前 C/D 会被明确拒绝，不能以 RRF 或 BGE 结果替代；Cross Encoder 适配器完成前不得尝试执行它们。
+该命令只在用户手动执行时加载本地模型；不会读取 `.env`、调用学术 API 或 DeepSeek。C/D 必须显式传入 `--cross-encoder-model-path`，D 同时需要 BGE-M3 路径；四组均复用同一份排序前快照。
 
 执行完成后，使用 `ablation-score` 对已有 A/B 结果评分；该命令只读取本地归档和金标，不加载模型：
 
@@ -243,6 +243,17 @@ python -m evaluation ablation-score `
 
 效率分、结构分和综合分始终标记为“本地代理分（非官方）”。只要代理分所需效率观测不完整，效率代理分和综合代理分就保持缺失，避免用零伪造观测。
 
+如果同一共享候选快照上的 A/B/C/D 均为零检索命中，先运行只读覆盖诊断；它不会重跑模型或候选生成：
+
+```powershell
+python -m evaluation coverage-diagnose `
+  --gold evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --snapshots evaluation/inputs/pasa-auto-dev-ranking20.candidate-snapshots.jsonl `
+  --output-dir evaluation/results/pasa-auto-dev-ranking20-coverage-diagnostic
+```
+
+输出的 `diagnostic.json` 冻结金标和候选集合 SHA-256，`query_diagnostics.jsonl` 按查询记录强标识符可比性、匹配数和事实性标记，`diagnostic.md` 供人工摘要阅读。它严格复用 `papers_match-v1`，不输出查询正文或论文正文；零命中不能单独归因于来源、查询、规范化或排序。
+
 ## 后续边界
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的本地 BGE-M3 评分适配器，但没有 Cross Encoder、DeepSeek 对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应实现受显式本地模型授权的离线结果执行/归档入口，再独立实现 Cross Encoder 适配器；数据下载和完整 benchmark 仍由用户显式执行。
+当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的 BGE-M3、Cross Encoder 评分适配器和零命中覆盖诊断，但没有 DeepSeek 对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。若首轮均零命中，应先审阅覆盖诊断，再决定是否需要用户显式重建在线候选；数据下载和完整 benchmark 仍由用户显式执行。
