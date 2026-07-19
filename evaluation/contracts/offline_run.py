@@ -23,6 +23,11 @@ class OfflineRankingRunManifest(BaseModel):
     snapshot_hashes: dict[str, str] = Field(default_factory=dict)  # 保存每份快照的内容哈希。
     task_count: int = Field(ge=1)  # 保存快照数乘实验数的实际任务数量。
     local_model_stages: list[str] = Field(default_factory=list)  # 保存实际执行的本地模型阶段，不记录机器路径。
+    deepseek_calls: int = Field(default=0, ge=0)  # 保存本次真实 DeepSeek 批次调用数，不把离线计划误记为调用。
+    deepseek_prompt_tokens: int = Field(default=0, ge=0)  # 保存供应商实际报告的输入 Token 汇总。
+    deepseek_completion_tokens: int = Field(default=0, ge=0)  # 保存供应商实际报告的输出 Token 汇总。
+    deepseek_estimated_cost_cny: float = Field(default=0.0, ge=0.0)  # 保存调用时冻结的人民币费用估算。
+    deepseek_forecast_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # 保存用户确认过的调用前预估内容哈希。
     created_at: datetime  # 保存明确时区的本地归档时间。
 
     @model_validator(mode="after")
