@@ -9,7 +9,7 @@ from typing import Any  # 避免离线命令导入生产候选服务类型。
 from evaluation.runners.dataset_import import import_prepared_dataset_gold  # 转换用户本地准备的数据集金标而不下载原始数据。
 from evaluation.runners.fixture import run_fixture  # 调用完全离线运行入口。
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
-from evaluation.runners.offline_execution import execute_ablation_to_files  # 执行用户显式授权的本地排序并原子归档。
+from evaluation.runners.offline_execution import execute_ablation_to_files, execute_deepseek_ablation_to_files  # 执行用户显式授权的本地或 DeepSeek 排序并原子归档。
 from evaluation.runners.ablation_scoring import score_ablation_results  # 将已归档结果完全离线地分组评分并生成报告。
 from evaluation.runners.coverage_diagnostic import diagnose_candidate_coverage  # 比较金标与共享候选快照的身份覆盖而不重新排序。
 from evaluation.runners.query_agent_planning import EvaluationQueryPlanner, plan_query_intents_to_files, validate_query_agent_request  # 提供用户显式授权的评测 Query Agent 入口。
@@ -57,6 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     execution_parser.add_argument("--cross-encoder-model-path", type=Path, default=None, help="用户已准备且含 config.json 的本地 Cross Encoder 目录")  # 不接受远程仓库名。
     execution_parser.add_argument("--cross-encoder-device", choices=["cpu", "cuda"], default="cpu", help="实际 Cross Encoder 本地推理设备")  # 保证阶段设备明确。
     execution_parser.add_argument("--cross-encoder-batch-size", type=int, default=8, help="Cross Encoder 本地推理批大小")  # 允许用户按硬件调整。
+    execution_parser.add_argument("--allow-deepseek", action="store_true", help="确认允许本次已启用 DeepSeek 的实验调用真实 LLM")  # 与本地模型授权分离。
+    execution_parser.add_argument("--forecast", type=Path, default=None, help="启用 DeepSeek 时必须提供已审阅的调用前预估 JSON")  # 预留强制预估确认入口。
+    execution_parser.add_argument("--confirm-forecast", default=None, help="启用 DeepSeek 时必须提供预估中的 confirmation_sha256")  # 预留用户显式确认值。
     score_parser = subparsers.add_parser("ablation-score", help="将已归档离线结果转为预测并按实验生成评分报告")  # 创建不加载模型的结果评分入口。
     score_parser.add_argument("--results", type=Path, required=True, help="已有 OfflineAblationResult JSONL 路径")  # 只读加载用户已执行的归档结果。
     score_parser.add_argument("--run-manifest", type=Path, required=True, help="与结果配套的 offline-ranking-run manifest 路径")  # 强制核验结果字节哈希。
@@ -144,6 +147,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         selected = [experiment for experiment in matrix.experiments if experiment.experiment_id in args.experiment]  # 不按命令行顺序改变矩阵的稳定顺序。
         requires_bge = any(experiment.ranking_config.semantic_ranking_enabled for experiment in selected)  # 判断是否会实际加载本地模型。
         requires_cross = any(experiment.ranking_config.cross_encoder_ranking_enabled for experiment in selected)  # 判断是否会实际加载本地重排模型。
+        requires_deepseek = any(experiment.ranking_config.deepseek_enabled for experiment in selected)  # 判断是否会实际调用异步 LLM 核验。
         if (requires_bge or requires_cross) and not args.allow_local_models:  # 任一本地模型任务必须有独立显式授权。
             parser.error("ablation-execute 执行本地模型必须显式提供 --allow-local-models")  # 在构造评分器前拒绝。
         if requires_bge and args.bge_model_path is None:  # 不允许调用方遗漏已准备的本地模型目录。
@@ -154,6 +158,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
             parser.error("ablation-execute 执行 Cross Encoder 必须提供 --cross-encoder-model-path")  # 不下载或猜测模型位置。
         if not requires_cross and args.cross_encoder_model_path is not None:
             parser.error("未选择 Cross Encoder 实验时不得提供 --cross-encoder-model-path")  # 避免无意义模型装配。
+        if requires_deepseek and (not args.allow_deepseek or args.forecast is None or not args.confirm_forecast):  # LLM 真实调用必须同时具备授权和预估确认。
+            parser.error("启用 DeepSeek 的 ablation-execute 必须提供 --allow-deepseek、--forecast 和 --confirm-forecast")  # 在装配生产客户端前拒绝。
+        if not requires_deepseek and (args.allow_deepseek or args.forecast is not None or args.confirm_forecast is not None):  # 非 LLM 实验不得伪造 DeepSeek 授权记录。
+            parser.error("未选择 DeepSeek 实验时不得提供 --allow-deepseek、--forecast 或 --confirm-forecast")  # 保持调用审计与实际阶段一致。
         semantic_scorer = None  # 仅在本次实际选择 BGE-M3 时创建本地评分器。
         if requires_bge:  # 所有静态授权和路径条件通过后才延迟导入评分适配器。
             from evaluation.adapters.bge_m3 import BgeM3OfflineScorer  # 保持其他 CLI 命令不触碰模型库。
@@ -164,7 +172,14 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
             from evaluation.adapters.cross_encoder import CrossEncoderOfflineScorer  # 保持其他命令不触碰本地模型库。
 
             cross_encoder_scorer = CrossEncoderOfflineScorer(args.cross_encoder_model_path, device=args.cross_encoder_device, batch_size=args.cross_encoder_batch_size)  # 构造期只校验目录，不加载模型。
-        manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer)  # 只执行已计划快照上的明确本地实验。
+        if requires_deepseek:  # 只有所有授权参数通过后才延迟装配生产 DeepSeek 核验器。
+            from backend.app.services.llm_ranking import LlmPaperReranker  # 延迟导入避免纯本地实验读取 DeepSeek 配置。
+            from evaluation.adapters.deepseek import DeepSeekOfflineReranker  # 将生产核验器限制在封存快照边界。
+
+            deepseek_reranker = DeepSeekOfflineReranker(LlmPaperReranker())  # 构造期不发请求，实际调用由异步归档器执行。
+            manifest = asyncio.run(execute_deepseek_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, deepseek_reranker=deepseek_reranker, forecast_sha256=args.confirm_forecast, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer))  # 只在用户明确授权后执行异步 LLM 阶段。
+        else:
+            manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer)  # 只执行已计划快照上的明确本地实验。
         print(f"[OK] 离线排序结果已归档：{manifest.task_count} 个任务，学术 API=0，DeepSeek=0，本地阶段={','.join(manifest.local_model_stages) or 'none'}")  # 输出不含查询正文、模型路径或论文内容的安全摘要。
         return 0  # 表示结果与 manifest 均已原子发布。
     if args.command == "ablation-score":  # 对既有归档结果进行完全离线的实验分组评分。
