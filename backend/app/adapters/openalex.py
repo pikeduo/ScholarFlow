@@ -74,7 +74,6 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
     search_text = normalize_openalex_search_text(" ".join(search_terms))  # 仅在 OpenAlex 请求边界规范化兼容字符与分隔标点。
     params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
         "search": search_text,  # 使用来源兼容的全文搜索文本表达结构化意图。
-        "sort": "-relevance_score",  # 在已规范化的全文搜索上显式保持 OpenAlex 相关性降序。
         "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段以减少响应负担。
     }
@@ -97,7 +96,6 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     search_text = normalize_openalex_search_text(" ".join(search_terms) or query.normalized_query)  # 缺少拆分词时退回已校验查询，并仅在来源请求边界规范化兼容字符与分隔标点。
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
-        "sort": "-relevance_score",  # 在已规范化的全文搜索上显式保持来源相关性排序。
         "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
     }

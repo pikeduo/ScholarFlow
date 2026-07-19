@@ -21,7 +21,7 @@ def test_builder_converts_query_schema_to_openalex_params() -> None:
     )
     params = build_openalex_work_params(query)  # 构造不含密钥的 OpenAlex 参数。
     assert params["search"] == "large language model forecasting ETT time series benchmark"  # 验证关键词合并顺序。
-    assert params["sort"] == "-relevance_score"  # 验证旧 QuerySchema 入口在来源文本规范化后显式请求相关性降序。
+    assert "sort" not in params  # 验证全文搜索依赖 OpenAlex 默认相关性降序，不发送不兼容的冗余排序参数。
     assert params["filter"] == "publication_year:2022-2025"  # 验证年份范围转换。
     assert params["per_page"] == 30  # 验证目标数量映射为单页数量。
     assert params["select"] == ",".join(OPENALEX_WORK_FIELDS)  # 验证旧 QuerySchema 入口恢复最小字段选择以减少响应负担。
