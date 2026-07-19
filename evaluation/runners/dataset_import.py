@@ -4,6 +4,7 @@ import json  # 将转换后的 GoldQuery 编码为 UTF-8 JSONL。
 import os  # 刷新文件内容并原子发布最终输出文件。
 from pathlib import Path  # 读取和写入用户显式指定的本地路径。
 from tempfile import NamedTemporaryFile  # 在同目录创建可安全发布的临时 JSONL 文件。
+from typing import Sequence  # 接收 GoldQuery 序列并生成可复核的规范化 JSONL。
 
 from evaluation.adapters.prepared_dataset import convert_prepared_dataset_records  # 复用不接触网络的金标转换规则。
 from evaluation.contracts.dataset import PreparedDatasetGoldRecord  # 解析准备数据集金标输入。
@@ -38,7 +39,7 @@ def write_gold_queries(gold_queries: list[GoldQuery], output_path: Path) -> None
     if output_path.exists():  # 缩小导入期间目标被创建时的覆盖窗口。
         raise FileExistsError(f"数据集金标输出已存在: {output_path}")  # 始终保留已有用户文件。
     output_path.parent.mkdir(parents=True, exist_ok=True)  # 仅创建用户显式指定输出路径的父目录。
-    serialized = "".join(json.dumps(query.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")) + "\n" for query in gold_queries)  # 生成每条一行的稳定 UTF-8 JSONL 内容。
+    serialized = serialize_gold_queries(gold_queries)  # 复用公开的规范化 JSONL 编码，确保子集哈希与实际输出一致。
     temporary_path: Path | None = None  # 保存临时文件路径以便异常时回收。
     try:  # 任何写入或发布失败都不得留下不完整目标文件。
         with NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=output_path.parent, prefix=f".{output_path.name}.", suffix=".tmp", delete=False) as stream:  # 在同一文件系统创建临时文件。
@@ -53,3 +54,8 @@ def write_gold_queries(gold_queries: list[GoldQuery], output_path: Path) -> None
     finally:
         if temporary_path is not None and temporary_path.exists():  # 仅清理尚未发布的临时文件。
             temporary_path.unlink()  # 避免导入失败在用户目录遗留碎片。
+
+
+def serialize_gold_queries(gold_queries: Sequence[GoldQuery]) -> str:
+    """将 GoldQuery 序列编码为稳定、可哈希的 UTF-8 JSONL 文本。"""
+    return "".join(json.dumps(query.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")) + "\n" for query in gold_queries)  # 固定字段顺序、分隔符和换行，供原子写入与内容哈希共用。

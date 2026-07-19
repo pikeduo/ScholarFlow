@@ -310,8 +310,10 @@ DeepSeek：只保留一次最终精排
 建议：
 
 ```text
-AutoScholarQuery dev 固定 20 条
+从完整 AutoScholarQuery dev GoldQuery 确定性封存 20 条
 ```
+
+完整开发集当前有 1,000 条查询；`gold-subset-select` 必须以显式 `selection_id`、种子、输入哈希和完整 `query_id` 列表封存此 20 条子集，不能把“固定 20 条”误解为原始 dev 文件总量。
 
 通过开发集选择：
 
@@ -782,7 +784,7 @@ Tavily 关闭
 固定：
 
 ```text
-AutoScholarQuery dev 中 20 条
+从完整 AutoScholarQuery dev 中已封存的 20 条
 ```
 
 先比较 A/B/C/D，再只对最佳配置调整候选规模。
@@ -1240,3 +1242,13 @@ E. 同步 AGENTS.md。
 - 合成离线测试覆盖字段配对、未知字段、PaSa 来源重复审计、已有输出保护和 CLI 闭环，不使用真实 PaSa 内容。
 
 `RealScholarQuery/test.jsonl` 的原始字段尚未在本地确认，不能假定与 AutoScholarQuery 相同。下一步如需支持它，先由用户显式下载该文件并提供允许读取的样例，再新增独立契约和适配器。
+
+## 25. 开发集子集封存实施状态（2026-07-19）
+
+完整 PaSa 开发集 GoldQuery 已由用户转换并只读验收为 1,000 条查询、2,531 篇去重后金标论文；这与“开发集评测固定 20 条”的子集规模并不冲突。新增完全离线的 `python -m evaluation gold-subset-select`：
+
+- 仅读取用户明确指定的完整 `GoldQuery` JSONL，要求显式 `--count`、`--selection-id` 与 `--seed`，不会把 20 或其他数量写死在实现中；
+- 以 `sha256-query-id-v1` 对策略名、选择标识、种子和 `query_id` 计算稳定排序，输入行顺序改变不会改变成员和排名；
+- 写入新的子集 `GoldQuery` JSONL 与独立 `gold-subset-manifest-v1`，后者保存输入原始字节 SHA-256、输出规范化 SHA-256、总数、选择数及完整 `selected_query_ids`；
+- 两个输出必须均为新文件，输入重复 `query_id`、数量越界、空选择标识或空种子均明确报错；命令不读取 `.env`、不调用学术 API、LLM、模型或生产搜索；
+- 子集 manifest 必须与后续 `QueryIntent`、候选快照、排序矩阵和报告一同保存。改变子集成员需要用户显式重新授权相应查询的候选生成；只改离线 Top-K、评分或报告不需要也不得重新调用学术 API。

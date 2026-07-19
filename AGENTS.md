@@ -101,6 +101,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - `python -m evaluation dataset-gold-import` 只接受用户本地准备且字段版本已确认的评测金标 JSONL，转换为 `GoldQuery` 时必须保留数据集、切分、原始查询标识和转换版本；不得下载、猜测或自动兼容 PaSa、RealScholarQuery 等第三方原始格式，不得补全或在线核验论文元数据，且不得覆盖已有导入结果。
 - `scripts/download_pasa_dataset.py` 仅允许由用户显式执行：必须通过 `huggingface_hub.snapshot_download` 的有限 `allow_patterns` 下载 `CarlanLark/pasa-dataset` 的受支持文件，默认只取 `AutoScholarQuery/dev.jsonl`；认证只能使用本机 `hf auth login` 凭据，代码、参数、日志和错误中不得保存或输出 Token。脚本不得下载整个仓库，不得自动执行、解析原始字段或运行 benchmark。
 - `python -m evaluation pasa-gold-import` 仅支持已由用户本地样例确认的 `AutoScholarQuery/dev.jsonl`：严格读取 `qid`、`question`、`answer`、`answer_arxiv_id` 和 `source_meta`，按索引配对标题与 arXiv ID；若 PaSa 原始标注按统一身份规则重复，保留首次论文并将数量写入 `pasa_duplicate_answer_count`，再复用通用命名空间和新文件写入边界。此例外不得改变通用 `dataset-gold-import` 对重复金标的拒绝行为；不得调用论文数据库、学术 API、LLM 或模型，也不得将未确认格式的 RealScholarQuery 标记为兼容。
+- `python -m evaluation gold-subset-select` 只允许从用户已验证的本地 `GoldQuery` 封存开发集子集：必须显式给出 `count`、`selection_id`、种子、新子集路径和新 manifest 路径；以固定 SHA-256 策略、源文件哈希、输出哈希及完整稳定 `query_id` 列表审计，且不得覆盖任何已封存输出。开发集“固定 20 条”是这种可复现子集的规模，不是原始 PaSa dev 文件总量；改变子集成员后重新生成候选仍必须由用户逐条显式授权，调整离线 Top-K、指标或报告不得调用学术 API。
 - 调整指标、评分 Top-K 或报告格式只读取既有预测和候选快照，不得重新调用学术 API；只有来源查询、来源召回规模、`QueryIntent` 或多轮策略改变时才重新生成在线候选。
 - 第一轮本地排序消融关闭 DeepSeek；DeepSeek 仅用于开发集表现最好的少量配置，并单独记录调用数、Token 与费用。
 - 真实评测数据下载、学术 API、LLM、本地模型和完整 benchmark 必须由用户显式执行；离线测试只能使用合成 fixture 或 mock，不得读取 `.env`、访问网络或下载模型。

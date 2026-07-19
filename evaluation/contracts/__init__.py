@@ -8,5 +8,6 @@ from evaluation.contracts.pasa import PasaRawQuery  # 导出已确认 PaSa 原�
 from evaluation.contracts.prediction import PredictionRecord, RankingConfig  # 导出预测和排序配置契约。
 from evaluation.contracts.result import EvaluationSummary  # 导出完整评测报告契约。
 from evaluation.contracts.snapshot import CandidatePaper, CandidateSnapshot, CandidateSourceRecord, compute_snapshot_hash, seal_snapshot  # 导出候选快照契约与哈希入口。
+from evaluation.contracts.subset import GoldSubsetManifest  # 导出开发集子集封存 manifest 契约。
 
-__all__ = ["AblationExperiment", "AblationMatrix", "AblationPlan", "CandidatePaper", "CandidateSnapshot", "CandidateSourceRecord", "EvaluationPaper", "EvaluationUsage", "EvaluationSummary", "GoldQuery", "OfflineAblationResult", "PasaRawQuery", "PredictionRecord", "PreparedDatasetGoldRecord", "RankingConfig", "RankingScoreBatch", "RankingStageTrace", "RelationRecord", "build_standard_ablation_matrix", "compute_snapshot_hash", "seal_snapshot"]  # 明确评测层公共模型。
+__all__ = ["AblationExperiment", "AblationMatrix", "AblationPlan", "CandidatePaper", "CandidateSnapshot", "CandidateSourceRecord", "EvaluationPaper", "EvaluationUsage", "EvaluationSummary", "GoldQuery", "GoldSubsetManifest", "OfflineAblationResult", "PasaRawQuery", "PredictionRecord", "PreparedDatasetGoldRecord", "RankingConfig", "RankingScoreBatch", "RankingStageTrace", "RelationRecord", "build_standard_ablation_matrix", "compute_snapshot_hash", "seal_snapshot"]  # 明确评测层公共模型。

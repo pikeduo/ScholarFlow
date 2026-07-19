@@ -11,6 +11,7 @@ from evaluation.runners.fixture import run_fixture  # 调用完全离线运行�
 from evaluation.runners.offline_ranking import build_ablation_plan, load_ablation_matrix, write_ablation_plan  # 生成不执行模型的消融计划。
 from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
+from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     pasa_parser.add_argument("--input", type=Path, required=True, help="用户已下载的 PaSa AutoScholarQuery 或同字段版本 JSONL 路径")  # 只读取用户明确指定的本地原始数据。
     pasa_parser.add_argument("--split", required=True, choices=["auto-dev"], help="当前已确认字段版本的 PaSa 数据切分")  # 未确认 RealScholarQuery 字段前只允许本地已验证的 AutoScholarQuery 开发集。
     pasa_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的 GoldQuery JSONL 路径")  # 禁止覆盖已经审阅的 PaSa 转换结果。
+    subset_parser = subparsers.add_parser("gold-subset-select", help="从本地 GoldQuery 封存可复现的开发集子集")  # 创建不读取配置和不调用服务的子集选择命令。
+    subset_parser.add_argument("--input", type=Path, required=True, help="已验证的完整 GoldQuery JSONL 路径")  # 只读取用户明确指定的本地金标输入。
+    subset_parser.add_argument("--count", type=int, required=True, help="本次子集查询数，例如开发集评测的 20")  # 保持开发集规模与候选和 Top-K 参数明确分离。
+    subset_parser.add_argument("--selection-id", required=True, help="人工冻结的子集用途与版本标识")  # 要求用户明确区分不同实验子集。
+    subset_parser.add_argument("--seed", required=True, help="参与稳定 SHA-256 排序的显式种子文本")  # 禁止隐式随机状态导致无法重现。
+    subset_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的子集 GoldQuery JSONL 路径")  # 禁止覆盖已用于候选快照的开发集。
+    subset_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的子集审计 manifest JSON 路径")  # 要求单独封存算法、哈希和完整 query_id 列表。
     export_parser = subparsers.add_parser("snapshot-export", help="显式授权一次候选生成并导出排序前快照")  # 创建唯一受控在线入口。
     export_parser.add_argument("--query-intent", type=Path, required=True, help="已准备好的单轮 QueryIntent JSON 路径")  # 禁止隐式调用 Query Agent。
     export_parser.add_argument("--query-id", required=True, help="评测数据集中的稳定查询标识")  # 要求显式关联评测查询。
@@ -73,6 +81,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         gold_queries = import_pasa_gold(args.input, split=args.split, output_path=args.output)  # 只读取用户已下载的 PaSa 文件，不访问网络或补全论文元数据。
         print(f"[OK] PaSa 金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含 PaSa 查询或论文正文的安全摘要。
         return 0  # 表示本地 PaSa 导入成功。
+    if args.command == "gold-subset-select":  # 第六阶段开发集 GoldQuery 子集的完全离线封存入口。
+        manifest = select_gold_subset_to_files(args.input, count=args.count, selection_id=args.selection_id, selection_seed=args.seed, output_path=args.output, manifest_path=args.manifest)  # 只处理本地金标并同时封存哈希和完整 ID 列表。
+        print(f"[OK] GoldQuery 子集已封存：{manifest.selected_query_count}/{manifest.source_query_count} 条，SHA-256={manifest.selected_gold_sha256}，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文，仅提供可复核规模与哈希。
+        return 0  # 表示零网络子集封存成功。
     if args.command == "snapshot-export":  # 第三阶段唯一受控在线候选生成入口。
         if not args.allow_online_sources:  # 未显式授权时不得读取配置或构造生产适配器。
             parser.error("snapshot-export 必须显式提供 --allow-online-sources；该命令可能调用真实学术 API")  # 以标准 CLI 错误拒绝隐式在线执行。

@@ -1,6 +1,6 @@
 # ScholarFlow 离线评测模块
 
-本目录是与 `backend/` 生产搜索流程分离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排，第三阶段提供唯一的受控在线候选导出入口，第四阶段提供本地准备数据集金标导入。`fixture`、`snapshot-check`、`ablation-plan` 和 `dataset-gold-import` 始终只读取用户显式提供的本地 JSONL/JSON 文件，不读取 `.env`，不访问学术 API、LLM 或本地模型。只有用户手动执行带 `--allow-online-sources` 的 `snapshot-export` 时，才会延迟装配生产学术来源；模块不提供数据集或模型下载命令。
+本目录是与 `backend/` 生产搜索流程分离的评测模块。第一阶段提供指标与报告，第二阶段提供排序前候选快照和 A/B/C/D 离线消融编排，第三阶段提供唯一的受控在线候选导出入口，第四阶段提供本地准备数据集金标导入。`fixture`、`snapshot-check`、`ablation-plan`、`dataset-gold-import` 和 `gold-subset-select` 始终只读取用户显式提供的本地 JSONL/JSON 文件，不读取 `.env`，不访问学术 API、LLM 或本地模型。只有用户手动执行带 `--allow-online-sources` 的 `snapshot-export` 时，才会延迟装配生产学术来源；模块不提供数据集或模型下载命令。
 
 ## 第一阶段能力
 
@@ -70,6 +70,26 @@ python -m evaluation pasa-gold-import `
 ```
 
 `answer` 与 `answer_arxiv_id` 非空时必须等长；适配器不会通过 `paper_database/id2paper.json` 补全或猜测缺失字段。RealScholarQuery/test.jsonl 的原始结构尚未在本地确认，后续须先检查样例再新增独立适配器。
+
+## 第六阶段能力
+
+- `contracts/subset.py`：定义 `gold-subset-manifest-v1`，冻结选择策略、显式种子、输入/输出哈希和完整 `query_id` 列表；
+- `runners/gold_subset.py`：以 `sha256-query-id-v1` 对完整本地 GoldQuery 进行与行顺序无关的稳定排序，不访问任何服务；
+- `gold-subset-select`：要求显式 `--count`、`--selection-id`、`--seed`、新 GoldQuery 输出和新 manifest 输出，拒绝覆盖其中任一文件。
+
+开发集评测的 20 条查询必须从完整 PaSa 开发集显式封存，而不是把原始 dev 文件误写成仅有 20 条。以下命令只创建本地子集与 manifest，不生成候选、不读取 `.env`、不调用学术 API、LLM 或本地模型：
+
+```powershell
+python -m evaluation gold-subset-select `
+  --input evaluation/inputs/pasa-auto-dev.gold.jsonl `
+  --count 20 `
+  --selection-id pasa-auto-dev-ranking-v1 `
+  --seed 20260719 `
+  --output evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --manifest evaluation/inputs/pasa-auto-dev-ranking20.manifest.json
+```
+
+`selection_id`、种子和 manifest 的 `selected_query_ids` 必须随候选快照、排序配置和报告一同保存。改变 `count`、种子或选择标识会生成新的开发集输入，后续如需线上候选只能由用户显式重新授权；仅调整 `evaluation_top_k`、离线评分或报告不得重新调用学术 API。
 
 ## 输入文件
 
