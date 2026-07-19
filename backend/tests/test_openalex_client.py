@@ -80,6 +80,24 @@ def test_client_hides_http_error_details() -> None:
         asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行异步搜索方法。
 
 
+def test_client_classifies_bad_request_without_leaking_response_body() -> None:
+    """400 应提示参数类别，且不得回显供应商可能包含的查询或密钥文本。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        """返回包含敏感样例文本的 400 响应以验证适配器不会读取或转发正文。"""
+        return httpx.Response(400, json={"error": "invalid search private query", "api_key": "provider-secret"}, request=request)  # 模拟供应商错误正文可能包含敏感数据的边界。
+
+    client = OpenAlexClient(  # 使用 mock 400 响应构造客户端。
+        settings_override=_build_test_settings(),  # 注入隔离配置而不读取本地 .env。
+        transport=httpx.MockTransport(handler),  # 拦截真实网络访问。
+    )
+    with pytest.raises(OpenAlexClientError) as captured_error:  # 获取净化后的领域错误以检查其稳定文本。
+        asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行只会命中本地 mock 的搜索。
+    error_text = str(captured_error.value)  # 读取调用方实际可见的错误信息。
+    assert error_text == "OpenAlex 请求参数无效（HTTP 400）"  # 验证 400 被明确分类为请求参数错误。
+    assert "private query" not in error_text  # 验证来源正文中的查询文本不会泄露。
+    assert "provider-secret" not in error_text  # 验证来源正文中的密钥样例不会泄露。
+
+
 def test_client_hides_missing_api_key_configuration() -> None:
     """缺少 API 密钥时客户端应返回不暴露环境变量值的领域错误。"""
     client = OpenAlexClient(settings_override=Settings(_env_file=None))  # 构造未配置 API 密钥的隔离客户端。

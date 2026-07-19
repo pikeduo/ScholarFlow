@@ -55,7 +55,7 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
 
     params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
         "search": " ".join(search_terms),  # 使用 OpenAlex 全文搜索表达结构化意图。
-        "sort": "-relevance_score",  # 使用 OpenAlex 当前 API 的负号降序语法优先返回与搜索词最相关的论文。
+        "sort": "relevance_score:desc",  # 按 OpenAlex 排序指南使用显式降序语法优先返回与搜索词最相关的论文。
         "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段。
     }
@@ -78,7 +78,7 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     search_text = " ".join(search_terms) or query.normalized_query  # 缺少拆分词时退回已校验的规范化查询。
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
-        "sort": "-relevance_score",  # 使用 OpenAlex 当前 API 的负号降序语法保持来源按相关性优先的原始排名。
+        "sort": "relevance_score:desc",  # 按 OpenAlex 排序指南使用显式降序语法保持来源按相关性优先的原始排名。
         "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
     }
@@ -192,8 +192,9 @@ class OpenAlexClient(AcademicSearchAdapter):
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为异常。
                 payload = response.json()  # 解码 JSON 响应供后续结构校验。
         except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
-            logger.error("OpenAlex 请求失败，状态码=%d", error.response.status_code)  # 输出可观测但不含敏感信息的错误。
-            raise OpenAlexClientError(f"OpenAlex 请求失败（HTTP {error.response.status_code}）") from None  # 隐藏原始请求 URL。
+            error_message, error_category = _map_openalex_http_error(error.response.status_code)  # 仅由状态码生成不会回显供应商响应体的诊断信息。
+            logger.error("OpenAlex 请求失败，状态码=%d，错误类别=%s", error.response.status_code, error_category)  # 输出可观测但不含查询、密钥和响应正文的分类信息。
+            raise OpenAlexClientError(error_message) from None  # 隐藏原始请求 URL、参数和供应商响应体。
         except httpx.RequestError as error:  # 捕获超时、连接和传输错误。
             logger.error("OpenAlex 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
             raise OpenAlexClientError("OpenAlex 网络请求失败") from None  # 避免异常链泄露请求参数。
@@ -212,6 +213,25 @@ class OpenAlexClient(AcademicSearchAdapter):
             raise OpenAlexClientError("OpenAlex 响应缺少 results 数组")  # 阻止错误数据进入后续排序流程。
         await self._response_cache.set_list(cache_key, "openalex", "works", results)  # 仅缓存通过顶层结构校验的成功响应。
         return results  # 将单条映射和模型选择留给兼容入口或统一入口处理。
+
+
+def _map_openalex_http_error(status_code: int) -> tuple[str, str]:
+    """将 OpenAlex HTTP 状态码转换为不含供应商正文的稳定诊断。
+
+    参数：
+        status_code：由 HTTP 客户端提供的响应状态码。
+    返回：
+        tuple[str, str]：面向调用方的安全错误文本与仅供日志使用的错误类别。
+    """
+    if status_code == 400:  # 400 表示请求形状或参数不被来源接受，不能安全回显响应正文。
+        return "OpenAlex 请求参数无效（HTTP 400）", "invalid_request"  # 提示用户检查适配器参数或来源 API 变更。
+    if status_code in {401, 403}:  # 认证或授权问题需要用户在本机检查配置，但不得打印密钥。
+        return f"OpenAlex 认证或访问权限无效（HTTP {status_code}）", "authentication_or_authorization"  # 合并同类部署错误以避免泄露供应商细节。
+    if status_code == 404:  # /works 等固定端点不存在通常代表 API 基地址或端点配置错误。
+        return "OpenAlex 服务端点不存在（HTTP 404）", "endpoint_not_found"  # 提供可操作的配置排查类别。
+    if status_code == 429:  # 最终限流仍应保留来源受限语义，而非伪装成参数错误。
+        return "OpenAlex 请求受限（HTTP 429）", "rate_limited"  # 共享执行器已负责重试与冷却。
+    return f"OpenAlex 请求失败（HTTP {status_code}）", "http_error"  # 其他状态仅保留安全状态码。
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
