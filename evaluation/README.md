@@ -202,7 +202,7 @@ python -m evaluation snapshot-collection-assemble `
 
 该命令只读取本地文件并写出新的 JSONL / manifest，不读取 `.env`、不调用学术 API、LLM 或本地模型；两个输出都不得预先存在。历史带“学术来源降级”警告的零候选失败产物会被排除，而候选数量少于 `target_paper_count` 的真实成功快照仍被保留并写入集合 manifest。
 
-任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。真正执行 BGE-M3 或 Cross Encoder 时，调用方必须显式提供实现 `OfflineRankingScorer` 的适配器；当前模块没有真实模型适配器，也不会回退加载生产模型。
+任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。`evaluation.adapters.bge_m3.BgeM3OfflineScorer` 已实现为可注入的 BGE-M3 适配器：它只接受用户明确提供、已存在且含 `config.json` 的本地模型目录，不接受远程仓库名；构造及空候选评分不加载模型，首次非空 `score` 才延迟导入并加载本地模型。调用方仍必须由用户显式创建并传给 `run_offline_experiment` 或 `run_ablation_matrix`，不会回退加载生产模型。Cross Encoder 适配器和 DeepSeek 对比尚未实现。
 
 输出目录被 Git 忽略，包含：
 
@@ -214,4 +214,4 @@ python -m evaluation snapshot-collection-assemble `
 
 ## 后续边界
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；仍不包含 RealScholarQuery 原生解析器、真实 BGE-M3/Cross Encoder 推理或 DeepSeek 对比。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应在用户提供或下载 RealScholarQuery 样例后，再确认其独立适配器；数据下载和完整 benchmark 仍由用户显式执行。
+当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的本地 BGE-M3 评分适配器，但没有 Cross Encoder、DeepSeek 对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。下一阶段应实现受显式本地模型授权的离线结果执行/归档入口，再独立实现 Cross Encoder 适配器；数据下载和完整 benchmark 仍由用户显式执行。
