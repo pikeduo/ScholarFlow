@@ -33,3 +33,10 @@ def test_builder_rejects_query_without_search_terms() -> None:
     """缺少所有可搜索关键词时应拒绝构造无约束 API 请求。"""
     with pytest.raises(ValueError, match="至少需要一个"):  # 断言返回清晰的空查询错误。
         build_openalex_work_params(QuerySchema())  # 构造没有任何检索词的查询。
+
+
+def test_builder_normalizes_source_specific_apostrophes_and_question_marks() -> None:
+    """旧 QuerySchema 入口应只在 OpenAlex 请求边界规范化可能触发解析歧义的标点。"""
+    query = QuerySchema(topic=["neuron’s activation?"])  # 构造包含智能撇号与问号的来源兼容性边界输入。
+    params = build_openalex_work_params(query)  # 构造不会访问网络的来源参数。
+    assert params["search"] == "neurons activation"  # 验证撇号被删除、问号变为空格且不改变词语顺序。

@@ -61,6 +61,15 @@ def test_search_params_fall_back_to_normalized_query() -> None:
     assert "filter" not in params  # 验证未指定年份范围时不会隐式加入来源过滤条件。
 
 
+def test_search_params_normalize_pasa_style_apostrophes_and_question_marks_only_for_openalex() -> None:
+    """QueryIntent 原文保持不变时，OpenAlex 请求文本应确定性兼容 PaSa 的智能标点。"""
+    original_query = "Who projected the first method for distinguishing the neurons’ ability based on the neuron’s activation value?"  # 固定复现 PaSa 开发集的实际来源兼容性边界。
+    query = QueryIntent(original_query=original_query, normalized_query=original_query, query_language="en")  # 保持 QueryIntent 中原始与规范化查询均未被来源适配器改写。
+    params = build_openalex_search_params(query)  # 构造不访问网络的 OpenAlex 参数。
+    assert query.original_query == original_query and query.normalized_query == original_query  # 验证领域契约和评测输入未被此来源规范化函数回写。
+    assert params["search"] == "Who projected the first method for distinguishing the neurons ability based on the neurons activation value"  # 验证仅删除撇号、替换问号并压缩空白。
+
+
 def test_client_implements_unified_adapter_and_maps_provenance() -> None:
     """统一入口应满足协议、转换 QueryIntent 并保留 OpenAlex 来源排名。"""
     fixture = _load_openalex_work_fixture()  # 读取本地 Work 响应。

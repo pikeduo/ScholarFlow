@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping  # 安全识别嵌套 JSON 对象。
 import re  # 仅用于从供应商错误文本中匹配预定义的安全参数名。
+import unicodedata  # 将来源不稳定处理的兼容字符统一为确定性文本。
 
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
@@ -29,6 +30,9 @@ _OPENALEX_SAFE_ERROR_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] 
     ("select", ("select",)),  # 保留字段选择参数的安全定位能力。
 )
 
+_OPENALEX_SEARCH_APOSTROPHE_TRANSLATION = str.maketrans("", "", "'‘’")  # 删除英文与智能撇号，避免将所有格分拆为无意义单字母。
+_OPENALEX_SEARCH_SEPARATOR_PATTERN = re.compile(r'["“”`´?¿¡!「」『』]+')  # 将引号和问号等非词语分隔符替换为空格，避免来源查询解析器误判。
+
 
 class OpenAlexMappingError(ValueError):
     """表示 OpenAlex 响应缺少生成统一论文所必需的数据。"""
@@ -54,8 +58,9 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
     if not search_terms:  # OpenAlex 搜索必须有至少一个明确检索词。
         raise ValueError("QuerySchema 至少需要一个主题、方法、数据集、领域或必须包含关键词")  # 避免发起无约束高成本搜索。
 
+    search_text = normalize_openalex_search_text(" ".join(search_terms))  # 仅在 OpenAlex 请求边界规范化兼容字符与分隔标点。
     params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
-        "search": " ".join(search_terms),  # 使用 OpenAlex 全文搜索表达结构化意图。
+        "search": search_text,  # 使用来源兼容的全文搜索文本表达结构化意图。
         "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
     }
     if query.year_range:  # 仅在用户明确指定年份范围时添加 API 过滤。
@@ -74,7 +79,7 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     search_terms: list[str] = []  # 按来源无关的确定顺序收集可全文检索的约束词。
     for terms in (query.research_topics, query.methods, query.tasks, query.datasets, query.must_include):  # 合并主题、方法、任务、数据集与硬约束。
         search_terms.extend(term.strip() for term in terms if term.strip())  # 丢弃空白词并保留规划节点给出的顺序。
-    search_text = " ".join(search_terms) or query.normalized_query  # 缺少拆分词时退回已校验的规范化查询。
+    search_text = normalize_openalex_search_text(" ".join(search_terms) or query.normalized_query)  # 缺少拆分词时退回已校验查询，并仅在来源请求边界规范化兼容字符与分隔标点。
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
         "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
@@ -82,6 +87,27 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     if query.year_range:  # 用户明确给出年份范围时才添加来源过滤条件。
         params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 支持的发表年份范围语法。
     return params  # 不将来源无法可靠表达的排除词伪装成服务端过滤。
+
+
+def normalize_openalex_search_text(search_text: str) -> str:
+    """将 OpenAlex 搜索文本限定为不含易触发解析歧义的兼容标点。
+
+    该函数只在 OpenAlex 适配器构造请求时调用，不回写 QueryIntent、金标或评测输入。
+
+    参数：
+        search_text：由 QuerySchema 或 QueryIntent 汇总得到的原始来源检索文本。
+    返回：
+        str：已统一兼容字符、删除撇号、替换分隔标点并压缩空白的搜索文本。
+    异常：
+        ValueError：规范化后不含任何可搜索文本时抛出。
+    """
+    compatibility_text = unicodedata.normalize("NFKC", search_text)  # 统一全角问号等兼容字符，但不翻译或改写词语。
+    without_apostrophes = compatibility_text.translate(_OPENALEX_SEARCH_APOSTROPHE_TRANSLATION)  # 删除所有格撇号以保留相邻词干。
+    separated_text = _OPENALEX_SEARCH_SEPARATOR_PATTERN.sub(" ", without_apostrophes)  # 将问号和引号等查询分隔符安全转换为空格。
+    normalized_text = " ".join(separated_text.split())  # 压缩连续空白，构造稳定的来源请求文本。
+    if not normalized_text:  # 纯标点输入不能形成安全且可解释的来源搜索请求。
+        raise ValueError("OpenAlex 搜索文本在来源规范化后为空")  # 阻止向供应商发送无约束或无意义的请求。
+    return normalized_text  # 返回仅供当前来源请求使用的确定性文本。
 
 
 class OpenAlexClient(AcademicSearchAdapter):
