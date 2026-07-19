@@ -576,7 +576,7 @@ F1@K = 2 × Precision × Recall / (Precision + Recall)
 - 429 次数；
 - 缓存命中数；
 - Query Agent 调用数；
-- DeepSeek 调用数；
+- DeepSeek 调用数（按已尝试的小批次计，失败批次也留档）；
 - 输入 Token；
 - 输出 Token；
 - 总 Token；
@@ -1332,3 +1332,7 @@ E. 同步 AGENTS.md。
 ## 32. DeepSeek 评测核验契约演进（2026-07-19）
 
 离线消融契约已允许 `deepseek_enabled=true`，并新增 `deepseek` 阶段轨迹枚举。真实执行器尚未接入前，该开关不会触发调用；后续必须通过独立适配器、调用前预估确认和单独结果归档实现，禁止只修改矩阵 JSON 伪造已执行的 DeepSeek 实验。
+
+## 33. DeepSeek RRF 核验实验实施状态（2026-07-19）
+
+新增独立 E 矩阵 `evaluation/config/ablation_deepseek_rrf.json`，只比较 RRF 上游排序后的 DeepSeek 核验，固定 `source_recall_count=50`、`target_paper_count=20` 与 `evaluation_top_k=[5,10,20]`。E 不与 A/B/C/D 本地排序结果混合；执行前必须对封存候选、矩阵、计划和实验 E 生成 `ablation-deepseek` 预估，并在 `ablation-execute` 中提供 `--allow-deepseek`、预估路径及确认 SHA-256。实际结果仅在全部任务成功后原子归档，记录模型、降级、预估哈希以及真实小批次调用数；失败批次也计入调用数，而 Token 与费用只累计供应商成功返回的 usage，学术 API 恒为 0。

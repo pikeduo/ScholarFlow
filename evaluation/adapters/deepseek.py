@@ -25,6 +25,7 @@ class DeepSeekOfflineResult:
     papers: list[CandidatePaper]  # 保存按生产核验结果排序且仍来自原快照的候选。
     input_count: int  # 保存进入 DeepSeek 的候选数量。
     output_count: int  # 保存核验后保留的候选数量。
+    call_count: int  # 保存生产核验器报告的实际小批次调用尝试数。
     prompt_tokens: int  # 保存供应商报告的输入 Token。
     completion_tokens: int  # 保存供应商报告的输出 Token。
     estimated_cost_cny: float  # 保存调用时冻结的人民币费用。
@@ -43,13 +44,13 @@ class DeepSeekOfflineReranker:
     async def rerank(self, query_intent: QueryIntent, papers: list[CandidatePaper]) -> DeepSeekOfflineResult:
         """核验封存候选，并只按原候选 ID 映射生产返回结果。"""
         if not papers:  # 空快照不应消耗任何 Token。
-            return DeepSeekOfflineResult(papers=[], input_count=0, output_count=0, prompt_tokens=0, completion_tokens=0, estimated_cost_cny=0.0, model_name="deepseek-v4-flash", latency_ms=0.0, ranking_error=None)  # 返回稳定零用量结果。
+            return DeepSeekOfflineResult(papers=[], input_count=0, output_count=0, call_count=0, prompt_tokens=0, completion_tokens=0, estimated_cost_cny=0.0, model_name="deepseek-v4-flash", latency_ms=0.0, ranking_error=None)  # 返回稳定零用量结果。
         source_by_id = {paper.paper_id: paper for paper in papers}  # 建立白名单，禁止生产返回注入未知论文。
         production_papers = [_to_production_paper(paper) for paper in papers]  # 仅映射快照已封存公开字段。
         started_at = perf_counter()  # 从真正提交核验前开始统计。
         result = await self._reranker.rerank(production_papers, query_intent)  # 唯一可能调用 DeepSeek 的边界。
         retained = [source_by_id[paper.paper_id] for paper in result.papers if paper.paper_id in source_by_id]  # 只保留原候选并采用生产核验顺序。
-        return DeepSeekOfflineResult(papers=retained, input_count=result.input_count, output_count=len(retained), prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens, estimated_cost_cny=result.estimated_cost_cny, model_name=result.model_name, latency_ms=(perf_counter() - started_at) * 1000.0, ranking_error=result.ranking_error)  # 返回完整可审计的离线核验结果。
+        return DeepSeekOfflineResult(papers=retained, input_count=result.input_count, output_count=len(retained), call_count=result.call_count, prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens, estimated_cost_cny=result.estimated_cost_cny, model_name=result.model_name, latency_ms=(perf_counter() - started_at) * 1000.0, ranking_error=result.ranking_error)  # 返回完整可审计的离线核验结果。
 
 
 def _to_production_paper(paper: CandidatePaper) -> PaperRecord:

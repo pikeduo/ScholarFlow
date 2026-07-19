@@ -39,6 +39,7 @@ class LlmRankingResult(BaseModel):
     truncated_count: int = Field(default=0, ge=0)  # 保存通过核验但超出最终结果上限的候选数。
     rejected_count: int = Field(default=0, ge=0)  # 保存被 LLM 明确判定不满足硬约束的候选数。
     model_name: str = Field(min_length=1)  # 保存配置或实际使用的 LLM 名称。
+    call_count: int = Field(default=0, ge=0)  # 保存已尝试的 DeepSeek 小批次数，失败批次也属于真实调用尝试。
     prompt_tokens: int = Field(default=0, ge=0)  # 保存本阶段输入 Token 数量。
     completion_tokens: int = Field(default=0, ge=0)  # 保存本阶段输出 Token 数量。
     estimated_cost_cny: float = Field(default=0.0, ge=0.0)  # 保存全部成功核验批次累计的人民币费用估算。

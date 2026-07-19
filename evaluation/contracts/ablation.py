@@ -74,6 +74,7 @@ class RankingStageTrace(BaseModel):
     model_name: str | None = None  # 保存实际模型或测试替身名称。
     device: str | None = None  # 保存实际执行设备。
     batch_size: int | None = Field(default=None, ge=1)  # 保存实际批大小。
+    call_count: int | None = Field(default=None, ge=0)  # 仅 LLM 阶段保存已尝试的真实批次调用数。
     oom_retry_count: int | None = Field(default=None, ge=0)  # 保存实际 OOM 重试次数。
     prompt_tokens: int | None = Field(default=None, ge=0)  # 保存 DeepSeek 等外部阶段实际输入 Token。
     completion_tokens: int | None = Field(default=None, ge=0)  # 保存 DeepSeek 等外部阶段实际输出 Token。

@@ -105,7 +105,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - `python -m evaluation pasa-gold-import` 仅支持已由用户本地样例确认的 `AutoScholarQuery/dev.jsonl`：严格读取 `qid`、`question`、`answer`、`answer_arxiv_id` 和 `source_meta`，按索引配对标题与 arXiv ID；若 PaSa 原始标注按统一身份规则重复，保留首次论文并将数量写入 `pasa_duplicate_answer_count`，再复用通用命名空间和新文件写入边界。此例外不得改变通用 `dataset-gold-import` 对重复金标的拒绝行为；不得调用论文数据库、学术 API、LLM 或模型，也不得将未确认格式的 RealScholarQuery 标记为兼容。
 - `python -m evaluation gold-subset-select` 只允许从用户已验证的本地 `GoldQuery` 封存开发集子集：必须显式给出 `count`、`selection_id`、种子、新子集路径和新 manifest 路径；以固定 SHA-256 策略、源文件哈希、输出哈希及完整稳定 `query_id` 列表审计，且不得覆盖任何已封存输出。开发集“固定 20 条”是这种可复现子集的规模，不是原始 PaSa dev 文件总量；改变子集成员后重新生成候选仍必须由用户逐条显式授权，调整离线 Top-K、指标或报告不得调用学术 API。
 - 调整指标、评分 Top-K 或报告格式只读取既有预测和候选快照，不得重新调用学术 API；只有来源查询、来源召回规模、`QueryIntent` 或多轮策略改变时才重新生成在线候选。
-- DeepSeek 评测核验可用于任意用户明确选择的离线实验；每次真实调用前必须完成资源预估与确认，并单独记录调用数、Token、费用、批次数和降级信息。它不得重调学术 API，且不能与未启用 DeepSeek 的报告混淆。
+- DeepSeek 评测核验可用于任意用户明确选择的离线实验；每次真实调用前必须完成资源预估与确认，并单独记录调用数、Token、费用、批次数和降级信息。调用数按已尝试的 DeepSeek 小批次计，失败批次也必须留档；Token 与费用只累计供应商成功返回的 usage。它不得重调学术 API，且不能与未启用 DeepSeek 的报告混淆。
 - 若同一共享候选快照上的首轮配置均出现零检索命中，必须先运行只读候选覆盖诊断，区分金标—候选身份可比性与召回覆盖事实；在诊断完成前不得为此启动 DeepSeek 或重建在线候选。
 - 若覆盖诊断后需要补足隐含检索术语，可由用户显式执行 `python -m evaluation query-agent-plan --allow-query-agent`，以既有 `query-intent-manifest-v1` 中的 `original_query` 和显式 QueryIntent 条件生成新的第一轮检索表达式；该入口严格不得读取 GoldQuery、Gold 标题、作者、arXiv ID、候选快照或报告，必须冻结每条调用的 Token、费用、耗时和输出哈希。它属于重新生成候选的查询策略实验，不得与既有共享快照的离线排序消融混用，也不改变“首轮排序消融关闭 DeepSeek”的规则。
 - 真实评测数据下载、学术 API、LLM、本地模型和完整 benchmark 必须由用户显式执行；离线测试只能使用合成 fixture 或 mock，不得读取 `.env`、访问网络或下载模型。

@@ -43,9 +43,11 @@ class LlmPaperReranker:
         peak_pricing_applied = False  # 记录任一成功批次是否落在工作时间两倍费率窗口。
         model_name = self._model_name  # 在未成功调用时仍返回可观测的配置模型名。
         failed_batch_count = 0  # 统计降级为上游排序的失败小批次数。
+        attempted_batch_count = 0  # 统计已实际提交给客户端的批次，失败请求同样必须纳入调用审计。
         batches = list(_split_batches(papers, self._batch_size))  # 先按受控上限切分，避免单次发送全部候选。
         for batch_index, paper_batch in enumerate(batches, start=1):  # 依序处理批次以避免并发放大外部 API 负载。
             try:  # 单批失败不得丢弃先前或后续可核验的候选。
+                attempted_batch_count += 1  # 在 await 前冻结一次真实调用尝试，异常也不应被误记为零调用。
                 batch = await self._client.assess(query, paper_batch)  # 调用 DeepSeek 核验最多十篇论文。
             except LlmAssessmentError:  # 缺少密钥、网络或无效结构均不得阻断搜索。
                 failed_batch_count += 1  # 标记当前批次由上游排序降级。
@@ -60,7 +62,7 @@ class LlmPaperReranker:
                 if assessment.paper_id in paper_by_id and assessment.paper_id not in assessment_by_id:  # 仅接受原候选集合中首个同 ID 输出。
                     assessment_by_id[assessment.paper_id] = assessment  # 忽略模型虚构 ID 和重复项。
         if failed_batch_count == len(batches):  # 全部批次失败时保留既有完整降级语义。
-            return self._fallback_result(papers, target_count)  # 沿用 Cross Encoder 顺序并截断最终数量。
+            return self._fallback_result(papers, target_count, call_count=attempted_batch_count)  # 沿用 Cross Encoder 顺序并保留真实调用尝试数。
         assessed_papers: list[PaperRecord] = []  # 保存绑定经过本地校验证据的候选。
         rejected_count = 0  # 统计明确不满足硬约束的候选。
         for paper in papers:  # 保持缺失核验项仍能安全降级而不意外丢失论文。
@@ -96,6 +98,7 @@ class LlmPaperReranker:
             truncated_count=max(0, len(ranked_papers) - len(retained_papers)),
             rejected_count=rejected_count,
             model_name=model_name,
+            call_count=attempted_batch_count,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             estimated_cost_cny=round(estimated_cost_cny, 8),
@@ -105,10 +108,10 @@ class LlmPaperReranker:
         logger.info("LLM 精排完成：输入=%d，批次=%d，失败批次=%d，约束淘汰=%d，截断=%d，最终=%d，输入Token=%d，输出Token=%d", result.input_count, len(batches), failed_batch_count, result.rejected_count, result.truncated_count, len(result.papers), result.prompt_tokens, result.completion_tokens)  # 只记录数量与用量统计。
         return result  # 返回证据化最终论文结果。
 
-    def _fallback_result(self, papers: list[PaperRecord], target_count: int) -> LlmRankingResult:
+    def _fallback_result(self, papers: list[PaperRecord], target_count: int, *, call_count: int) -> LlmRankingResult:
         """在 LLM 不可用时沿用 Cross Encoder 顺序并截断最终候选。"""
         retained_papers = papers[:target_count]  # 输入已按 Cross Encoder 排序，无需重新猜测相关性。
-        result = LlmRankingResult(papers=retained_papers, input_count=len(papers), truncated_count=max(0, len(papers) - len(retained_papers)), model_name=self._model_name, ranking_error="LLM 精排不可用，已沿用 Cross Encoder 排序")  # 返回不含底层错误的稳定摘要。
+        result = LlmRankingResult(papers=retained_papers, input_count=len(papers), truncated_count=max(0, len(papers) - len(retained_papers)), model_name=self._model_name, call_count=call_count, ranking_error="LLM 精排不可用，已沿用 Cross Encoder 排序")  # 返回不含底层错误的稳定摘要并保留失败请求数。
         logger.warning("LLM 精排降级：输入=%d，截断=%d，最终=%d", result.input_count, result.truncated_count, len(result.papers))  # 不记录查询或底层响应。
         return result  # 保持搜索链路可用且最多返回二十篇。
 

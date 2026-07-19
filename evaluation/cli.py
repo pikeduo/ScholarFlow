@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
             manifest = asyncio.run(execute_deepseek_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, deepseek_reranker=deepseek_reranker, forecast_sha256=args.confirm_forecast, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer))  # 只在用户明确授权后执行异步 LLM 阶段。
         else:
             manifest = execute_ablation_to_files(run_id=args.run_id, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment, output_path=args.output, manifest_path=args.manifest, semantic_scorer=semantic_scorer, cross_encoder_scorer=cross_encoder_scorer)  # 只执行已计划快照上的明确本地实验。
-        print(f"[OK] 离线排序结果已归档：{manifest.task_count} 个任务，学术 API=0，DeepSeek=0，本地阶段={','.join(manifest.local_model_stages) or 'none'}")  # 输出不含查询正文、模型路径或论文内容的安全摘要。
+        print(f"[OK] 离线排序结果已归档：{manifest.task_count} 个任务，学术 API=0，DeepSeek={manifest.deepseek_calls}，本地阶段={','.join(manifest.local_model_stages) or 'none'}")  # 输出归档的真实 LLM 批次调用数，不含查询正文、模型路径或论文内容。
         return 0  # 表示结果与 manifest 均已原子发布。
     if args.command == "ablation-score":  # 对既有归档结果进行完全离线的实验分组评分。
         score_manifest = score_ablation_results(results_path=args.results, run_manifest_path=args.run_manifest, gold_path=args.gold, config_path=args.config, output_dir=args.output_dir)  # 不加载本地模型或调用任何在线资源。

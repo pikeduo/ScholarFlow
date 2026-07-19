@@ -202,7 +202,7 @@ python -m evaluation snapshot-collection-assemble `
 
 该命令只读取本地文件并写出新的 JSONL / manifest，不读取 `.env`、不调用学术 API、LLM 或本地模型；两个输出都不得预先存在。历史带“学术来源降级”警告的零候选失败产物会被排除，而候选数量少于 `target_paper_count` 的真实成功快照仍被保留并写入集合 manifest。
 
-任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。`evaluation.adapters.bge_m3.BgeM3OfflineScorer` 与 `evaluation.adapters.cross_encoder.CrossEncoderOfflineScorer` 分别实现为可注入的 BGE-M3、Cross Encoder 适配器：两者只接受用户明确提供、已存在且含 `config.json` 的本地模型目录，不接受远程仓库名；构造及空候选评分不加载模型，首次非空 `score` 才延迟导入并加载本地模型。调用方必须显式创建评分器或通过 CLI 提供对应本地目录，绝不回退加载生产模型。DeepSeek 对比尚未实现。
+任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。`evaluation.adapters.bge_m3.BgeM3OfflineScorer` 与 `evaluation.adapters.cross_encoder.CrossEncoderOfflineScorer` 分别实现为可注入的 BGE-M3、Cross Encoder 适配器：两者只接受用户明确提供、已存在且含 `config.json` 的本地模型目录，不接受远程仓库名；构造及空候选评分不加载模型，首次非空 `score` 才延迟导入并加载本地模型。调用方必须显式创建评分器或通过 CLI 提供对应本地目录，绝不回退加载生产模型。独立 E DeepSeek 对比只读取封存快照，并在执行前预估、确认后才允许调用。
 
 执行已审核的计划内 A/B/C/D 子集时，用户必须显式运行 `ablation-execute`。该命令会复核集合快照、矩阵与 `ablation-plan` 的快照 ID/SHA-256 对应关系；输出 JSONL 和 manifest 都必须尚不存在，并通过同目录临时文件原子发布。B/D 需要 BGE-M3，本地 Cross Encoder 则用于 C/D：
 
@@ -273,4 +273,6 @@ python -m evaluation query-agent-plan `
 
 新的 `query-agent-plan` 与 `snapshot-export` 必须同时提供 `--forecast <预估 JSON>` 和 `--confirm-forecast <confirmation_sha256>`；只要输入文件、查询顺序或快照标识变更，就必须重新预估。确认不匹配时命令在创建 DeepSeek 或学术来源客户端前失败。
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的 BGE-M3、Cross Encoder 评分适配器、零命中覆盖诊断与受控 Query Agent 规划，但没有 DeepSeek 排序对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。若首轮均零命中，应先审阅覆盖诊断，再决定是否需要用户显式运行少量 Query Agent 查询策略实验并重建对应候选；数据下载和完整 benchmark 仍由用户显式执行。
+DeepSeek 核验使用独立 `config/ablation_deepseek_rrf.json` 的 E 实验，不与 A/B/C/D 本地排序报告混合。先对封存候选集合生成 `ablation-deepseek` 预估；再以同一预估文件的 `confirmation_sha256` 执行 `ablation-execute --allow-deepseek`。DeepSeek 仅读取快照与其冻结 QueryIntent，不重新调用学术 API。结果 manifest 的 `deepseek_calls` 和每条预测 usage 的 `llm_calls` 都按实际尝试的小批次计，失败批次也会记录；Token 与费用只累计供应商成功返回的 usage。
+
+当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的 BGE-M3、Cross Encoder 评分适配器、零命中覆盖诊断、受控 Query Agent 规划与独立 E DeepSeek 排序对比，但没有 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。若首轮均零命中，应先审阅覆盖诊断，再决定是否需要用户显式运行少量 Query Agent 查询策略实验并重建对应候选；数据下载和完整 benchmark 仍由用户显式执行。
