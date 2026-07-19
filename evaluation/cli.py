@@ -17,7 +17,7 @@ from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下�
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
 from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 按冻结顺序组装多份单查询快照而不访问外部资源。
-from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export  # 在真实调用前生成只读资源预估。
+from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export, validate_approved_forecast  # 在真实调用前生成并核验只读资源预估。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     query_agent_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的本次 QueryIntent 输出目录")  # 禁止覆盖已审阅规划。
     query_agent_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的 Query Agent 审计 manifest JSON 路径")  # 冻结输入、输出、Token 与费用。
     query_agent_parser.add_argument("--allow-query-agent", action="store_true", help="确认允许本次命令调用真实 Query Agent LLM")  # 使用独立开关形成明确 LLM 授权。
+    query_agent_parser.add_argument("--forecast", type=Path, required=True, help="已审阅且尚与当前输入匹配的 usage-forecast JSON")  # 强制先生成调用前预估。
+    query_agent_parser.add_argument("--confirm-forecast", required=True, help="用户从预估 JSON 复制的 confirmation_sha256")  # 强制用户显式确认本次上限。
     dataset_parser = subparsers.add_parser("dataset-gold-import", help="将用户本地准备的数据集金标转换为 GoldQuery JSONL")  # 创建完全离线数据集适配命令。
     dataset_parser.add_argument("--input", type=Path, required=True, help="用户已准备的 dataset-gold-v1 JSONL 路径")  # 只读取用户明确指定的本地输入。
     dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
@@ -101,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--snapshot-id", required=True, help="本次候选快照的唯一标识")  # 要求显式指定复用键。
     export_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的候选快照 JSONL 路径")  # 禁止覆盖已有在线候选。
     export_parser.add_argument("--allow-online-sources", action="store_true", help="确认允许本次命令调用真实学术来源")  # 使用单独开关形成明确在线授权。
+    export_parser.add_argument("--forecast", type=Path, required=True, help="已审阅且尚与当前输入匹配的 usage-forecast JSON")  # 强制来源调用前已有预估。
+    export_parser.add_argument("--confirm-forecast", required=True, help="用户从预估 JSON 复制的 confirmation_sha256")  # 强制用户确认来源调用上限。
     return parser  # 返回可测试解析器。
 
 
@@ -184,6 +188,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         if not args.allow_query_agent:  # 未授权时连输入 manifest 也不读取，避免隐藏 LLM 意图。
             parser.error("query-agent-plan 必须显式提供 --allow-query-agent；该命令会调用真实 Query Agent LLM")  # 以标准 CLI 错误拒绝隐式模型调用。
         validate_query_agent_request(input_manifest_path=args.input_manifest, query_ids=args.query_id, output_dir=args.output_dir, manifest_path=args.manifest)  # 在导入生产配置和读取 .env 前完成静态预检。
+        validate_approved_forecast(forecast_path=args.forecast, confirmation_sha256=args.confirm_forecast, operation="query-agent-plan", input_path=args.input_manifest, query_ids=args.query_id)  # 预估不匹配时不得装配 DeepSeek 客户端。
         if query_planner_factory is None:  # 正常 CLI 仅在用户显式授权后才装配生产 Query Agent。
             from backend.app.services.query_planning import QueryPlanningService  # 延迟导入会读取 DeepSeek 配置的生产服务。
 
@@ -210,6 +215,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
 
         query = load_query_intent(args.query_intent)  # 只读取用户显式提供的结构化查询文件。
         validate_snapshot_export_request(query, query_id=args.query_id, snapshot_id=args.snapshot_id, output_path=args.output)  # 在创建来源客户端前完成全部静态预检。
+        validate_approved_forecast(forecast_path=args.forecast, confirmation_sha256=args.confirm_forecast, operation="snapshot-export", input_path=args.query_intent, query_ids=[args.query_id], snapshot_id=args.snapshot_id)  # 预估不匹配时不得创建来源客户端。
         if candidate_service_factory is None:  # 正常 CLI 执行才装配生产候选服务。
             from backend.app.api.routes.search import get_candidate_generation_service  # 延迟读取生产配置和来源适配器工厂。
 

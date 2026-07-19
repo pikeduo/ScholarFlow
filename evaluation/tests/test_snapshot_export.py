@@ -14,6 +14,7 @@ from evaluation.cli import main  # 验证显式在线授权命令边界。
 from evaluation.contracts.snapshot import compute_snapshot_hash  # 复核导出内容哈希。
 from evaluation.runners.snapshot_export import AllAcademicSourcesFailedError, export_candidate_snapshot, export_candidate_snapshot_to_file  # 执行纯替身候选导出并验证来源失败边界。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 验证写出的单条 JSONL 可被严格加载。
+from evaluation.runners.usage_forecast import forecast_snapshot_export  # 为 CLI 替身生成零网络预估确认。
 
 
 class FakeCandidateGenerator:
@@ -35,6 +36,13 @@ def _query(**updates: object) -> QueryIntent:
     """构造显式区分来源召回和最终数量的单轮零模型查询。"""
     query = QueryIntent(original_query="图神经网络综述", normalized_query="graph neural network survey", query_language="zh", research_topics=["graph neural networks"], target_paper_count=10, source_recall_count=40, enable_semantic_ranking=False, enable_cross_encoder_ranking=False, requires_web_evidence=False)  # 构造安全默认意图。
     return query.model_copy(update=updates)  # 为拒绝路径覆盖单个字段且不引入无关变化。
+
+
+def _forecast_args(query_path: Path, query_id: str, snapshot_id: str) -> list[str]:
+    """生成本次替身候选调用必须携带的预估确认参数。"""
+    forecast_path = query_path.with_suffix(".forecast.json")  # 使用测试目录中尚不存在的预估文件。
+    forecast = forecast_snapshot_export(query_intent_path=query_path, query_id=query_id, snapshot_id=snapshot_id, output_path=forecast_path)  # 只读生成并冻结调用上限。
+    return ["--forecast", str(forecast_path), "--confirm-forecast", str(forecast["confirmation_sha256"])]  # 返回 CLI 执行参数。
 
 
 def _result(query: QueryIntent | None = None) -> CandidateGenerationResult:
@@ -184,7 +192,7 @@ def test_cli_exports_with_injected_generator_without_network(tmp_path: Path) -> 
     query_path.write_text(query.model_dump_json(), encoding="utf-8")  # 写入不含密钥的 UTF-8 测试输入。
     output_path = tmp_path / "snapshot.jsonl"  # 指定尚不存在的输出文件。
     generator = FakeCandidateGenerator(_result(query))  # 创建唯一候选服务实例。
-    exit_code = main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-001", "--snapshot-id", "snapshot-001", "--output", str(output_path), "--allow-online-sources"], candidate_service_factory=lambda: generator)  # 通过显式授权执行纯替身 CLI。
+    exit_code = main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-001", "--snapshot-id", "snapshot-001", "--output", str(output_path), "--allow-online-sources", *_forecast_args(query_path, "q-001", "snapshot-001")], candidate_service_factory=lambda: generator)  # 通过预估确认和显式授权执行纯替身 CLI。
     assert exit_code == 0  # CLI 应成功返回。
     assert generator.calls == 1  # 整个命令只生成一次候选。
     assert load_candidate_snapshots(output_path)[0].query_id == "q-001"  # 写出结果可由正式快照加载器消费。
@@ -197,7 +205,7 @@ def test_cli_returns_nonzero_without_ok_when_all_academic_sources_failed(tmp_pat
     query_path.write_text(query.model_dump_json(), encoding="utf-8")  # 写入无需网络和密钥的测试输入。
     output_path = tmp_path / "all-failed.snapshot.jsonl"  # 指定尚不存在的目标快照文件。
     generator = FakeCandidateGenerator(_empty_result(query, academic_source_errors={"openalex": "OpenAlex 请求参数无效（HTTP 400）"}))  # 构造唯一计划来源失败的零网络替身。
-    exit_code = main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-all-failed", "--snapshot-id", "snapshot-all-failed", "--output", str(output_path), "--allow-online-sources"], candidate_service_factory=lambda: generator)  # 通过显式授权执行完全离线替身 CLI。
+    exit_code = main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-all-failed", "--snapshot-id", "snapshot-all-failed", "--output", str(output_path), "--allow-online-sources", *_forecast_args(query_path, "q-all-failed", "snapshot-all-failed")], candidate_service_factory=lambda: generator)  # 通过预估确认和显式授权执行完全离线替身 CLI。
     captured = capsys.readouterr()  # 获取 CLI 的标准输出以核验成功标记不会误报。
     assert exit_code == 1 and generator.calls == 1  # 验证失败边界向调用方返回稳定非零状态。
     assert "[ERROR]" in captured.out and "[OK]" not in captured.out  # 验证 CLI 只报告失败而不伪装为成功。
@@ -219,6 +227,6 @@ def test_cli_rejects_existing_output_before_creating_generator(tmp_path: Path) -
         return FakeCandidateGenerator(_result())  # 返回合成候选生成器。
 
     with pytest.raises(FileExistsError, match="输出已存在"):  # 已有目标必须作为稳定文件错误返回。
-        main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-001", "--snapshot-id", "snapshot-001", "--output", str(output_path), "--allow-online-sources"], candidate_service_factory=factory)
+        main(["snapshot-export", "--query-intent", str(query_path), "--query-id", "q-001", "--snapshot-id", "snapshot-001", "--output", str(output_path), "--allow-online-sources", *_forecast_args(query_path, "q-001", "snapshot-001")], candidate_service_factory=factory)
     assert factory_calls == 0  # 输出预检必须先于生产适配器装配。
     assert output_path.read_text(encoding="utf-8") == "preserve\n"  # 已有内容不得被改变。

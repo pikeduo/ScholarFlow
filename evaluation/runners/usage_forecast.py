@@ -32,6 +32,31 @@ def forecast_snapshot_export(*, query_intent_path: Path, query_id: str, snapshot
     return _write_forecast(payload, output_path)  # 发布不可覆盖的确认预估。
 
 
+def validate_approved_forecast(*, forecast_path: Path, confirmation_sha256: str, operation: str, input_path: Path, query_ids: list[str], snapshot_id: str | None = None) -> None:
+    """确认预估未被篡改且与即将执行的真实调用输入完全一致。"""
+    payload = json.loads(forecast_path.read_text(encoding="utf-8"))  # 只读取用户显式提供的已审阅预估。
+    if not isinstance(payload, dict) or payload.get("schema_version") != "evaluation-usage-forecast-v1":  # 拒绝任意 JSON 伪装成预估。
+        raise ValueError("调用前预估文件格式无效")  # 在客户端创建前返回稳定错误。
+    recorded_confirmation = payload.pop("confirmation_sha256", None)  # 将确认值与其余冻结内容分离。
+    normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))  # 按写入时同一规则重建哈希材料。
+    expected_confirmation = hashlib.sha256(normalized.encode("utf-8")).hexdigest()  # 计算不可伪造的内容确认值。
+    if recorded_confirmation != expected_confirmation or confirmation_sha256 != expected_confirmation:  # 用户确认值和文件内容必须同时一致。
+        raise ValueError("调用前预估确认 SHA-256 不匹配")  # 阻止过期、篡改或未审阅预估。
+    if payload.get("operation") != operation or payload.get("input_sha256") != _sha256(input_path):  # 输入文件变更后必须重新预估。
+        raise ValueError("调用前预估与当前操作或输入不一致")  # 防止复用其他查询的预估。
+    if payload.get("query_id_order") != _expected_query_ids(operation, input_path, query_ids):  # 绑定稳定查询范围而非仅校验数量。
+        raise ValueError("调用前预估与当前 query_id 不一致")  # 禁止减少或扩大调用范围。
+    if operation == "snapshot-export" and payload.get("snapshot_id") != snapshot_id:  # 快照标识也属于线上审计范围。
+        raise ValueError("调用前预估与当前 snapshot_id 不一致")  # 防止同一查询复用到另一输出实验。
+
+
+def _expected_query_ids(operation: str, input_path: Path, query_ids: list[str]) -> list[str]:
+    """按操作类型生成与预估文件相同的稳定查询顺序。"""
+    if operation == "query-agent-plan":  # Query Agent 必须恢复 manifest 的冻结顺序。
+        return _select_ids(_load_manifest(input_path), query_ids)  # 复用预估时的相同选择逻辑。
+    return [query_ids[0]]  # 单快照导出只允许一个查询标识。
+
+
 def _load_manifest(path: Path) -> dict[str, object]:
     """加载最小 QueryIntent manifest，并拒绝其他输入格式。"""
     payload = json.loads(path.read_text(encoding="utf-8"))  # 只读取用户显式提供的本地文件。
