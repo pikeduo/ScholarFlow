@@ -1,6 +1,7 @@
 """将 OpenAlex Work JSON 响应转换为 ScholarFlow 的统一论文模型。"""
 
 from collections.abc import Mapping  # 安全识别嵌套 JSON 对象。
+import re  # 仅用于从供应商错误文本中匹配预定义的安全参数名。
 
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
@@ -26,6 +27,19 @@ OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
     "primary_location",  # 获取期刊或会议名称。
     "referenced_works",  # 获取引文图谱关系。
     "ids",  # 兼容嵌套外部标识。
+)
+
+_OPENALEX_SAFE_ERROR_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (  # 仅允许向日志和调用方暴露的请求参数名称及其文本别名。
+    ("api_key", ("api_key", "api key")),  # API 密钥仅显示参数名，绝不显示任何值。
+    ("filter", ("filter",)),  # OpenAlex 常在 400 中报告过滤表达式问题。
+    ("sort", ("sort",)),  # 保留排序参数问题的安全定位能力。
+    ("group_by", ("group_by", "group by")),  # 兼容供应商可能使用的下划线和空格名称。
+    ("search", ("search",)),  # 仅显示参数名，不回显搜索词。
+    ("per_page", ("per_page", "per page")),  # 兼容分页大小参数的常见写法。
+    ("page", ("page",)),  # 保留基础页码参数的安全定位能力。
+    ("cursor", ("cursor",)),  # 保留深分页游标参数的安全定位能力。
+    ("sample", ("sample",)),  # 保留随机抽样参数的安全定位能力。
+    ("select", ("select",)),  # 保留字段选择参数的安全定位能力。
 )
 
 
@@ -192,7 +206,7 @@ class OpenAlexClient(AcademicSearchAdapter):
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为异常。
                 payload = response.json()  # 解码 JSON 响应供后续结构校验。
         except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
-            error_message, error_category = _map_openalex_http_error(error.response.status_code)  # 仅由状态码生成不会回显供应商响应体的诊断信息。
+            error_message, error_category = _map_openalex_http_error(error.response.status_code, error.response)  # 仅从供应商正文提取白名单参数名，绝不回显正文。
             logger.error("OpenAlex 请求失败，状态码=%d，错误类别=%s", error.response.status_code, error_category)  # 输出可观测但不含查询、密钥和响应正文的分类信息。
             raise OpenAlexClientError(error_message) from None  # 隐藏原始请求 URL、参数和供应商响应体。
         except httpx.RequestError as error:  # 捕获超时、连接和传输错误。
@@ -215,16 +229,20 @@ class OpenAlexClient(AcademicSearchAdapter):
         return results  # 将单条映射和模型选择留给兼容入口或统一入口处理。
 
 
-def _map_openalex_http_error(status_code: int) -> tuple[str, str]:
+def _map_openalex_http_error(status_code: int, response: httpx.Response | None = None) -> tuple[str, str]:
     """将 OpenAlex HTTP 状态码转换为不含供应商正文的稳定诊断。
 
     参数：
         status_code：由 HTTP 客户端提供的响应状态码。
+        response：可选响应对象；仅在 400 时读取 JSON 顶层文本以提取安全参数名。
     返回：
         tuple[str, str]：面向调用方的安全错误文本与仅供日志使用的错误类别。
     """
     if status_code == 400:  # 400 表示请求形状或参数不被来源接受，不能安全回显响应正文。
-        return "OpenAlex 请求参数无效（HTTP 400）", "invalid_request"  # 提示用户检查适配器参数或来源 API 变更。
+        parameter_hint = _extract_openalex_safe_parameter_hint(response)  # 从白名单中提取可安全展示的参数名。
+        if parameter_hint is not None:  # 仅在供应商错误文本明确提到已知参数时增加定位信息。
+            return f"OpenAlex 请求参数无效（HTTP 400，参数={parameter_hint}）", f"invalid_request:{parameter_hint}"  # 保留参数名而不泄露其值或完整错误文本。
+        return "OpenAlex 请求参数无效（HTTP 400）", "invalid_request"  # 无可靠安全提示时维持既有泛化错误。
     if status_code in {401, 403}:  # 认证或授权问题需要用户在本机检查配置，但不得打印密钥。
         return f"OpenAlex 认证或访问权限无效（HTTP {status_code}）", "authentication_or_authorization"  # 合并同类部署错误以避免泄露供应商细节。
     if status_code == 404:  # /works 等固定端点不存在通常代表 API 基地址或端点配置错误。
@@ -232,6 +250,45 @@ def _map_openalex_http_error(status_code: int) -> tuple[str, str]:
     if status_code == 429:  # 最终限流仍应保留来源受限语义，而非伪装成参数错误。
         return "OpenAlex 请求受限（HTTP 429）", "rate_limited"  # 共享执行器已负责重试与冷却。
     return f"OpenAlex 请求失败（HTTP {status_code}）", "http_error"  # 其他状态仅保留安全状态码。
+
+
+def _extract_openalex_safe_parameter_hint(response: httpx.Response | None) -> str | None:
+    """从 OpenAlex 400 JSON 中提取白名单参数名，不保留或输出原始错误正文。
+
+    参数：
+        response：可选 OpenAlex HTTP 响应对象。
+    返回：
+        str | None：预定义安全参数名；响应非 JSON、结构异常或未命中时返回空值。
+    """
+    if response is None:  # 没有响应对象时无法解析供应商诊断。
+        return None  # 保持调用方的安全泛化错误。
+    try:  # 供应商错误通常为 JSON，但不能假设所有代理错误都满足该结构。
+        response_data = _as_mapping(response.json())  # 只接受顶层对象，拒绝数组和其他 JSON 类型。
+    except ValueError:  # 非 JSON 或损坏 JSON 不应覆盖原始 HTTP 错误处理。
+        return None  # 不记录解析异常或原始正文。
+    if response_data is None:  # 顶层不是 JSON 对象时没有可信字段可读取。
+        return None  # 仅保留泛化错误。
+    diagnostic_texts = tuple(value.casefold() for field_name in ("error", "message") if isinstance((value := response_data.get(field_name)), str))  # 仅暂存供应商标准诊断字段用于内存匹配。
+    if not diagnostic_texts:  # 缺少文本诊断字段时不能猜测参数名。
+        return None  # 保持泛化错误而不暴露任何其他响应字段。
+    diagnostic_text = "\n".join(diagnostic_texts)  # 仅在函数局部组合文本，后续不会记录或返回该变量。
+    for parameter_name, aliases in _OPENALEX_SAFE_ERROR_PARAMETER_ALIASES:  # 按稳定白名单顺序检查已知参数。
+        if any(_contains_openalex_parameter_alias(diagnostic_text, alias) for alias in aliases):  # 命中只说明供应商文本提到了安全参数名。
+            return parameter_name  # 返回固定白名单名称而非供应商原文。
+    return None  # 未命中时拒绝猜测并继续隐藏供应商诊断正文。
+
+
+def _contains_openalex_parameter_alias(diagnostic_text: str, alias: str) -> bool:
+    """判断供应商诊断文本是否包含完整的预定义参数别名。
+
+    参数：
+        diagnostic_text：只在当前调用栈内存中存在的已小写化错误文本。
+        alias：预定义的安全参数别名。
+    返回：
+        bool：是否以完整词边界命中该别名。
+    """
+    alias_pattern = re.escape(alias.casefold())  # 转义白名单别名，避免参数名中的下划线等字符成为正则语法。
+    return re.search(rf"(?<![a-z0-9_]){alias_pattern}(?![a-z0-9_])", diagnostic_text) is not None  # 只接受完整参数名，避免把普通单词片段误判为参数。
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:

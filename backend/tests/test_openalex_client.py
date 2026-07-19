@@ -80,11 +80,11 @@ def test_client_hides_http_error_details() -> None:
         asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行异步搜索方法。
 
 
-def test_client_classifies_bad_request_without_leaking_response_body() -> None:
-    """400 应提示参数类别，且不得回显供应商可能包含的查询或密钥文本。"""
+def test_client_reports_only_whitelisted_bad_request_parameter_without_leaking_response_body() -> None:
+    """400 只应报告白名单参数名，且不得回显供应商可能包含的查询或密钥文本。"""
     def handler(request: httpx.Request) -> httpx.Response:
-        """返回包含敏感样例文本的 400 响应以验证适配器不会读取或转发正文。"""
-        return httpx.Response(400, json={"error": "invalid search private query", "api_key": "provider-secret"}, request=request)  # 模拟供应商错误正文可能包含敏感数据的边界。
+        """返回提到 select 的 400 响应以验证适配器只转发固定参数名。"""
+        return httpx.Response(400, json={"error": "Invalid select field: private query", "message": "provider-secret must not be exposed"}, request=request)  # 模拟供应商正文同时包含已知参数与敏感样例文本的边界。
 
     client = OpenAlexClient(  # 使用 mock 400 响应构造客户端。
         settings_override=_build_test_settings(),  # 注入隔离配置而不读取本地 .env。
@@ -93,9 +93,26 @@ def test_client_classifies_bad_request_without_leaking_response_body() -> None:
     with pytest.raises(OpenAlexClientError) as captured_error:  # 获取净化后的领域错误以检查其稳定文本。
         asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行只会命中本地 mock 的搜索。
     error_text = str(captured_error.value)  # 读取调用方实际可见的错误信息。
-    assert error_text == "OpenAlex 请求参数无效（HTTP 400）"  # 验证 400 被明确分类为请求参数错误。
+    assert error_text == "OpenAlex 请求参数无效（HTTP 400，参数=select）"  # 验证 400 仅展示白名单中的参数名。
     assert "private query" not in error_text  # 验证来源正文中的查询文本不会泄露。
     assert "provider-secret" not in error_text  # 验证来源正文中的密钥样例不会泄露。
+
+
+def test_client_hides_unrecognized_bad_request_body() -> None:
+    """供应商未提到白名单参数时，400 不应猜测或回显其原始诊断。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        """返回不含白名单参数名的敏感样例 400 响应。"""
+        return httpx.Response(400, json={"error": "unexpected private query", "message": "provider-secret"}, request=request)  # 模拟无法安全归因参数的供应商错误。
+
+    client = OpenAlexClient(  # 使用 mock 400 响应构造客户端。
+        settings_override=_build_test_settings(),  # 注入隔离配置而不读取本地 .env。
+        transport=httpx.MockTransport(handler),  # 拦截真实网络访问。
+    )
+    with pytest.raises(OpenAlexClientError) as captured_error:  # 获取净化后的领域错误以检查其回退文本。
+        asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行只会命中本地 mock 的搜索。
+    error_text = str(captured_error.value)  # 读取调用方实际可见的错误信息。
+    assert error_text == "OpenAlex 请求参数无效（HTTP 400）"  # 验证未命中白名单时保持泛化错误。
+    assert "private query" not in error_text and "provider-secret" not in error_text  # 验证任何未识别的供应商正文都不会泄露。
 
 
 def test_client_hides_missing_api_key_configuration() -> None:
