@@ -7,6 +7,8 @@ from pathlib import Path  # 处理用户明确指定的本地输入和输出。
 
 from backend.app.core.deepseek_pricing import estimate_deepseek_cost_or_zero  # 复用已冻结的本地价格计算。
 from backend.app.models.query_intent import QueryIntent  # 校验快照预估所需的生产查询契约。
+from evaluation.runners.offline_ranking import load_ablation_matrix  # 读取用户审核的 DeepSeek 实验配置。
+from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读加载封存候选而不访问来源。
 
 
 def forecast_query_agent(*, input_manifest_path: Path, query_ids: list[str], output_path: Path, model_name: str = "deepseek-v4-flash") -> dict[str, object]:
@@ -30,6 +32,31 @@ def forecast_snapshot_export(*, query_intent_path: Path, query_id: str, snapshot
         raise ValueError("快照预估要求第一轮且明确设置 source_recall_count")  # 不为无法执行的调用生成确认文件。
     payload = {"schema_version": "evaluation-usage-forecast-v1", "operation": "snapshot-export", "input_sha256": _sha256(query_intent_path), "query_id_order": [query_id], "snapshot_id": snapshot_id, "source_recall_count": intent.source_recall_count, "deepseek_calls": 0, "academic_api_calls": 1, "actual_http_request_upper_bound": 4, "estimated_prompt_tokens_upper_bound": 0, "estimated_completion_tokens_upper_bound": 0, "estimated_total_tokens_upper_bound": 0, "estimated_cost_cny_upper_bound": 0.0, "assumptions": ["第一轮动态路由当前计划一个学术来源", "HTTP 上限按一次初始请求加默认最多三次重试估算", "缓存命中、429 冷却和实际重试不可在调用前精确预测"]}  # 明确逻辑调用与物理尝试不是同一指标。
     return _write_forecast(payload, output_path)  # 发布不可覆盖的确认预估。
+
+
+def forecast_deepseek_ablation(*, snapshots_path: Path, matrix_path: Path, plan_path: Path, experiment_ids: list[str], output_path: Path, model_name: str = "deepseek-v4-flash", batch_size: int = 10) -> dict[str, object]:
+    """按封存候选和启用实验估算 DeepSeek 核验调用上限。"""
+    if batch_size < 1:  # 零批大小无法估算请求次数。
+        raise ValueError("DeepSeek 预估 batch_size 必须大于零")  # 拒绝无效命令参数。
+    snapshots = load_candidate_snapshots(snapshots_path)  # 只读校验共享候选。
+    matrix = load_ablation_matrix(matrix_path)  # 只读加载矩阵而不构造模型。
+    requested = {item.strip() for item in experiment_ids if item.strip()}  # 规范化用户选择。
+    experiments = [item for item in matrix.experiments if item.experiment_id in requested and item.ranking_config.deepseek_enabled]  # 仅统计实际启用 LLM 的实验。
+    if not experiments or len(requested) != len(experiments):  # 禁止把未启用或未知实验误当作 LLM 调用。
+        raise ValueError("DeepSeek 预估要求全部选中实验均启用 deepseek_enabled")  # 保持预估与执行范围一一对应。
+    calls = 0  # 累计理论最大批次调用数。
+    prompt_tokens = 0  # 累计保守输入 Token 上限。
+    completion_tokens = 0  # 累计每批最大结构化输出 Token。
+    for snapshot in snapshots:  # 每份快照在每个实验中独立核验。
+        for experiment in experiments:  # 深度实验不得共享模型调用或结果。
+            candidate_count = min(len(snapshot.papers), experiment.ranking_config.target_paper_count)  # 与异步执行器当前目标集合边界一致。
+            batch_count = ceil(candidate_count / batch_size)  # 空候选自然产生零调用。
+            calls += batch_count  # 累计计划调用数。
+            prompt_tokens += 700 + ceil(len(snapshot.query.encode("utf-8")) / 3) + sum(ceil((len(paper.title) + len(paper.abstract or "")) / 3) for paper in snapshot.papers[:candidate_count])  # 按冻结标题摘要和固定提示保守估算。
+            completion_tokens += batch_count * 4000  # 使用生产单批最大输出 Token 上限。
+    cost = estimate_deepseek_cost_or_zero(model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=prompt_tokens)  # 缓存未知时按未命中保守估算。
+    payload = {"schema_version": "evaluation-usage-forecast-v1", "operation": "ablation-deepseek", "snapshots_sha256": _sha256(snapshots_path), "matrix_sha256": _sha256(matrix_path), "plan_sha256": _sha256(plan_path), "experiment_ids": [item.experiment_id for item in experiments], "deepseek_calls": calls, "academic_api_calls": 0, "estimated_prompt_tokens_upper_bound": prompt_tokens, "estimated_completion_tokens_upper_bound": completion_tokens, "estimated_total_tokens_upper_bound": prompt_tokens + completion_tokens, "estimated_cost_cny_upper_bound": cost.cost_cny, "peak_pricing_applied": cost.peak_pricing_applied, "assumptions": ["每个实验和快照独立核验", "每批最多 10 篇、4,000 输出 Token", "只读取封存快照，不调用学术 API或本地模型"]}  # 写入范围与公式而不泄漏查询正文。
+    return _write_forecast(payload, output_path)  # 发布不可覆盖的预估确认文件。
 
 
 def validate_approved_forecast(*, forecast_path: Path, confirmation_sha256: str, operation: str, input_path: Path, query_ids: list[str], snapshot_id: str | None = None) -> None:
