@@ -269,4 +269,6 @@ python -m evaluation query-agent-plan `
 
 ## 后续边界
 
+在用户执行 `query-agent-plan` 或 `snapshot-export` 前，先运行 `usage-forecast`。它不会调用 DeepSeek 或学术 API：Query Agent 预估按源 QueryIntent 的原始问题和每次 3,000 输出 Token 上限计算保守 Token/费用上限；快照预估固定记录第一轮一个逻辑学术来源调用及默认三次重试下最多四次 HTTP 尝试。预估 JSON 含确认 SHA-256，且不写查询正文、Gold 或密钥。
+
 当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的 BGE-M3、Cross Encoder 评分适配器、零命中覆盖诊断与受控 Query Agent 规划，但没有 DeepSeek 排序对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。若首轮均零命中，应先审阅覆盖诊断，再决定是否需要用户显式运行少量 Query Agent 查询策略实验并重建对应候选；数据下载和完整 benchmark 仍由用户显式执行。

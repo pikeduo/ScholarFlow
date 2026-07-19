@@ -1322,3 +1322,7 @@ E. 同步 AGENTS.md。
 - 每个选择的查询仅调用一次 Query Agent，输出仍强制为第一轮，继承原 `source_recall_count` 与 `target_paper_count`，关闭网页发现、BGE-M3、Cross Encoder 和子查询；Query Agent 不得擅自改变候选规模或开启后续排序；
 - 输出 manifest 冻结输入 manifest SHA-256、稳定查询顺序、QueryIntent 文件映射、每条输出哈希、模型名、Token、费用和耗时；本阶段固定记录学术 API=0、本地模型=0；
 - 生成后的 QueryIntent 必须先由用户审阅，再由用户对新文件显式运行 `snapshot-export --allow-online-sources`。新快照和报告是新的查询策略实验产物，不得与现有共享快照上的 A/B/C/D 离线结果混合；只调整指标、Top-K、离线排序或报告时不得调用 Query Agent。
+
+## 31. 真实调用前资源预估实施状态（2026-07-19）
+
+新增 `python -m evaluation usage-forecast`，在 Query Agent 或单轮候选快照调用前只读冻结调用范围、输入 SHA-256、DeepSeek Token/费用上限或学术 API 次数上限及确认 SHA-256。该命令不读取 `.env`、不访问网络、不创建 DeepSeek 或学术来源客户端；来源 RPS、429 冷却、重试和超时仍是供应商保护，不属于可删除的策略调用限制。

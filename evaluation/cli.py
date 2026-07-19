@@ -17,6 +17,7 @@ from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下�
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
 from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 按冻结顺序组装多份单查询快照而不访问外部资源。
+from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export  # 在真实调用前生成只读资源预估。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_parser.add_argument("--gold", type=Path, required=True, help="已封存 GoldQuery JSONL 路径")  # 使用评分相同的金标输入。
     coverage_parser.add_argument("--snapshots", type=Path, required=True, help="已封存共享 CandidateSnapshot JSONL 路径")  # 只读取 BGE-M3 前快照。
     coverage_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的候选覆盖诊断目录")  # 禁止覆盖已审阅诊断。
+    forecast_parser = subparsers.add_parser("usage-forecast", help="只读预估下一次 Query Agent 或候选快照调用的资源上限")  # 创建不访问网络的调用前预检入口。
+    forecast_parser.add_argument("--operation", choices=["query-agent-plan", "snapshot-export"], required=True, help="待预估的真实调用类型")  # 明确两类外部调用的不同计算口径。
+    forecast_parser.add_argument("--input", type=Path, required=True, help="QueryIntent manifest 或单个 QueryIntent 路径")  # 只读取显式本地输入。
+    forecast_parser.add_argument("--query-id", action="append", required=True, help="可重复的稳定查询标识")  # 绑定预估的查询范围。
+    forecast_parser.add_argument("--snapshot-id", default=None, help="快照导出预估必须提供的稳定快照标识")  # 防止预估被误用于其他快照。
+    forecast_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的预估 JSON 路径")  # 冻结用户审阅过的调用前证据。
     query_agent_parser = subparsers.add_parser("query-agent-plan", help="仅经显式授权，使用 Query Agent 从既有 QueryIntent 生成新的评测检索表达式")  # 创建受控 LLM 查询规划入口。
     query_agent_parser.add_argument("--input-manifest", type=Path, required=True, help="只包含 QueryIntent 文件映射的 query-intent-manifest-v1")  # 禁止传入 Gold、候选或报告文件。
     query_agent_parser.add_argument("--query-id", action="append", required=True, help="可重复的待规划 query_id；每个 ID 仅调用一次 Query Agent")  # 强制用户控制本次 LLM 范围。
@@ -164,6 +171,15 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         summary = diagnose_candidate_coverage(gold_path=args.gold, snapshots_path=args.snapshots, output_dir=args.output_dir)  # 只比较本地金标和已封存快照。
         print(f"[OK] 候选覆盖诊断完成：{summary.query_count} 条查询，零命中查询={summary.zero_match_query_count}，学术 API=0，DeepSeek=0，本地模型=0")  # 明确本命令不新增候选或排序。
         return 0  # 表示三份诊断文件均已发布。
+    if args.command == "usage-forecast":  # 所有真实调用前的完全离线预估入口。
+        if args.operation == "query-agent-plan":  # Query Agent 使用 manifest 与多个查询标识。
+            forecast = forecast_query_agent(input_manifest_path=args.input, query_ids=args.query_id, output_path=args.output)  # 不导入 DeepSeek 客户端或读取 .env。
+        else:  # 候选快照只接受一条 QueryIntent 与一个快照标识。
+            if len(args.query_id) != 1 or not args.snapshot_id:  # 不允许不明确的单快照调用预估。
+                parser.error("snapshot-export 预估必须恰好提供一个 --query-id 和 --snapshot-id")  # 在读取输入前拒绝歧义范围。
+            forecast = forecast_snapshot_export(query_intent_path=args.input, query_id=args.query_id[0], snapshot_id=args.snapshot_id, output_path=args.output)  # 不创建学术来源客户端。
+        print(f"[OK] 调用前预估已生成：DeepSeek={forecast['deepseek_calls']}，学术 API={forecast['academic_api_calls']}，确认 SHA-256={forecast['confirmation_sha256']}")  # 输出用户下一步确认所需哈希而不回显查询正文。
+        return 0  # 表示仅完成本地预估。
     if args.command == "query-agent-plan":  # 由用户显式授权的评测检索表达式生成，不进入候选或排序流程。
         if not args.allow_query_agent:  # 未授权时连输入 manifest 也不读取，避免隐藏 LLM 意图。
             parser.error("query-agent-plan 必须显式提供 --allow-query-agent；该命令会调用真实 Query Agent LLM")  # 以标准 CLI 错误拒绝隐式模型调用。

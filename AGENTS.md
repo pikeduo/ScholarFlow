@@ -109,6 +109,7 @@ ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索�
 - 若同一共享候选快照上的首轮配置均出现零检索命中，必须先运行只读候选覆盖诊断，区分金标—候选身份可比性与召回覆盖事实；在诊断完成前不得为此启动 DeepSeek 或重建在线候选。
 - 若覆盖诊断后需要补足隐含检索术语，可由用户显式执行 `python -m evaluation query-agent-plan --allow-query-agent`，以既有 `query-intent-manifest-v1` 中的 `original_query` 和显式 QueryIntent 条件生成新的第一轮检索表达式；该入口严格不得读取 GoldQuery、Gold 标题、作者、arXiv ID、候选快照或报告，必须冻结每条调用的 Token、费用、耗时和输出哈希。它属于重新生成候选的查询策略实验，不得与既有共享快照的离线排序消融混用，也不改变“首轮排序消融关闭 DeepSeek”的规则。
 - 真实评测数据下载、学术 API、LLM、本地模型和完整 benchmark 必须由用户显式执行；离线测试只能使用合成 fixture 或 mock，不得读取 `.env`、访问网络或下载模型。
+- 评测真实 Query Agent 或学术来源调用前，必须先由 `python -m evaluation usage-forecast` 生成并审阅不含查询正文的 Token、费用或 API 次数上限预估；来源 RPS、429 冷却、重试、超时和显式授权属于供应商保护，不得以“解除用量限制”为由删除。
 - 评测 BGE-M3 适配器只能接受用户明确提供且已完整存在的本地模型目录（至少含 `config.json`），不得把远程仓库名交给模型库；构造和空候选评分不得加载模型，实际模型执行仍须由用户显式触发并以 `OfflineRankingScorer` 注入离线运行器。
 - `python -m evaluation ablation-execute` 只允许读取已有候选集合、矩阵和 `ablation-plan`，并以新 JSONL 与新 manifest 原子归档；执行 BGE-M3 或 Cross Encoder 的实验必须显式提供 `--allow-local-models` 与相应本地模型目录，D 同时需要两个目录；执行、评分和报告调整均不得重调学术 API。
 - `python -m evaluation ablation-score` 只允许读取已归档结果、配套执行 manifest、GoldQuery 与可选本地评分配置；必须先核验结果 SHA-256，再按实验独立写预测和报告。该命令不得加载本地模型、调用 DeepSeek 或重调学术 API，Top-K 与报告调整只需重新运行本命令。
