@@ -17,7 +17,7 @@ from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下�
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
 from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 按冻结顺序组装多份单查询快照而不访问外部资源。
-from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export, forecast_deepseek_ablation, validate_approved_forecast  # 在真实调用前生成并核验只读资源预估。
+from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export, forecast_deepseek_ablation, validate_approved_forecast, validate_deepseek_ablation_forecast  # 在真实调用前生成并核验只读资源预估。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     forecast_parser = subparsers.add_parser("usage-forecast", help="只读预估下一次 Query Agent 或候选快照调用的资源上限")  # 创建不访问网络的调用前预检入口。
     forecast_parser.add_argument("--operation", choices=["query-agent-plan", "snapshot-export", "ablation-deepseek"], required=True, help="待预估的真实调用类型")  # 明确三类外部调用的不同计算口径。
     forecast_parser.add_argument("--input", type=Path, required=True, help="QueryIntent manifest 或单个 QueryIntent 路径")  # 只读取显式本地输入。
-    forecast_parser.add_argument("--query-id", action="append", required=True, help="可重复的稳定查询标识")  # 绑定预估的查询范围。
+    forecast_parser.add_argument("--query-id", action="append", default=[], help="Query Agent 或单快照预估使用的稳定查询标识")  # DeepSeek 消融预估不需要单查询标识。
     forecast_parser.add_argument("--snapshot-id", default=None, help="快照导出预估必须提供的稳定快照标识")  # 防止预估被误用于其他快照。
     forecast_parser.add_argument("--matrix", type=Path, default=None, help="DeepSeek 消融预估所需矩阵 JSON 路径")  # 只读加载已审核配置。
     forecast_parser.add_argument("--plan", type=Path, default=None, help="DeepSeek 消融预估所需 ablation-plan JSON 路径")  # 绑定预估与已审核任务计划。
@@ -176,6 +176,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
 
             cross_encoder_scorer = CrossEncoderOfflineScorer(args.cross_encoder_model_path, device=args.cross_encoder_device, batch_size=args.cross_encoder_batch_size)  # 构造期只校验目录，不加载模型。
         if requires_deepseek:  # 只有所有授权参数通过后才延迟装配生产 DeepSeek 核验器。
+            validate_deepseek_ablation_forecast(forecast_path=args.forecast, confirmation_sha256=args.confirm_forecast, snapshots_path=args.snapshots, matrix_path=args.matrix, plan_path=args.plan, experiment_ids=args.experiment)  # 在导入生产配置前核验预估。
             from backend.app.services.llm_ranking import LlmPaperReranker  # 延迟导入避免纯本地实验读取 DeepSeek 配置。
             from evaluation.adapters.deepseek import DeepSeekOfflineReranker  # 将生产核验器限制在封存快照边界。
 
@@ -195,6 +196,8 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         return 0  # 表示三份诊断文件均已发布。
     if args.command == "usage-forecast":  # 所有真实调用前的完全离线预估入口。
         if args.operation == "query-agent-plan":  # Query Agent 使用 manifest 与多个查询标识。
+            if not args.query_id:
+                parser.error("query-agent-plan 预估必须提供至少一个 --query-id")  # 不猜测 LLM 调用范围。
             forecast = forecast_query_agent(input_manifest_path=args.input, query_ids=args.query_id, output_path=args.output)  # 不导入 DeepSeek 客户端或读取 .env。
         elif args.operation == "snapshot-export":  # 候选快照只接受一条 QueryIntent 与一个快照标识。
             if len(args.query_id) != 1 or not args.snapshot_id:  # 不允许不明确的单快照调用预估。

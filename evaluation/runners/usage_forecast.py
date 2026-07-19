@@ -77,6 +77,19 @@ def validate_approved_forecast(*, forecast_path: Path, confirmation_sha256: str,
         raise ValueError("调用前预估与当前 snapshot_id 不一致")  # 防止同一查询复用到另一输出实验。
 
 
+def validate_deepseek_ablation_forecast(*, forecast_path: Path, confirmation_sha256: str, snapshots_path: Path, matrix_path: Path, plan_path: Path, experiment_ids: list[str]) -> None:
+    """校验 DeepSeek 预估与本次消融全部冻结输入一致。"""
+    payload = json.loads(forecast_path.read_text(encoding="utf-8"))  # 只读用户确认过的本地预估。
+    if not isinstance(payload, dict):  # 任意 JSON 不能充当调用许可。
+        raise ValueError("DeepSeek 预估文件无效")  # 在客户端创建前失败。
+    recorded = payload.pop("confirmation_sha256", None)  # 从哈希材料中移除确认字段。
+    normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))  # 复现生成时的规范序列化。
+    if recorded != confirmation_sha256 or hashlib.sha256(normalized.encode("utf-8")).hexdigest() != confirmation_sha256:  # 用户确认值和文件内容必须同时匹配。
+        raise ValueError("DeepSeek 预估确认 SHA-256 不匹配")  # 禁止篡改或过期文件。
+    if payload.get("operation") != "ablation-deepseek" or payload.get("snapshots_sha256") != _sha256(snapshots_path) or payload.get("matrix_sha256") != _sha256(matrix_path) or payload.get("plan_sha256") != _sha256(plan_path) or payload.get("experiment_ids") != [item.strip() for item in experiment_ids]:  # 绑定所有输入与实验顺序。
+        raise ValueError("DeepSeek 预估与当前消融输入不一致")  # 不允许跨集合复用预估。
+
+
 def _expected_query_ids(operation: str, input_path: Path, query_ids: list[str]) -> list[str]:
     """按操作类型生成与预估文件相同的稳定查询顺序。"""
     if operation == "query-agent-plan":  # Query Agent 必须恢复 manifest 的冻结顺序。
