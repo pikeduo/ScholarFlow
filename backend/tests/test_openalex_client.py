@@ -101,7 +101,7 @@ def test_client_reports_supplier_hint_and_actual_parameter_names_without_leaking
     logged_template, logged_status, logged_category, logged_parameter_names = error_logger.call_args.args  # 读取日志模板及其安全实参，不经过实际日志输出。
     assert logged_template == "OpenAlex 请求失败，状态码=%d，错误类别=%s，实际参数=%s"  # 验证日志格式明确区分错误类别和真实参数名。
     assert logged_status == 400 and logged_category == "invalid_request:select"  # 验证安全分类仍保留状态码与供应商提示。
-    assert logged_parameter_names == "api_key,per_page,search"  # 验证日志准确列出实际发送的参数名而不依赖供应商提示。
+    assert logged_parameter_names == "api_key,per_page,search,select,sort"  # 验证日志准确列出实际发送的参数名而不依赖供应商提示。
     logged_values = str(error_logger.call_args.args)  # 合并实际传入日志方法的全部安全实参。
     assert "forecasting" not in logged_values and "test-api-key" not in logged_values  # 验证日志不包含查询文本或密钥值。
 

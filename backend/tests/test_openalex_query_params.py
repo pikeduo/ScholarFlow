@@ -2,7 +2,7 @@
 
 import pytest  # 提供异常断言工具。
 
-from backend.app.adapters.openalex import build_openalex_work_params  # 导入待测参数构造器。
+from backend.app.adapters.openalex import OPENALEX_WORK_FIELDS, build_openalex_work_params  # 导入待测参数构造器。
 from backend.app.models.query import QuerySchema  # 构造结构化查询测试数据。
 
 
@@ -21,10 +21,10 @@ def test_builder_converts_query_schema_to_openalex_params() -> None:
     )
     params = build_openalex_work_params(query)  # 构造不含密钥的 OpenAlex 参数。
     assert params["search"] == "large language model forecasting ETT time series benchmark"  # 验证关键词合并顺序。
-    assert "sort" not in params  # 验证旧 QuerySchema 入口复用 OpenAlex 搜索默认相关性顺序，不添加冗余排序参数。
+    assert params["sort"] == "-relevance_score"  # 验证旧 QuerySchema 入口在来源文本规范化后显式请求相关性降序。
     assert params["filter"] == "publication_year:2022-2025"  # 验证年份范围转换。
     assert params["per_page"] == 30  # 验证目标数量映射为单页数量。
-    assert "select" not in params  # 验证旧 QuerySchema 入口请求完整 Work 响应，避免选择字段与来源版本不兼容。
+    assert params["select"] == ",".join(OPENALEX_WORK_FIELDS)  # 验证旧 QuerySchema 入口恢复最小字段选择以减少响应负担。
     assert "api_key" not in params  # 验证密钥只能由未来 HTTP 客户端注入。
     assert "survey" not in params["search"]  # 验证排除词不会被错误地作为正向搜索词。
 

@@ -7,7 +7,7 @@ from pathlib import Path  # 定位测试 fixture 文件。
 import httpx  # 使用 MockTransport 拦截 HTTP 请求。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 验证客户端满足统一来源协议。
-from backend.app.adapters.openalex import OpenAlexClient, build_openalex_search_params  # 导入待测统一入口与纯参数构造器。
+from backend.app.adapters.openalex import OPENALEX_WORK_FIELDS, OpenAlexClient, build_openalex_search_params  # 导入待测统一入口、字段常量与纯参数构造器。
 from backend.app.core.config import Settings  # 构造不读取真实 .env 的隔离配置。
 from backend.app.models.query_intent import QueryIntent  # 构造统一来源协议要求的查询输入。
 
@@ -57,7 +57,7 @@ def test_search_params_fall_back_to_normalized_query() -> None:
     )
     params = build_openalex_search_params(query)  # 构造不含网络或密钥的来源参数。
     assert params["search"] == "复杂问题"  # 验证不会向来源发送空搜索参数。
-    assert "sort" not in params  # 验证统一 QueryIntent 入口复用 OpenAlex 搜索默认相关性顺序，不添加冗余排序参数。
+    assert params["sort"] == "-relevance_score"  # 验证统一 QueryIntent 入口在来源文本规范化后显式请求相关性降序。
     assert "filter" not in params  # 验证未指定年份范围时不会隐式加入来源过滤条件。
 
 
@@ -78,8 +78,8 @@ def test_client_implements_unified_adapter_and_maps_provenance() -> None:
         """校验统一入口请求参数并返回本地成功响应。"""
         assert request.url.path == "/works"  # 验证客户端调用 OpenAlex 论文搜索端点。
         assert request.url.params["search"] == "forecasting Transformer"  # 验证查询意图按确定顺序映射为全文搜索词。
-        assert "sort" not in request.url.params  # 验证网络请求复用 OpenAlex 搜索默认相关性顺序，不发送冗余排序参数。
-        assert "select" not in request.url.params  # 验证网络请求接收完整 Work 响应，避免选择字段与来源版本不兼容。
+        assert request.url.params["sort"] == "-relevance_score"  # 验证网络请求恢复相关性降序参数。
+        assert request.url.params["select"] == ",".join(OPENALEX_WORK_FIELDS)  # 验证网络请求恢复最小字段选择参数。
         assert request.url.params["per_page"] == "5"  # 验证目标结果数量映射为来源单页限制。
         assert request.url.params["filter"] == "publication_year:2020-2024"  # 验证年份范围映射为来源过滤。
         return httpx.Response(200, json={"results": [fixture]}, request=request)  # 返回不依赖网络的 OpenAlex 响应。
