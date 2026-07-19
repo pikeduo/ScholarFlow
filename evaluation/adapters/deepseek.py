@@ -54,4 +54,4 @@ class DeepSeekOfflineReranker:
 
 def _to_production_paper(paper: CandidatePaper) -> PaperRecord:
     """将封存候选转换为生产 LLM 核验所需的统一论文记录。"""
-    return PaperRecord(paper_id=paper.paper_id, title=paper.title, abstract=paper.abstract, authors=[PaperAuthor(name=author) for author in paper.authors], year=paper.year, venue=paper.venue, paper_type=paper.paper_type, doi=paper.doi, arxiv_id=paper.arxiv_id, pmid=paper.pmid, openalex_id=paper.openalex_id, semantic_scholar_id=paper.semantic_scholar_id, dblp_key=paper.dblp_key, source=paper.source, url=paper.url, keywords=list(paper.keywords), rrf_score=paper.rrf_score)  # 不读取来源原始响应、Gold 或运行状态。
+    return PaperRecord(paper_id=paper.paper_id, title=paper.title, abstract=paper.abstract, authors=[PaperAuthor(name=author) for author in paper.authors], year=paper.year, venue=paper.venue, doi=paper.doi, arxiv_id=paper.arxiv_id, pmid=paper.pmid, openalex_id=paper.openalex_id, semantic_scholar_id=paper.semantic_scholar_id, dblp_key=paper.dblp_key, source=paper.source, url=paper.url, keywords=list(paper.keywords), rrf_score=paper.rrf_score)  # 候选快照契约未封存 paper_type，生产模型使用默认空值且不得凭空推断。
