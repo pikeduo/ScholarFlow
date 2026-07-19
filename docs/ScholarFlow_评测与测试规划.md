@@ -1310,3 +1310,15 @@ E. 同步 AGENTS.md。
 - 输出目录必须不存在，发布 `diagnostic.json`、`query_diagnostics.jsonl` 与 `diagnostic.md`，冻结两个输入的原始字节 SHA-256，并按查询记录金标数、候选数、强标识符数量、匹配数量和事实性标记；输出不复制查询正文或论文正文；
 - 该诊断不读取 `.env`，不重跑 BGE-M3/Cross Encoder，不调用 DeepSeek、学术 API 或本地模型；它不对零命中归因，只用于先区分“现有身份规则下无覆盖”和“标识符可比性不足”等可观测事实；
 - 只有诊断结果确认需要改变来源查询、来源召回规模、QueryIntent 或多轮策略时，才由用户决定是否显式重新生成在线候选；只修复离线身份映射、评分或报告时仍必须复用现有快照。
+
+---
+
+## 30. 受控 Query Agent 查询策略实验实施状态（2026-07-19）
+
+针对候选覆盖诊断已确认“现有第一轮来源召回没有覆盖金标”的情况，新增 `python -m evaluation query-agent-plan`。该入口是重新生成候选前的独立查询策略实验，不属于同一候选快照上的 A/B/C/D 离线排序消融：
+
+- 用户必须显式提供 `--allow-query-agent`、现有 `query-intent-manifest-v1`、少量 `--query-id`、全新的输出目录和审计 manifest；缺少授权开关时连输入 manifest 都不读取；
+- 输入契约只允许 QueryIntent 文件映射。运行器只将源 QueryIntent 的 `original_query`、搜索模式和已显式设置的条件传给生产 Query Agent，严格不读取 GoldQuery、Gold 标题、作者、arXiv ID、候选快照、诊断或评分报告；
+- 每个选择的查询仅调用一次 Query Agent，输出仍强制为第一轮，继承原 `source_recall_count` 与 `target_paper_count`，关闭网页发现、BGE-M3、Cross Encoder 和子查询；Query Agent 不得擅自改变候选规模或开启后续排序；
+- 输出 manifest 冻结输入 manifest SHA-256、稳定查询顺序、QueryIntent 文件映射、每条输出哈希、模型名、Token、费用和耗时；本阶段固定记录学术 API=0、本地模型=0；
+- 生成后的 QueryIntent 必须先由用户审阅，再由用户对新文件显式运行 `snapshot-export --allow-online-sources`。新快照和报告是新的查询策略实验产物，不得与现有共享快照上的 A/B/C/D 离线结果混合；只调整指标、Top-K、离线排序或报告时不得调用 Query Agent。

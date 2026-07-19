@@ -12,6 +12,7 @@ from evaluation.runners.offline_ranking import build_ablation_plan, load_ablatio
 from evaluation.runners.offline_execution import execute_ablation_to_files  # 执行用户显式授权的本地排序并原子归档。
 from evaluation.runners.ablation_scoring import score_ablation_results  # 将已归档结果完全离线地分组评分并生成报告。
 from evaluation.runners.coverage_diagnostic import diagnose_candidate_coverage  # 比较金标与共享候选快照的身份覆盖而不重新排序。
+from evaluation.runners.query_agent_planning import EvaluationQueryPlanner, plan_query_intents_to_files, validate_query_agent_request  # 提供用户显式授权的评测 Query Agent 入口。
 from evaluation.runners.pasa_import import import_pasa_gold  # 将用户已下载的确认版 PaSa 原始 JSONL 转换为统一金标。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只读校验候选快照。
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
@@ -65,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_parser.add_argument("--gold", type=Path, required=True, help="已封存 GoldQuery JSONL 路径")  # 使用评分相同的金标输入。
     coverage_parser.add_argument("--snapshots", type=Path, required=True, help="已封存共享 CandidateSnapshot JSONL 路径")  # 只读取 BGE-M3 前快照。
     coverage_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的候选覆盖诊断目录")  # 禁止覆盖已审阅诊断。
+    query_agent_parser = subparsers.add_parser("query-agent-plan", help="仅经显式授权，使用 Query Agent 从既有 QueryIntent 生成新的评测检索表达式")  # 创建受控 LLM 查询规划入口。
+    query_agent_parser.add_argument("--input-manifest", type=Path, required=True, help="只包含 QueryIntent 文件映射的 query-intent-manifest-v1")  # 禁止传入 Gold、候选或报告文件。
+    query_agent_parser.add_argument("--query-id", action="append", required=True, help="可重复的待规划 query_id；每个 ID 仅调用一次 Query Agent")  # 强制用户控制本次 LLM 范围。
+    query_agent_parser.add_argument("--output-dir", type=Path, required=True, help="必须尚不存在的本次 QueryIntent 输出目录")  # 禁止覆盖已审阅规划。
+    query_agent_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的 Query Agent 审计 manifest JSON 路径")  # 冻结输入、输出、Token 与费用。
+    query_agent_parser.add_argument("--allow-query-agent", action="store_true", help="确认允许本次命令调用真实 Query Agent LLM")  # 使用独立开关形成明确 LLM 授权。
     dataset_parser = subparsers.add_parser("dataset-gold-import", help="将用户本地准备的数据集金标转换为 GoldQuery JSONL")  # 创建完全离线数据集适配命令。
     dataset_parser.add_argument("--input", type=Path, required=True, help="用户已准备的 dataset-gold-v1 JSONL 路径")  # 只读取用户明确指定的本地输入。
     dataset_parser.add_argument("--dataset", required=True, help="人工确认的数据集标识，例如 pasa")  # 禁止从文件名或网络推断数据集。
@@ -90,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser  # 返回可测试解析器。
 
 
-def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[], Any] | None = None) -> int:
+def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[], Any] | None = None, query_planner_factory: Callable[[], EvaluationQueryPlanner] | None = None) -> int:
     """运行指定命令并返回进程退出码；测试可注入零网络候选服务。"""
     parser = build_parser()  # 保留解析器以输出统一的授权错误。
     args = parser.parse_args(argv)  # 解析调用参数。
@@ -157,6 +164,17 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         summary = diagnose_candidate_coverage(gold_path=args.gold, snapshots_path=args.snapshots, output_dir=args.output_dir)  # 只比较本地金标和已封存快照。
         print(f"[OK] 候选覆盖诊断完成：{summary.query_count} 条查询，零命中查询={summary.zero_match_query_count}，学术 API=0，DeepSeek=0，本地模型=0")  # 明确本命令不新增候选或排序。
         return 0  # 表示三份诊断文件均已发布。
+    if args.command == "query-agent-plan":  # 由用户显式授权的评测检索表达式生成，不进入候选或排序流程。
+        if not args.allow_query_agent:  # 未授权时连输入 manifest 也不读取，避免隐藏 LLM 意图。
+            parser.error("query-agent-plan 必须显式提供 --allow-query-agent；该命令会调用真实 Query Agent LLM")  # 以标准 CLI 错误拒绝隐式模型调用。
+        validate_query_agent_request(input_manifest_path=args.input_manifest, query_ids=args.query_id, output_dir=args.output_dir, manifest_path=args.manifest)  # 在导入生产配置和读取 .env 前完成静态预检。
+        if query_planner_factory is None:  # 正常 CLI 仅在用户显式授权后才装配生产 Query Agent。
+            from backend.app.services.query_planning import QueryPlanningService  # 延迟导入会读取 DeepSeek 配置的生产服务。
+
+            query_planner_factory = QueryPlanningService  # 复用已验证的 Query Agent 适配器而不修改生产 API。
+        audit = asyncio.run(plan_query_intents_to_files(planner=query_planner_factory(), input_manifest_path=args.input_manifest, query_ids=args.query_id, output_dir=args.output_dir, manifest_path=args.manifest))  # 只输入原问题和显式条件，不读取 Gold 或候选。
+        print(f"[OK] Query Agent 评测规划完成：{len(audit['query_id_order'])} 条，学术 API=0，DeepSeek={audit['deepseek_calls']}，本地模型=0")  # 输出安全成本摘要而不回显查询正文。
+        return 0  # 表示新的 QueryIntent 与审计 manifest 均已写出。
     if args.command == "dataset-gold-import":  # 第四阶段完全离线数据集金标转换入口。
         gold_queries = import_prepared_dataset_gold(args.input, dataset_id=args.dataset, split=args.split, output_path=args.output)  # 只转换用户本地已准备数据，不下载或调用任何服务。
         print(f"[OK] 数据集金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文和论文内容的安全摘要。

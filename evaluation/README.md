@@ -254,6 +254,19 @@ python -m evaluation coverage-diagnose `
 
 输出的 `diagnostic.json` 冻结金标和候选集合 SHA-256，`query_diagnostics.jsonl` 按查询记录强标识符可比性、匹配数和事实性标记，`diagnostic.md` 供人工摘要阅读。它严格复用 `papers_match-v1`，不输出查询正文或论文正文；零命中不能单独归因于来源、查询、规范化或排序。
 
+若覆盖诊断表明需要补足隐含术语，用户可单独、一次性选择少量查询运行 Query Agent。此命令不是第一轮 A/B/C/D 排序消融的一部分：它会产生新的检索表达式和后续新的候选快照，不能与旧快照上的离线报告混合。
+
+```powershell
+python -m evaluation query-agent-plan `
+  --input-manifest evaluation/inputs/pasa-auto-dev-ranking20-query-intents.manifest.json `
+  --query-id pasa:auto-dev:AutoScholarQuery_dev_806 `
+  --output-dir evaluation/inputs/pasa-auto-dev-ranking20-query-agent-v3 `
+  --manifest evaluation/inputs/pasa-auto-dev-ranking20-query-agent-v3.manifest.json `
+  --allow-query-agent
+```
+
+该命令会调用一次真实 Query Agent LLM，并记录实际 Token、费用和耗时；它只读取输入 manifest 映射的 QueryIntent 的 `original_query`、搜索模式和已显式条件，严格不读取 GoldQuery、Gold 标题、作者、arXiv ID、候选快照或报告，不调用学术 API 或本地模型。输出目录和 manifest 均必须尚不存在。生成后先人工审阅新的 QueryIntent，再由用户对其显式运行 `snapshot-export --allow-online-sources`；只调整离线排序、Top-K、指标或报告时不得使用本命令。
+
 ## 后续边界
 
-当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的 BGE-M3、Cross Encoder 评分适配器和零命中覆盖诊断，但没有 DeepSeek 对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。若首轮均零命中，应先审阅覆盖诊断，再决定是否需要用户显式重建在线候选；数据下载和完整 benchmark 仍由用户显式执行。
+当前模块已包含由用户显式执行的单轮生产候选快照导出、PaSa 选择性下载脚本、通用准备金标导入，以及已确认 `AutoScholarQuery/dev.jsonl` 字段的原生 PaSa 开发集转换；还包含不自动下载的 BGE-M3、Cross Encoder 评分适配器、零命中覆盖诊断与受控 Query Agent 规划，但没有 DeepSeek 排序对比或 RealScholarQuery 原生解析器。后续排序消融必须只读取已封存快照；改变 BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标或报告不得再次调用学术 API。若首轮均零命中，应先审阅覆盖诊断，再决定是否需要用户显式运行少量 Query Agent 查询策略实验并重建对应候选；数据下载和完整 benchmark 仍由用户显式执行。

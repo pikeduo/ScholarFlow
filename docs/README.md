@@ -33,6 +33,7 @@
 - `ablation-execute` 只在用户显式授权本地模型后执行计划内 A/B/C/D 子集，并把 `OfflineAblationResult` JSONL 与输入/输出 SHA-256 manifest 原子归档；C/D 必须显式提供 Cross Encoder 本地目录，D 同时需要 BGE-M3 目录；
 - `ablation-score` 完全离线地核验归档结果 SHA-256，并按实验转换为 `PredictionRecord`、生成独立预测与指标报告；不重新加载模型或调用学术 API；
 - `coverage-diagnose` 完全离线地按正式 `papers_match-v1` 规则比较 GoldQuery 与共享排序前候选快照，输出输入 SHA-256、逐查询身份覆盖计数和零命中边界；它不重跑排序、不加载模型、不调用 DeepSeek 或学术 API；
+- `query-agent-plan` 是另一条受控、用户显式授权的查询策略入口：它只读取既有 `query-intent-manifest-v1` 指向的 QueryIntent，并仅将 `original_query` 和其中已显式设置的条件交给生产 Query Agent；严格不读取 Gold 标题、作者、arXiv ID、候选快照或评分报告，且不调用学术 API 或本地模型。输出新的第一轮 QueryIntent 与逐条 Token、费用、耗时、哈希审计，后续候选快照必须由用户另行显式导出；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 
 ## 使用原则
