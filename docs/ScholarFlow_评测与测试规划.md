@@ -1191,6 +1191,8 @@ E. 同步 AGENTS.md。
 - `fixture`、`snapshot-check` 和 `ablation-plan` 仍为完全离线命令，不会因新增导出入口而装配生产服务；
 - 测试只注入合成候选生成器，覆盖映射、阶段计数、哈希、已有文件保护、不安全 QueryIntent 拒绝和 CLI 授权，不访问真实来源、LLM 或本地模型。
 
+为减少 20 条开发集手动复制命令的错误，新增 `scripts/export_pasa_snapshot_batch.ps1` 作为用户显式执行的外层编排器：默认 `-BatchSize 1`，按 QueryIntent manifest 冻结顺序跳过已通过 `snapshot-check` 且没有“学术来源降级”警告的快照；每条新导出后立即离线复核，遇到导出或复核失败立即停止。脚本只调用既有 `snapshot-export --allow-online-sources`，不读取 `.env`、不保存认证信息、不加载模型，也不自动递归执行全部 20 条。
+
 用户手动命令和输入要求见 `../evaluation/README.md`。本入口不会下载数据集或模型，也不会由 Codex 自动运行。生成一次快照后，BGE-M3/Cross Encoder 保留数量、`evaluation_top_k`、指标和报告的任何调整都必须离线复用该快照，不得重新调用学术 API。
 
 该阶段完成后安排的下一项是公开评测数据到现有 `GoldQuery`/fixture 契约的纯离线适配与校验边界，不自动下载 PaSa、RealScholarQuery 或其他数据集；实施结果见第 22 节，真实数据准备和完整转换继续由用户显式执行。

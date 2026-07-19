@@ -180,6 +180,14 @@ python -m evaluation snapshot-export `
 
 该命令是上述离线命令的唯一在线例外，可能读取 `.env` 中的来源配置并调用真实学术 API。它不会调用 Query Agent、LLM 或本地排序模型，也不会下载模型或数据集。Codex 不自动执行该命令；真实运行及生成文件的内容审阅由用户负责。
 
+对于已封存的 PaSa 20 条 QueryIntent，可由用户手动调用批处理脚本；默认每批只导出下一条尚无有效快照的查询，并在写入后立即运行完全离线的 `snapshot-check`。脚本会跳过已有、无“学术来源降级”警告且校验通过的快照，失败立即停止，不会自动递归执行完整开发集：
+
+```powershell
+.\scripts\export_pasa_snapshot_batch.ps1 -BatchSize 1
+```
+
+该脚本仅编排已有 `snapshot-export`，仍会显式传递 `--allow-online-sources`；因此必须由用户在正确的项目环境中手动运行。不要直接运行旧的 `evaluation/inputs/*-snapshot-export-commands.ps1` 命令清单，它会顺序执行全部命令且不具备已验证快照跳过与逐条复核边界。
+
 任务计划固定显示新增学术 API 调用为零、DeepSeek 调用为零。真正执行 BGE-M3 或 Cross Encoder 时，调用方必须显式提供实现 `OfflineRankingScorer` 的适配器；当前模块没有真实模型适配器，也不会回退加载生产模型。
 
 输出目录被 Git 忽略，包含：
