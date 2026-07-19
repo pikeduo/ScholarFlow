@@ -1328,3 +1328,7 @@ E. 同步 AGENTS.md。
 新增 `python -m evaluation usage-forecast`，在 Query Agent 或单轮候选快照调用前只读冻结调用范围、输入 SHA-256、DeepSeek Token/费用上限或学术 API 次数上限及确认 SHA-256。该命令不读取 `.env`、不访问网络、不创建 DeepSeek 或学术来源客户端；来源 RPS、429 冷却、重试和超时仍是供应商保护，不属于可删除的策略调用限制。
 
 `query-agent-plan` 和 `snapshot-export` 现强制接收 `--forecast` 与 `--confirm-forecast`。执行前重新计算预估内容哈希，并核验输入 SHA-256、稳定 query_id 顺序以及快照标识；不匹配时不得装配任何真实客户端。
+
+## 32. DeepSeek 评测核验契约演进（2026-07-19）
+
+离线消融契约已允许 `deepseek_enabled=true`，并新增 `deepseek` 阶段轨迹枚举。真实执行器尚未接入前，该开关不会触发调用；后续必须通过独立适配器、调用前预估确认和单独结果归档实现，禁止只修改矩阵 JSON 伪造已执行的 DeepSeek 实验。

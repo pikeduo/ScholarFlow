@@ -8,7 +8,7 @@ from evaluation.contracts.prediction import PredictionRecord, RankingConfig  # �
 
 
 class AblationExperiment(BaseModel):
-    """保存一组只允许本地排序、禁止 DeepSeek 的消融配置。"""
+    """保存一组可选本地排序和 DeepSeek 核验的消融配置。"""
 
     model_config = ConfigDict(extra="forbid")  # 拒绝配置字段拼写错误。
 
@@ -17,11 +17,11 @@ class AblationExperiment(BaseModel):
     ranking_config: RankingConfig  # 保存各阶段开关和候选保留数量。
 
     @model_validator(mode="after")
-    def forbid_deepseek(self) -> "AblationExperiment":
-        """第一轮离线排序消融强制关闭 DeepSeek。"""
-        if self.ranking_config.deepseek_enabled:  # 离线 A/B/C/D 不得消耗 LLM Token。
-            raise ValueError("离线排序消融必须关闭 DeepSeek")  # 将 DeepSeek 对比留给少量最优配置。
-        return self  # 返回通过边界校验的实验。
+    def validate_deepseek_target_boundary(self) -> "AblationExperiment":
+        """要求启用 DeepSeek 的实验保留明确且可审计的最终候选数量。"""
+        if self.ranking_config.deepseek_enabled and self.ranking_config.target_paper_count < 1:  # LLM 核验必须有非零目标集合。
+            raise ValueError("启用 DeepSeek 的实验必须设置正数 target_paper_count")  # 防止无意义的外部调用配置。
+        return self  # 真实调用仍由执行器显式授权和预估确认控制。
 
 
 class AblationMatrix(BaseModel):
@@ -65,7 +65,7 @@ class RankingStageTrace(BaseModel):
 
     model_config = ConfigDict(extra="forbid")  # 稳定阶段统计契约。
 
-    stage: Literal["rrf", "bge_m3", "cross_encoder", "target"]  # 保存明确阶段名称。
+    stage: Literal["rrf", "bge_m3", "cross_encoder", "deepseek", "target"]  # 保存明确阶段名称。
     enabled: bool  # 标记该阶段是否执行本地打分。
     input_count: int = Field(ge=0)  # 保存阶段输入候选数。
     output_count: int = Field(ge=0)  # 保存阶段保留候选数。
