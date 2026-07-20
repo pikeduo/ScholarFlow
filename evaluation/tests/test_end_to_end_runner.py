@@ -5,9 +5,11 @@ from pathlib import Path  # 使用 pytest 临时目录隔离输出。
 
 from evaluation.contracts.common import EvaluationPaper  # 构造不访问网络的合成最终论文。
 from evaluation.contracts.end_to_end import EndToEndRunRecord, EndToEndUsage, LlmStageUsage  # 构造完整和缺失观测的在线归档。
+from evaluation.contracts.gold import GoldQuery  # 构造 PaSa 稀疏金标身份场景。
+from evaluation.contracts.prediction import PredictionRecord  # 构造最终 Top 20 预测记录。
+from evaluation.metrics.pasa_identity_audit import audit_pasa_query  # 验证离线身份审计不使用模糊匹配。
 from evaluation.runners.end_to_end import score_end_to_end, write_execution_plan  # 测试计划生成和离线报告闭环。
 from evaluation.runners.fixture import load_jsonl  # 读取仓库内固定 GoldQuery。
-from evaluation.contracts.gold import GoldQuery  # 解析固定 PaSa GoldQuery。
 
 
 ROOT = Path(__file__).resolve().parents[2]  # 从测试文件稳定定位仓库根目录。
@@ -35,4 +37,29 @@ def test_fixed_pasa_plan_and_offline_report_keep_all_twenty_queries(tmp_path: Pa
     assert "actual_http_requests" in summary.efficiency["missing_fields"]  # 不可观测生产指标不能伪造为零。
     assert (output_dir / "report.json").is_file()  # 验证机读 JSON 报告已写出。
     assert len((output_dir / "query_metrics.jsonl").read_text(encoding="utf-8").splitlines()) == 20  # 验证查询级 JSONL 完整覆盖二十条。
+    assert (output_dir / "identity_audit.jsonl").is_file()  # 验证身份审计逐条证据已单独归档。
+    assert (output_dir / "observability_audit.json").is_file()  # 验证部分观测范围不会隐藏在 Markdown 中。
     assert "PaSa AutoScholarQuery dev固定20条初步评测" in (output_dir / "report.md").read_text(encoding="utf-8")  # 验证 Markdown 包含指定免责声明。
+
+
+def test_pasa_identity_audit_accepts_only_deterministic_alias_or_sparse_exact_title() -> None:
+    """PaSa 审计只接受 arXiv DOI 别名和缺少消歧字段时的精确标题。"""
+    gold = GoldQuery(  # 构造 PaSa 原始格式常见的 arXiv 加标题稀疏金标。
+        query_id="pasa:test",  # 使用稳定的本地测试查询标识。
+        query="synthetic query",  # 不调用 Query Agent 或学术来源。
+        relevant_papers=[  # 同时覆盖 DOI 别名和标题回退两类可审阅证据。
+            EvaluationPaper(arxiv_id="2208.00277", title="MobileNeRF: Exploiting the Polygon Rasterization Pipeline for Efficient Neural Field Rendering on Mobile Architectures"),  # DOI 可确定映射的 arXiv 金标。
+            EvaluationPaper(arxiv_id="9999.00001", title="Exact Sparse Gold Title"),  # 无年份和作者时允许完全标题回退。
+        ],
+    )
+    prediction = PredictionRecord(  # 构造不访问网络的最终排序列表。
+        query_id=gold.query_id,  # 与 Gold 绑定同一查询。
+        papers=[  # 两篇命中均应被记录，第三篇近似标题不得命中。
+            EvaluationPaper(doi="https://doi.org/10.48550/arXiv.2208.00277", title="Different display title"),  # 验证 DOI 到 arXiv 的固定别名。
+            EvaluationPaper(openalex_id="W-test", title="Exact Sparse Gold Title", year=2024),  # 验证 Gold 稀疏时的精确标题回退。
+            EvaluationPaper(openalex_id="W-other", title="Exact Sparse Gold Title Extended", year=2024),  # 禁止近似标题误计分。
+        ],
+    )
+    audit = audit_pasa_query(gold, prediction)  # 运行纯本地确定性身份审计。
+    assert audit["true_positive"] == 2  # 验证只匹配两篇真实 Gold。
+    assert audit["evidence_counts"] == {"arxiv_doi_alias": 1, "exact_title_sparse_gold": 1}  # 验证报告可区分两种修正来源。

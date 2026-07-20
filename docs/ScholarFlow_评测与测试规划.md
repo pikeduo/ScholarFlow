@@ -928,9 +928,9 @@ data/evaluation/
 
 1. `pasa-end-to-end-plan` 完全离线核验固定 20 条并写出自然语言请求计划；
 2. 用户手动启动后端后，显式运行 `pasa-end-to-end-execute --allow-online-end-to-end`；该步骤依次调用 `/api/v1/search/natural-multi-round`，再只读读取同一 `run_id` 的论文、usage 与受限引用图；
-3. `pasa-end-to-end-score` 完全离线写出 `report.json`、`query_metrics.jsonl` 与 `report.md`。
+3. `pasa-end-to-end-score` 完全离线写出 `report.json`、`query_metrics.jsonl` 与 `report.md`；同时写出 `identity_audit.json`、`identity_audit.jsonl` 和 `observability_audit.json`，但不改写严格检索指标。
 
-失败、超时、空结果和来源异常必须原样归档并保留在 20 条分母。报告以 P/R/F1@20 的 Macro 与 Micro、原始运行效率、列表字段完整率和图事实合法性为主体，并固定注明“PaSa AutoScholarQuery dev固定20条初步评测，非完整数据集成绩，非赛事官方成绩”。当前生产只读快照尚未公开实际 HTTP 请求、重试、429 和 LLM 分阶段调用明细；这些字段在报告中必须为 `N/A` 与可观测性缺口，绝不能以零填充或派生为官方分数。
+失败、超时、空结果和来源异常必须原样归档并保留在 20 条分母。报告以 P/R/F1@20 的 Macro 与 Micro、原始运行效率、列表字段完整率和图事实合法性为主体，并固定注明“PaSa AutoScholarQuery dev固定20条初步评测，非完整数据集成绩，非赛事官方成绩”。严格检索指标固定复用 `papers_match-v1`；仅为审计 PaSa 仅含 arXiv ID 与标题的稀疏 Gold，可另行输出 `pasa-identity-audit-v1`，其只接受 `10.48550/arXiv.<id>` 的确定性 DOI 别名和 Gold 无年份、无作者时的完全标题相等，且必须明确为非官方、不得替代严格分数。当前生产只读快照尚未公开实际 HTTP 请求、重试、429 和 LLM 分阶段调用明细；这些字段在报告中必须为 `N/A` 与可观测性缺口，绝不能以零填充或派生为官方分数；部分已完成运行的原始和必须只出现在独立可观测性审计中，并注明覆盖范围。
 
 ## 14. 文档同步要求
 
