@@ -920,7 +920,19 @@ data/evaluation/
 
 ---
 
-## 13. 文档同步要求
+## 13. 固定 PaSa 20 条端到端初步评测
+
+已封存的 `pasa-auto-dev-ranking20.gold.jsonl` 与对应 manifest 可用于一次完整自然语言入口评测，不得重新抽样、替换零命中查询、使用 QueryIntent 直通或复用候选快照。
+
+流程固定为：
+
+1. `pasa-end-to-end-plan` 完全离线核验固定 20 条并写出自然语言请求计划；
+2. 用户手动启动后端后，显式运行 `pasa-end-to-end-execute --allow-online-end-to-end`；该步骤依次调用 `/api/v1/search/natural-multi-round`，再只读读取同一 `run_id` 的论文、usage 与受限引用图；
+3. `pasa-end-to-end-score` 完全离线写出 `report.json`、`query_metrics.jsonl` 与 `report.md`。
+
+失败、超时、空结果和来源异常必须原样归档并保留在 20 条分母。报告以 P/R/F1@20 的 Macro 与 Micro、原始运行效率、列表字段完整率和图事实合法性为主体，并固定注明“PaSa AutoScholarQuery dev固定20条初步评测，非完整数据集成绩，非赛事官方成绩”。当前生产只读快照尚未公开实际 HTTP 请求、重试、429 和 LLM 分阶段调用明细；这些字段在报告中必须为 `N/A` 与可观测性缺口，绝不能以零填充或派生为官方分数。
+
+## 14. 文档同步要求
 
 实施评测模块前，应检查并同步以下文档：
 

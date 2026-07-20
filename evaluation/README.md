@@ -279,6 +279,40 @@ python -m evaluation query-agent-plan `
 
 ## 后续边界
 
+## 固定 PaSa 20 条端到端初步评测
+
+本流程只使用已封存的 `evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl` 与 `evaluation/inputs/pasa-auto-dev-ranking20.manifest.json`，不重新抽样、替换零命中查询或运行候选快照/排序消融。先完全离线生成并审阅计划：
+
+```powershell
+python -m evaluation pasa-end-to-end-plan `
+  --gold evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --manifest evaluation/inputs/pasa-auto-dev-ranking20.manifest.json `
+  --output evaluation/results/pasa-auto-dev-ranking20-e2e/online-plan.jsonl
+```
+
+用户手动启动后端后，才可显式执行完整自然语言入口；该命令会触发真实学术来源和当前生产 LLM，Codex 不会自动运行：
+
+```powershell
+python -m evaluation pasa-end-to-end-execute `
+  --plan evaluation/results/pasa-auto-dev-ranking20-e2e/online-plan.jsonl `
+  --gold evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --manifest evaluation/inputs/pasa-auto-dev-ranking20.manifest.json `
+  --output evaluation/results/pasa-auto-dev-ranking20-e2e/online-runs.jsonl `
+  --allow-online-end-to-end
+```
+
+随后评分完全离线：
+
+```powershell
+python -m evaluation pasa-end-to-end-score `
+  --gold evaluation/inputs/pasa-auto-dev-ranking20.gold.jsonl `
+  --manifest evaluation/inputs/pasa-auto-dev-ranking20.manifest.json `
+  --runs evaluation/results/pasa-auto-dev-ranking20-e2e/online-runs.jsonl `
+  --output-dir evaluation/results/pasa-auto-dev-ranking20-e2e/report
+```
+
+报告输出 `report.json`、`query_metrics.jsonl` 和 `report.md`，固定声明“PaSa AutoScholarQuery dev固定20条初步评测，非完整数据集成绩，非赛事官方成绩”。当前生产只读快照没有公开实际 HTTP、重试、429 及 LLM 分阶段调用明细，报告会将这些原始指标显示为 `N/A` 并记录为可观测性缺口，绝不填零。
+
 在用户执行 `query-agent-plan` 或 `snapshot-export` 前，先运行 `usage-forecast`。它不会调用 DeepSeek 或学术 API：Query Agent 预估按源 QueryIntent 的原始问题和每次 3,000 输出 Token 上限计算保守 Token/费用上限；快照预估固定记录第一轮一个逻辑学术来源调用及默认三次重试下最多四次 HTTP 尝试。预估 JSON 含确认 SHA-256，且不写查询正文、Gold 或密钥。
 
 新的 `query-agent-plan` 与 `snapshot-export` 必须同时提供 `--forecast <预估 JSON>` 和 `--confirm-forecast <confirmation_sha256>`；只要输入文件、查询顺序或快照标识变更，就必须重新预估。确认不匹配时命令在创建 DeepSeek 或学术来源客户端前失败。

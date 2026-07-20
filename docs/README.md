@@ -36,6 +36,7 @@
 - `coverage-diagnose` 完全离线地按正式 `papers_match-v1` 规则比较 GoldQuery 与排序前候选快照，默认要求完整共享集合对齐；少量 Query Agent 新快照可用显式 `--query-id` 进行局部诊断，`coverage-diagnostic-v2` 会冻结完整输入 SHA-256 与实际 `selected_query_ids`，且局部结论不得外推到开发集；它不重跑排序、不加载模型、不调用 DeepSeek 或学术 API；
 - `query-agent-plan` 是另一条受控、用户显式授权的查询策略入口：它只读取既有 `query-intent-manifest-v1` 指向的 QueryIntent，并仅将 `original_query` 和其中已显式设置的条件交给生产 Query Agent；严格不读取 Gold 标题、作者、arXiv ID、候选快照或评分报告，且不调用学术 API 或本地模型。输出新的第一轮 QueryIntent 与逐条 Token、费用、耗时、哈希审计，后续候选快照必须由用户另行显式导出；
 - `usage-forecast` 在真实 Query Agent、单轮候选快照或 DeepSeek E 组调用前只读生成调用次数、Token/费用上限与确认 SHA-256；不读取 `.env`、不访问网络、不创建模型或来源客户端；
+- `pasa-end-to-end-plan` 只核验现有固定 PaSa AutoScholarQuery dev 20 条 GoldQuery 与 manifest 并生成自然语言入口计划；`pasa-end-to-end-execute` 必须由用户显式添加 `--allow-online-end-to-end` 后才顺序调用完整自然语言搜索并归档所有成功、失败和超时查询；`pasa-end-to-end-score` 只读取归档结果，输出 JSON、查询级 JSONL 和 Markdown 初步报告；
 - 真实数据集、模型推理和完整 benchmark 仍必须由用户显式执行。
 
 ## 使用原则

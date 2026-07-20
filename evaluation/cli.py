@@ -18,6 +18,7 @@ from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 只�
 from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完整本地 GoldQuery 封存可复现的开发集子集。
 from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 按冻结顺序组装多份单查询快照而不访问外部资源。
 from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export, forecast_deepseek_ablation, validate_approved_forecast, validate_deepseek_ablation_forecast  # 在真实调用前生成并核验只读资源预估。
+from evaluation.runners.end_to_end import execute_online_plan, score_end_to_end, write_execution_plan  # 提供固定 PaSa 端到端计划、用户显式在线执行和完全离线报告。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +30,23 @@ def build_parser() -> argparse.ArgumentParser:
     fixture_parser.add_argument("--predictions", type=Path, required=True, help="本地预测 JSONL 路径")  # 要求显式预测文件。
     fixture_parser.add_argument("--output-dir", type=Path, required=True, help="本地报告输出目录")  # 要求显式输出目录。
     fixture_parser.add_argument("--config", type=Path, default=None, help="可选的本地评测 JSON 配置")  # 允许调整 Top-K 和代理阈值。
+    end_to_end_plan_parser = subparsers.add_parser("pasa-end-to-end-plan", help="仅生成固定 PaSa 20 条自然语言端到端执行计划")  # 创建零网络、零模型的固定集合计划入口。
+    end_to_end_plan_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径")  # 要求显式的已封存金标。
+    end_to_end_plan_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径")  # 要求核验封存 query_id 顺序。
+    end_to_end_plan_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的在线执行计划 JSONL 路径")  # 禁止覆盖已审阅计划。
+    end_to_end_execute_parser = subparsers.add_parser("pasa-end-to-end-execute", help="用户显式授权后按固定计划调用本地自然语言搜索入口")  # 创建唯一端到端在线执行入口。
+    end_to_end_execute_parser.add_argument("--plan", type=Path, required=True, help="由 pasa-end-to-end-plan 生成并审阅的固定20条计划 JSONL")  # 禁止使用 QueryIntent 或候选快照替代。
+    end_to_end_execute_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径，用于执行前再次核验")  # 防止被修改的计划改变固定分母。
+    end_to_end_execute_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径，用于执行前再次核验")  # 防止替换或删除查询。
+    end_to_end_execute_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的在线运行归档 JSONL 路径")  # 保存二十条成功和失败记录。
+    end_to_end_execute_parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="用户手动启动的 ScholarFlow 后端地址")  # 仅连接用户明确运行的本地服务。
+    end_to_end_execute_parser.add_argument("--timeout-seconds", type=float, default=180.0, help="单查询自然语言端到端请求超时秒数")  # 超时仍会写入固定分母记录。
+    end_to_end_execute_parser.add_argument("--allow-online-end-to-end", action="store_true", help="确认允许本次命令调用真实自然语言搜索、学术来源与 LLM")  # 对真实完整链路使用独立显式授权。
+    end_to_end_score_parser = subparsers.add_parser("pasa-end-to-end-score", help="完全离线评分固定 PaSa 20 条在线归档并生成报告")  # 创建不访问服务、不加载模型的评分入口。
+    end_to_end_score_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径")  # 使用相同封存金标。
+    end_to_end_score_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径")  # 重新校验二十条分母。
+    end_to_end_score_parser.add_argument("--runs", type=Path, required=True, help="pasa-end-to-end-execute 写出的运行归档 JSONL")  # 只读取已有在线结果。
+    end_to_end_score_parser.add_argument("--output-dir", type=Path, required=True, help="本地 JSON、JSONL、Markdown 报告目录")  # 写出三类用户要求的离线产物。
     snapshot_parser = subparsers.add_parser("snapshot-check", help="只读校验候选快照契约、去重和 SHA-256")  # 创建快照检查命令。
     snapshot_parser.add_argument("--snapshots", type=Path, required=True, help="本地候选快照 JSONL 路径")  # 要求用户显式指定快照文件。
     collection_parser = subparsers.add_parser("snapshot-collection-assemble", help="离线组装按 QueryIntent manifest 冻结顺序排列的候选快照集合")  # 创建完全离线的多文件快照集合入口。
@@ -123,6 +141,20 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         summary = run_fixture(args.gold, args.predictions, args.output_dir, args.config)  # 只读取本地文件并写本地报告。
         print(f"[OK] 离线评测完成：{summary.retrieval.query_count} 条查询，报告目录 {args.output_dir}")  # 输出不含查询正文的安全摘要。
         return 0  # 表示运行成功。
+    if args.command == "pasa-end-to-end-plan":  # 本次任务的零网络固定20条计划生成入口。
+        count = write_execution_plan(args.gold, args.manifest, args.output)  # 只核验本地 Gold 与 manifest 并写计划。
+        print(f"[OK] 固定 PaSa 端到端计划已生成：{count} 条，学术 API=0，LLM=0，本地模型=0")  # 明确该步骤不触发真实运行。
+        return 0  # 表示计划可供用户审阅。
+    if args.command == "pasa-end-to-end-execute":  # 用户显式授权的完整自然语言在线执行入口。
+        if not args.allow_online_end_to_end:  # 未授权时绝不连接本地服务或触发其下游来源、LLM。
+            parser.error("pasa-end-to-end-execute 必须显式提供 --allow-online-end-to-end；该命令会调用真实自然语言搜索、学术来源与 LLM")  # 保持用户对成本和网络调用的控制。
+        count = execute_online_plan(args.plan, args.output, gold_path=args.gold, manifest_path=args.manifest, base_url=args.base_url, timeout_seconds=args.timeout_seconds)  # 按固定计划顺序执行并保留全部失败记录。
+        print(f"[OK] 固定 PaSa 端到端在线归档完成：{count} 条；请继续运行 pasa-end-to-end-score，在线调用仅由本次用户命令触发")  # 不回显查询正文或论文内容。
+        return 0  # 表示在线归档文件已写出。
+    if args.command == "pasa-end-to-end-score":  # 本次任务的完全离线评分与报告生成入口。
+        summary = score_end_to_end(args.gold, args.manifest, args.runs, args.output_dir)  # 只读取本地归档，复用既有检索指标。
+        print(f"[OK] 固定 PaSa 端到端离线评分完成：{summary.query_count} 条，学术 API=0，LLM=0，本地模型=0，报告目录 {args.output_dir}")  # 明确报告阶段无真实调用。
+        return 0  # 表示 JSON、JSONL 和 Markdown 已生成。
     if args.command == "snapshot-check":  # 第二阶段只读验证候选快照。
         snapshots = load_candidate_snapshots(args.snapshots)  # 核验契约、身份去重和哈希。
         print(f"[OK] 候选快照校验完成：{len(snapshots)} 份，未执行学术 API、LLM 或本地模型")  # 输出不含查询和论文正文的安全摘要。

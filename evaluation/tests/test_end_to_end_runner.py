@@ -1,0 +1,38 @@
+"""测试固定 PaSa 20 条端到端计划与完全离线评分边界。"""
+
+import json  # 验证写出的 JSON 与 JSONL 均可解析。
+from pathlib import Path  # 使用 pytest 临时目录隔离输出。
+
+from evaluation.contracts.common import EvaluationPaper  # 构造不访问网络的合成最终论文。
+from evaluation.contracts.end_to_end import EndToEndRunRecord, EndToEndUsage, LlmStageUsage  # 构造完整和缺失观测的在线归档。
+from evaluation.runners.end_to_end import score_end_to_end, write_execution_plan  # 测试计划生成和离线报告闭环。
+from evaluation.runners.fixture import load_jsonl  # 读取仓库内固定 GoldQuery。
+from evaluation.contracts.gold import GoldQuery  # 解析固定 PaSa GoldQuery。
+
+
+ROOT = Path(__file__).resolve().parents[2]  # 从测试文件稳定定位仓库根目录。
+GOLD = ROOT / "evaluation" / "inputs" / "pasa-auto-dev-ranking20.gold.jsonl"  # 使用本次固定 PaSa 20 条金标。
+MANIFEST = ROOT / "evaluation" / "inputs" / "pasa-auto-dev-ranking20.manifest.json"  # 使用本次固定子集 manifest。
+
+
+def test_fixed_pasa_plan_and_offline_report_keep_all_twenty_queries(tmp_path: Path) -> None:
+    """计划必须冻结二十条，离线报告必须把全部记录保留在固定分母。"""
+    plan_path = tmp_path / "plan.jsonl"  # 使用未存在的临时计划输出路径。
+    assert write_execution_plan(GOLD, MANIFEST, plan_path) == 20  # 验证不重新抽样且只写二十条。
+    plan_rows = [json.loads(line) for line in plan_path.read_text(encoding="utf-8").splitlines()]  # 读取计划以构造离线运行归档。
+    gold_by_id = {item.query_id: item for item in load_jsonl(GOLD, GoldQuery)}  # 读取每条固定查询的金标论文。
+    runs = []  # 构造二十条无网络运行归档。
+    for index, row in enumerate(plan_rows):  # 保持封存顺序构造每条查询。
+        gold_paper = gold_by_id[row["query_id"]].relevant_papers[0]  # 取首篇金标以构造确定性命中。
+        papers = [EvaluationPaper.model_validate(gold_paper.model_dump())] if index == 0 else []  # 仅首条命中，其余空结果仍进入分母。
+        runs.append(EndToEndRunRecord(query_id=row["query_id"], run_id=f"run-{index}", status="completed", papers=papers, usage=EndToEndUsage(academic_api_calls=1, latency_ms=1000 + index, total_estimated_cost_cny=0.01, query_agent=LlmStageUsage(call_count=1, input_tokens=10, output_tokens=5, total_tokens=15), llm_total_tokens=15), graph_requested=bool(papers), graph_generated=bool(papers), graph_node_ids=[papers[0].paper_id] if papers and papers[0].paper_id else []))  # 未观测 HTTP、重试、429 必须保持空而非零。
+    runs_path = tmp_path / "runs.jsonl"  # 使用独立在线归档输入路径。
+    runs_path.write_text("\n".join(item.model_dump_json() for item in runs) + "\n", encoding="utf-8")  # 只写本地合成 JSONL。
+    output_dir = tmp_path / "report"  # 使用临时离线报告目录。
+    summary = score_end_to_end(GOLD, MANIFEST, runs_path, output_dir)  # 完全离线生成三种报告。
+    assert summary.query_count == 20  # 验证空结果仍进入固定分母。
+    assert summary.retrieval["zero_hit_query_count"] == 19  # 只有首条构造了一个金标命中。
+    assert "actual_http_requests" in summary.efficiency["missing_fields"]  # 不可观测生产指标不能伪造为零。
+    assert (output_dir / "report.json").is_file()  # 验证机读 JSON 报告已写出。
+    assert len((output_dir / "query_metrics.jsonl").read_text(encoding="utf-8").splitlines()) == 20  # 验证查询级 JSONL 完整覆盖二十条。
+    assert "PaSa AutoScholarQuery dev固定20条初步评测" in (output_dir / "report.md").read_text(encoding="utf-8")  # 验证 Markdown 包含指定免责声明。
