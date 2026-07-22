@@ -311,7 +311,7 @@ python -m evaluation pasa-end-to-end-score `
   --output-dir evaluation/results/pasa-auto-dev-ranking20-e2e/report
 ```
 
-评分会保留既有 `papers_match-v1` 的严格 P/R/F1@20，并额外写出 PaSa 专用、非官方的身份审计：仅接受 `10.48550/arXiv.<id>` 与 Gold arXiv ID 的确定性别名，或 PaSa Gold 缺少年份和作者时的完全标题相等。审计明细位于 `identity_audit.json`、`identity_audit.jsonl`；`observability_audit.json` 另行声明哪些效率字段只覆盖已完成查询，以及当前生产快照无法验证的 LLM 分阶段调用、输出 Token 和预算上限。两者均不改写严格分数，不访问网络、学术 API、LLM 或本地模型。
+评分会先输出通用确定性 P/R/F1@20：生产融合与评测共用 DOI、arXiv（去版本）、`10.48550/arXiv.<id>` 确定性别名、PMID、OpenAlex、Semantic Scholar 与 DBLP 的规范化规则，强标识冲突不退回标题。随后额外写出 PaSa 专用、非官方的稀疏 Gold 审计：仅在 Gold 缺少年份和作者时允许完全规范化标题相等。审计明细位于 `identity_audit.json`、`identity_audit.jsonl`；`observability_audit.json` 另行声明哪些效率字段只覆盖已完成查询，以及当前生产快照无法验证的 LLM 分阶段调用、输出 Token 和预算上限。两种分数分别展示，PaSa 审计绝不改写通用确定性分数，也不访问网络、学术 API、LLM 或本地模型。
 
 报告输出 `report.json`、`query_metrics.jsonl` 和 `report.md`，固定声明“PaSa AutoScholarQuery dev固定20条初步评测，非完整数据集成绩，非赛事官方成绩”。当前生产只读快照没有公开实际 HTTP、重试、429 及 LLM 分阶段调用明细，报告会将这些原始指标显示为 `N/A` 并记录为可观测性缺口，绝不填零。
 

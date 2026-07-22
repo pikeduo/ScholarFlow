@@ -18,6 +18,16 @@ def test_identifier_normalization_and_deduplication() -> None:
     assert duplicate_count == 1  # 重复计数可用于结构评分和报告。
 
 
+def test_arxiv_doi_alias_matches_explicit_arxiv_without_misidentifying_normal_doi() -> None:
+    """已知 DataCite arXiv DOI 可匹配显式 arXiv，普通 DOI 不可伪装为预印本。"""
+    gold = EvaluationPaper(arxiv_id="1805.12152v2", title="Alias")  # 构造带版本号的 PaSa 常见 arXiv 金标。
+    alias_prediction = EvaluationPaper(doi="10.48550/arXiv.1805.12152", title="Different title")  # 构造仅以 DOI 保存预印本身份的生产结果。
+    normal_doi_prediction = EvaluationPaper(doi="10.48550/not-arxiv.1805.12152", title="Alias", year=2024, authors=["Alice"])  # 构造不应被识别为 arXiv 的普通 DOI。
+    assert normalize_arxiv_id(gold.arxiv_id) == "1805.12152"  # 验证 arXiv 版本号被移除。
+    assert papers_match(gold, alias_prediction) is True  # 验证 DOI arXiv 别名是确定性强标识匹配。
+    assert papers_match(gold, normal_doi_prediction) is False  # 验证普通 DOI 不会被误判为 arXiv。
+
+
 def test_conflicting_strong_identifier_blocks_title_fallback() -> None:
     """同字段强标识冲突时不得仅因标题相同而误合并。"""
     left = EvaluationPaper(doi="10.1000/left", title="Same Paper", year=2024, authors=["Alice"] )  # 构造左侧 DOI。

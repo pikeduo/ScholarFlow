@@ -1,21 +1,12 @@
 """审计 PaSa 稀疏金标与生产论文记录之间的可解释身份差异。"""
 
-import re  # 解析 DOI 中可确定映射的 arXiv 身份。
 from collections import Counter  # 汇总每类身份证据数量。
 
 from evaluation.contracts.common import EvaluationPaper  # 使用统一论文契约。
 from evaluation.contracts.gold import GoldQuery  # 读取 PaSa GoldQuery。
 from evaluation.contracts.prediction import PredictionRecord  # 读取最终排序论文。
-from evaluation.metrics.identifiers import deduplicate_papers, normalize_arxiv_id, normalize_doi, normalize_text, papers_match  # 复用既有严格规范化、匹配和最终列表去重规则。
-
-
-ARXIV_DOI_PATTERN = re.compile(r"(?:^|/)10\.48550/arxiv\.([0-9]{4}\.[0-9]{4,5})(?:v\d+)?$", re.IGNORECASE)  # 仅识别 DataCite arXiv DOI 别名。
-
-
-def _arxiv_doi_alias(paper: EvaluationPaper) -> str | None:
-    """从规范 DOI 中提取可验证的 arXiv 身份；普通 DOI 不参与推断。"""
-    match = ARXIV_DOI_PATTERN.search(normalize_doi(paper.doi) or "")  # 先统一 DOI URL 或 doi: 前缀再仅接受已知格式。
-    return normalize_arxiv_id(match.group(1)) if match else None  # 复用版本号规范化保持一致。
+from backend.app.models.paper_identity import compare_strong_identifiers, normalize_text  # 复用生产与评测共享的强标识与标题规范化规则。
+from evaluation.metrics.identifiers import deduplicate_papers  # 保持审计精确率分母与通用评分一致。
 
 
 def _sparse_gold_title_match(gold: EvaluationPaper, predicted: EvaluationPaper) -> bool:
@@ -27,12 +18,9 @@ def _sparse_gold_title_match(gold: EvaluationPaper, predicted: EvaluationPaper) 
 
 def _match_kind(gold: EvaluationPaper, predicted: EvaluationPaper) -> str | None:
     """按严格标识、arXiv DOI 别名、稀疏金标标题的顺序返回唯一证据类型。"""
-    if papers_match(gold, predicted):  # 先保持项目既有严格身份口径。
-        return "strict_identity"  # 已有指标认可的强证据无需放宽。
-    gold_arxiv = normalize_arxiv_id(gold.arxiv_id)  # 提取 Gold 的稳定 arXiv 标识。
-    predicted_arxiv = _arxiv_doi_alias(predicted)  # 提取生产 DOI 的可验证 arXiv 别名。
-    if gold_arxiv and predicted_arxiv and gold_arxiv == predicted_arxiv:  # 只接受完全相同的别名身份。
-        return "arxiv_doi_alias"  # 记录可复核的跨字段映射来源。
+    decision, evidence = compare_strong_identifiers(gold.model_dump(), predicted.model_dump())  # 复用通用严格身份裁决并保留别名证据类型。
+    if decision:  # 强标识确认匹配时不需要稀疏标题规则。
+        return evidence or "strict_identity"  # DOI arXiv 别名继续单独可审计展示。
     if _sparse_gold_title_match(gold, predicted):  # 最后仅处理 Gold 本身缺少消歧字段的标题完全一致。
         return "exact_title_sparse_gold"  # 明确标记为 PaSa 专用的审计回退。
     return None  # 不用模糊相似度或 LLM 推断补齐身份。
@@ -63,7 +51,7 @@ def audit_pasa_query(gold_query: GoldQuery, prediction: PredictionRecord, *, cut
 
 
 def summarize_pasa_identity_audit(gold_queries: list[GoldQuery], predictions: dict[str, PredictionRecord], *, cutoff: int = 20) -> dict[str, object]:
-    """汇总固定集合的 PaSa 身份修正指标与可观测性边界。"""
+    """汇总固定集合的 PaSa 稀疏金标审计指标与可观测性边界。"""
     rows = [audit_pasa_query(gold, predictions[gold.query_id], cutoff=cutoff) for gold in gold_queries]  # 按固定 manifest 顺序审计所有查询。
     true_positive = sum(int(item["true_positive"]) for item in rows)  # 汇总唯一命中数。
     predicted_count = sum(int(item["predicted_count"]) for item in rows)  # 汇总最终列表真实分母。
@@ -71,4 +59,4 @@ def summarize_pasa_identity_audit(gold_queries: list[GoldQuery], predictions: di
     micro_precision = true_positive / predicted_count if predicted_count else 0.0  # 计算跨查询微精确率。
     micro_recall = true_positive / relevant_count if relevant_count else 0.0  # 计算跨查询微召回率。
     micro_f1 = 2 * micro_precision * micro_recall / (micro_precision + micro_recall) if micro_precision + micro_recall else 0.0  # 计算微 F1。
-    return {"matching_policy": "pasa-identity-audit-v1", "cutoff": cutoff, "query_count": len(rows), "macro_precision": sum(float(item["precision"]) for item in rows) / len(rows) if rows else 0.0, "macro_recall": sum(float(item["recall"]) for item in rows) / len(rows) if rows else 0.0, "macro_f1": sum(float(item["f1"]) for item in rows) / len(rows) if rows else 0.0, "micro_precision": micro_precision, "micro_recall": micro_recall, "micro_f1": micro_f1, "zero_hit_query_count": sum(int(item["true_positive"]) == 0 for item in rows), "at_least_one_hit_ratio": sum(int(item["true_positive"]) > 0 for item in rows) / len(rows) if rows else 0.0, "evidence_counts": dict(Counter(evidence["match_kind"] for item in rows for evidence in item["evidence"])), "query_rows": rows}  # 返回固定集合汇总和逐条审计行。
+    return {"matching_policy": "pasa-sparse-gold-audit-v2", "cutoff": cutoff, "query_count": len(rows), "macro_precision": sum(float(item["precision"]) for item in rows) / len(rows) if rows else 0.0, "macro_recall": sum(float(item["recall"]) for item in rows) / len(rows) if rows else 0.0, "macro_f1": sum(float(item["f1"]) for item in rows) / len(rows) if rows else 0.0, "micro_precision": micro_precision, "micro_recall": micro_recall, "micro_f1": micro_f1, "zero_hit_query_count": sum(int(item["true_positive"]) == 0 for item in rows), "at_least_one_hit_ratio": sum(int(item["true_positive"]) > 0 for item in rows) / len(rows) if rows else 0.0, "evidence_counts": dict(Counter(evidence["match_kind"] for item in rows for evidence in item["evidence"])), "query_rows": rows}  # 返回固定集合汇总和逐条审计行。

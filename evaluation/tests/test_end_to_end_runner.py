@@ -63,3 +63,12 @@ def test_pasa_identity_audit_accepts_only_deterministic_alias_or_sparse_exact_ti
     audit = audit_pasa_query(gold, prediction)  # 运行纯本地确定性身份审计。
     assert audit["true_positive"] == 2  # 验证只匹配两篇真实 Gold。
     assert audit["evidence_counts"] == {"arxiv_doi_alias": 1, "exact_title_sparse_gold": 1}  # 验证报告可区分两种修正来源。
+
+
+def test_pasa_sparse_title_audit_keeps_prediction_and_gold_matches_one_to_one() -> None:
+    """同一预测不得重复命中两个同标题的稀疏 PaSa Gold 记录。"""
+    gold = GoldQuery(query_id="pasa:one-to-one", query="synthetic query", relevant_papers=[EvaluationPaper(arxiv_id="1111.00001", title="Duplicated Sparse Title"), EvaluationPaper(arxiv_id="2222.00002", title="Duplicated Sparse Title")])  # 构造两个缺少年份作者的同标题稀疏 Gold。
+    prediction = PredictionRecord(query_id=gold.query_id, papers=[EvaluationPaper(openalex_id="W-one", title="Duplicated Sparse Title")])  # 构造只能提供一次命中的唯一预测。
+    audit = audit_pasa_query(gold, prediction)  # 执行 PaSa 专用一对一审计。
+    assert audit["true_positive"] == 1  # 验证一条预测不会重复扩大命中数。
+    assert audit["evidence"][0]["match_kind"] == "exact_title_sparse_gold"  # 验证该命中仅来自 PaSa 稀疏标题规则。
