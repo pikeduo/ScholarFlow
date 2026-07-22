@@ -6,7 +6,8 @@ from typing import Protocol  # 定义可离线替换的单轮召回服务边界�
 from backend.app.core.logging import logger  # 记录不含完整查询文本的持久化与事件发布异常。
 from backend.app.models.coverage import CoverageReport  # 传递累计候选的覆盖判断与停止原因。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 保持控制器对外稳定结果契约。
-from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 消费单轮召回、排序和核验结果。
+from backend.app.models.candidate_generation import CandidateGenerationResult  # 消费每轮严格停在 BGE-M3 前的候选边界。
+from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 消费最终一次排序、核验和覆盖结果。
 from backend.app.models.paper import PaperRecord, PaperSource  # 保存跨轮去重论文与来源状态。
 from backend.app.models.query_evolution import QueryEvolutionResult  # 返回查询演化服务的稳定结果。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 维护主查询与补充子查询。
@@ -19,10 +20,14 @@ from backend.app.services.search_run_store import SearchRunStateStore  # 持久�
 
 
 class SingleRoundRecallCoordinator(Protocol):
-    """定义多轮工作流所需的单轮召回服务能力。"""
+    """定义多轮工作流所需的候选召回与终态排序能力。"""
 
-    async def recall(self, query: QueryIntent) -> MultiSourceRecallResult:
-        """执行一轮已完成来源路由、融合、排序和核验的搜索。"""
+    async def recall_candidates(self, query: QueryIntent) -> CandidateGenerationResult:
+        """执行一轮来源路由、融合和规则过滤，不调用本地模型或 LLM。"""
+        ...  # 协议不承载适配器 HTTP、鉴权或供应商字段。
+
+    async def finalize_candidates(self, candidate_result: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """对全部轮次聚合候选只执行一次分层排序、核验和覆盖分析。"""
         ...  # 协议不承载适配器 HTTP、鉴权或供应商字段。
 
 
@@ -63,9 +68,13 @@ class MultiRoundSearchController:
         """按搜索模式返回已配置且已校验的硬轮次上限。"""
         return self._deep_max_rounds if query.search_mode == "deep" else self._standard_max_rounds  # 将模式策略集中在服务层。
 
-    async def recall_once(self, query: QueryIntent) -> MultiSourceRecallResult:
-        """委托已装配协调器执行一轮多源召回、排序和核验。"""
-        return await self._coordinator.recall(query)  # 保持来源调用、鉴权和排序细节位于服务与适配层。
+    async def recall_candidates_once(self, query: QueryIntent) -> CandidateGenerationResult:
+        """委托已装配协调器执行一轮排序前候选生成。"""
+        return await self._coordinator.recall_candidates(query)  # 每轮严格停在来源、融合与规则过滤边界。
+
+    async def finalize_candidates(self, candidate_result: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """委托已装配协调器在工作流终态统一执行一次排序和核验。"""
+        return await self._coordinator.finalize_candidates(candidate_result)  # 仅结果整理节点可进入本地模型和 DeepSeek 链路。
 
     def analyze_coverage(self, query: QueryIntent, papers: list[PaperRecord], *, new_valid_count: int, source_counts: dict[str, int], unavailable_sources: tuple[str, ...], current_round: int, max_rounds: int, budget_exhausted: bool, has_executable_query: bool) -> CoverageReport:
         """委托纯本地覆盖服务生成继续或停止决策。"""

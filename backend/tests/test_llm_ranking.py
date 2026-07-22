@@ -117,6 +117,19 @@ def test_rerank_continues_remaining_small_batches_after_one_batch_fails() -> Non
     assert result.papers[-1].constraint_status == "uncertain"  # 验证失败批不伪造已满足约束状态。
 
 
+def test_rerank_limits_external_verification_to_top_twenty_before_batching() -> None:
+    """上游保留超过二十篇时，DeepSeek 只能收到 Top-20 且最多两个十篇批次。"""
+    papers = [_paper(f"paper-{index}", 1.0 - index / 100) for index in range(24)]  # 构造 Cross Encoder 已排序但超过终态核验窗口的候选。
+    client = _PartiallyFailingAssessmentClient(failing_batch_index=99)  # 注入永不失败且记录输入批次的离线客户端。
+
+    result = asyncio.run(LlmPaperReranker(client=client, result_limit=20, batch_size=10).rerank(papers, _query(target_paper_count=20)))  # 执行不访问网络的终态核验。
+
+    assert [len(batch) for batch in client.received_batches] == [10, 10]  # 验证外部调用前先截断，而非处理完二十四篇后再截断输出。
+    assert result.input_count == 20 and result.call_count == 2  # 验证审计分母和实际 DeepSeek 调用次数均受 Top-20 边界限制。
+    assert result.truncated_count == 4  # 验证四篇未送入 DeepSeek 的上游候选也进入截断审计而不静默消失。
+    assert [paper.paper_id for paper in result.papers] == [f"paper-{index}" for index in range(20)]  # 验证窗口保留 Cross Encoder 排名最高的前二十篇。
+
+
 def test_rerank_returns_empty_result_without_calling_llm() -> None:
     """空候选应直接返回且不需要外部模型调用。"""
     result = asyncio.run(LlmPaperReranker(client=_FailingAssessmentClient()).rerank([], _query()))  # 即使客户端会失败也不应被调用。

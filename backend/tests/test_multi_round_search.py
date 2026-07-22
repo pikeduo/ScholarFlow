@@ -3,6 +3,7 @@
 import asyncio  # 在同步 pytest 用例中执行控制器协程。
 
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造单轮协调器固定结果。
+from backend.app.models.candidate_generation import CandidateGenerationResult  # 构造严格停在排序模型前的每轮候选。
 from backend.app.models.paper import PaperRecord  # 构造已核验的最终论文候选。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 构造主查询与待执行补充子查询。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计的来源计划。
@@ -18,13 +19,22 @@ class _StubCoordinator:
         """保存不访问网络、模型或文件系统的预设单轮结果。"""
         self._results = list(results)  # 复制结果列表避免测试调用期间外部修改。
         self.queries: list[QueryIntent] = []  # 记录控制器实际交给协调器的每轮查询。
+        self.finalize_call_count = 0  # 记录终态排序入口，确保不随轮次重复执行。
 
-    async def recall(self, query: QueryIntent) -> MultiSourceRecallResult:
-        """返回下一条固定结果并拒绝超出测试预期的调用。"""
+    async def recall_candidates(self, query: QueryIntent) -> CandidateGenerationResult:
+        """返回下一条严格排序前候选并拒绝超出测试预期的调用。"""
         self.queries.append(query)  # 保存当前轮查询供断言验证。
         if not self._results:  # 额外调用意味着控制器没有正确停止。
             raise AssertionError("控制器执行了未预期的额外轮次")  # 让测试立即暴露无限或重复检索风险。
-        return self._results.pop(0)  # 返回已完成排序与核验的离线结果。
+        result = self._results.pop(0)  # 取出测试预设的来源、论文和错误统计。
+        academic_counts = {source_name: result.source_counts.get(source_name, 0) for source_name in result.route_plan.academic_sources}  # 候选契约要求全部路由学术来源具有明确数量。
+        web_counts = {source_name: result.source_counts.get(source_name, 0) for source_name in result.route_plan.web_discovery_sources}  # 网页发现来源同样必须完整覆盖。
+        return CandidateGenerationResult(route_plan=result.route_plan, query_intent=query, papers=result.papers, discoveries=result.discoveries, academic_source_counts=academic_counts, web_discovery_source_counts=web_counts, academic_source_errors={name: message for name, message in result.source_errors.items() if name in academic_counts}, web_discovery_source_errors={name: message for name, message in result.source_errors.items() if name in web_counts}, cache_hit_count=result.cache_hit_count, normalized_candidate_count=sum(academic_counts.values()), deduplicated_candidate_count=len(result.papers), merged_candidate_count=max(0, sum(academic_counts.values()) - len(result.papers)), filtered_candidate_count=0, filter_reason_counts={}, work_family_count=len({paper.work_family_id for paper in result.papers if paper.work_family_id}))  # 用真实论文构造不含模型调用的候选边界。
+
+    async def finalize_candidates(self, candidate_result: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """将聚合候选直接作为离线终态排序结果并记录唯一调用。"""
+        self.finalize_call_count += 1  # 验证多轮结束后只执行一次终态排序入口。
+        return MultiSourceRecallResult(route_plan=candidate_result.route_plan, query_intent=candidate_result.query_intent, papers=candidate_result.papers, discoveries=candidate_result.discoveries, source_counts=candidate_result.source_counts, source_errors=candidate_result.source_errors, cache_hit_count=candidate_result.cache_hit_count, raw_paper_count=candidate_result.normalized_candidate_count, merged_paper_count=candidate_result.merged_candidate_count, filtered_paper_count=candidate_result.filtered_candidate_count, filter_reason_counts=candidate_result.filter_reason_counts, work_family_count=candidate_result.work_family_count)  # 保持测试只验证控制器边界而不加载模型。
 
 
 class _RecordingStateStore:
@@ -50,10 +60,14 @@ class _FailingCoordinator:
         """初始化调用计数，验证失败节点不会触发重试循环。"""
         self.call_count = 0  # 保存召回节点实际执行次数。
 
-    async def recall(self, _: QueryIntent) -> MultiSourceRecallResult:
+    async def recall_candidates(self, _: QueryIntent) -> CandidateGenerationResult:
         """记录调用并抛出不应泄露给 API 的内部异常。"""
         self.call_count += 1  # 记录工作流进入失败分支前的唯一来源调用。
         raise RuntimeError("模拟来源协调器内部故障")  # 触发 LangGraph 召回节点的安全失败路径。
+
+    async def finalize_candidates(self, _: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """失败分支不应进入终态排序，此方法一旦调用即暴露编排错误。"""
+        raise AssertionError("候选生成失败后不应执行终态排序")  # 验证失败隔离边界。
 
 
 class _StubSearchStrategyClient:
@@ -140,6 +154,7 @@ def test_controller_uses_a_third_gap_recovery_round_after_two_insufficient_round
     result = asyncio.run(MultiRoundSearchController(coordinator).run(_query(search_mode="deep", subqueries=[subquery])))  # 执行允许第三轮补足的搜索。
 
     assert len(coordinator.queries) == 3  # 验证两轮不足时仍会进入第三轮补足。
+    assert coordinator.finalize_call_count == 1  # 验证三轮只在终态统一执行一次排序和核验。
     assert coordinator.queries[2].retrieval_round == 3 and coordinator.queries[2].source_recall_count == 1  # 验证第三轮按剩余一篇的缺口缩小单源返回上限。
     assert [paper.paper_id for paper in result.papers] == ["paper-1-updated"]  # 验证同 DOI 记录更新而不虚增累计数量。
     assert result.run_state.stop_reason == "已达到最大搜索轮次"  # 验证第三轮结束后保留不足结果并受硬轮次上限保护。

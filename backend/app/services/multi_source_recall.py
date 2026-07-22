@@ -1,6 +1,7 @@
 """协调排序前候选生成、分层排序、约束核验与覆盖缺口分析。"""
 
 from backend.app.core.logging import logger  # 记录不包含查询正文和论文文本的阶段统计。
+from backend.app.models.candidate_generation import CandidateGenerationResult  # 显式暴露排序前候选边界给多轮控制器。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造现有公共多源搜索响应。
 from backend.app.models.query_intent import QueryIntent  # 接收已完成查询规划的统一意图。
 from backend.app.services.candidate_generation import CandidateGenerationService  # 复用规则过滤后、BGE-M3 前的共享候选边界。
@@ -44,7 +45,28 @@ class MultiSourceRecallCoordinator:
         返回：
             MultiSourceRecallResult：最终论文、独立网页发现、来源统计和排序降级信息。
         """
-        candidate_result = await self._candidate_generation_service.generate(query)  # 仅执行到规则过滤后的共享候选边界。
+        candidate_result = await self.recall_candidates(query)  # 复用公开候选边界，保持单轮搜索仍执行完整排序链。
+        return await self.finalize_candidates(candidate_result)  # 兼容既有单轮调用方的完整结果契约。
+
+    async def recall_candidates(self, query: QueryIntent) -> CandidateGenerationResult:
+        """只执行来源召回、融合与规则过滤，供多轮流程累计候选。
+
+        参数：
+            query：当前轮已经校验的来源检索意图。
+        返回：
+            CandidateGenerationResult：严格停在 BGE-M3 前的候选边界。
+        """
+        return await self._candidate_generation_service.generate(query)  # 多轮不得在每轮重复加载本地模型或调用 DeepSeek。
+
+    async def finalize_candidates(self, candidate_result: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """对已汇总的候选集合只执行一次完整排序与约束核验。
+
+        参数：
+            candidate_result：可来自单轮生成或多轮去重后的聚合候选边界。
+        返回：
+            MultiSourceRecallResult：包含最终论文、排序审计与覆盖分析的稳定结果。
+        """
+        query = candidate_result.query_intent  # 统一使用聚合候选冻结的完整约束进行最终排序和核验。
         ranking_result = self._semantic_ranker.rank(candidate_result.papers, query, enabled=query.enable_semantic_ranking, disabled_reason="用户未启用 BGE-M3 语义粗排，已按 RRF 排序")  # 保持现有 BGE-M3 开关和降级摘要。
         cross_encoder_result = self._cross_encoder_reranker.rerank(ranking_result.papers, query, enabled=query.enable_cross_encoder_ranking, disabled_reason="用户未启用 Cross Encoder 重排，已沿用 BGE-M3 或 RRF 排序")  # 保持现有 Cross Encoder 开关和降级摘要。
         llm_result = await self._llm_reranker.rerank(cross_encoder_result.papers, query)  # 保持现有 LLM 约束核验、理由生成和截断行为。

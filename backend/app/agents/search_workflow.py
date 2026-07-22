@@ -6,13 +6,15 @@ from typing import NotRequired, Protocol, TypedDict  # 声明节点状态与可�
 from langgraph.graph import END, START, StateGraph  # 使用 LangGraph 定义有界循环和条件路由。
 
 from backend.app.core.logging import logger  # 记录不含完整查询的节点失败堆栈和轮次统计。
+from backend.app.models.candidate_generation import CandidateGenerationResult  # 保存每轮严格停在 BGE-M3 前的候选结果。
 from backend.app.models.coverage import CoverageReport  # 保存累计候选的覆盖判断与停止原因。
 from backend.app.models.discovery import SupplementalDiscoveryItem  # 保持网页补充发现与论文结果分离。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 回传 REST 与 SSE 共用的最终结果契约。
-from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 保存单轮召回、排序和核验完成后的结果。
+from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 保存终态一次排序、核验和覆盖完成后的结果。
 from backend.app.models.paper import PaperRecord, PaperSource  # 保存跨轮身份去重后的论文与来源状态。
 from backend.app.models.query_evolution import QueryEvolutionResult  # 保存缺口驱动的安全补充查询结果。
 from backend.app.models.query_intent import QueryIntent, QuerySubquery  # 接收执行意图并维护待执行子查询。
+from backend.app.models.source_routing import SourceRoutePlan  # 在终态聚合各轮真实来源计划。
 from backend.app.models.search_run import SearchRunState  # 保存可恢复、可持久化的运行状态。
 from backend.app.services.multi_round_search import _accumulate_source_counts, _append_pending_subqueries, _append_sources, _degraded_sources, _merge_round_papers, _query_for_round, _query_for_subquery, _remaining_source_recall_count  # 复用既有身份、来源、轮次和子查询领域规则。
 from backend.app.services.search_events import SearchRunEventPublisher  # 沿用安全进度事件发布边界。
@@ -25,8 +27,12 @@ class MultiRoundSearchExecutor(Protocol):
         """返回当前搜索模式允许的硬轮次上限。"""
         ...  # 轮次策略仍由服务层配置和校验。
 
-    async def recall_once(self, query: QueryIntent) -> MultiSourceRecallResult:
-        """执行一轮已完成路由、召回、排序和核验的搜索。"""
+    async def recall_candidates_once(self, query: QueryIntent) -> CandidateGenerationResult:
+        """执行一轮来源召回、融合和规则过滤，不加载排序模型或调用 LLM。"""
+        ...  # 节点不直接承载 HTTP、认证或供应商响应解析。
+
+    async def finalize_candidates(self, candidate_result: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """对全部轮次聚合候选执行唯一一次分层排序、核验和覆盖分析。"""
         ...  # 节点不直接承载 HTTP、认证或供应商响应解析。
 
     def analyze_coverage(self, query: QueryIntent, papers: list[PaperRecord], *, new_valid_count: int, source_counts: dict[str, int], unavailable_sources: tuple[str, ...], current_round: int, max_rounds: int, budget_exhausted: bool, has_executable_query: bool) -> CoverageReport:
@@ -60,12 +66,13 @@ class SearchWorkflowState(TypedDict):
     source_counts: dict[str, int]  # 保存跨轮累计来源成功数量。
     source_errors: dict[str, str]  # 保存来源最后一次安全错误摘要。
     selected_sources: list[PaperSource]  # 保存实际参与检索的学术来源顺序。
+    candidate_results: list[CandidateGenerationResult]  # 保存每轮候选审计，用于终态构造可校验聚合边界。
     coverage_report: CoverageReport | None  # 保存当前累计候选的覆盖报告。
     budget_exhausted: bool  # 保存调用前已确定的预算状态。
     started_at: float  # 保存 HTTP 入口开始处理本次搜索时的单调时钟时间点。
     event_publisher: SearchRunEventPublisher | None  # 透传 SSE 或未来 Redis 事件发布器。
     should_stop: bool  # 保存条件边是否应进入结果整理节点。
-    round_result: NotRequired[MultiSourceRecallResult]  # 仅在召回节点成功后保存本轮结果。
+    round_result: NotRequired[CandidateGenerationResult]  # 仅在候选召回节点成功后保存本轮结果。
     result: NotRequired[MultiRoundSearchResult]  # 仅在结果整理节点保存最终响应。
 
 
@@ -97,7 +104,7 @@ class MultiRoundSearchWorkflow:
         """创建带召回—评估—演化循环和显式停止条件的 LangGraph。"""
         graph = StateGraph(SearchWorkflowState)  # 使用明确 TypedDict 管理节点输入与输出。
         graph.add_node("initialize_run", self._initialize_run)  # 创建状态快照并发布运行创建事件。
-        graph.add_node("parallel_search", self._parallel_search)  # 执行一次多源召回、融合、排序和核验。
+        graph.add_node("parallel_search", self._parallel_search)  # 执行一次多源召回、融合和规则过滤。
         graph.add_node("assess_coverage", self._assess_coverage)  # 合并累计候选、评估覆盖并判断硬停止条件。
         graph.add_node("evolve_query", self._evolve_query)  # 在仍可继续时生成并选择下一条唯一子查询。
         graph.add_node("compose_results", self._compose_results)  # 统一发布最终事件并构造稳定结果响应。
@@ -116,15 +123,15 @@ class MultiRoundSearchWorkflow:
         run_state = SearchRunState(query_intent=query, search_mode=query.search_mode, max_rounds=max_rounds, status="running")  # 创建初始可恢复状态。
         self._executor.persist_state(run_state)  # 在外部来源调用前保存运行关联标识。
         self._executor.publish_event(state["event_publisher"], run_state, "run_created", "initialize_run", "已创建搜索运行", progress=0.0)  # 发送不含查询正文的首个进度事件。
-        return {"current_query": _query_for_round(query, retrieval_round=1), "run_state": run_state, "pending_subqueries": list(query.subqueries), "executed_subqueries": [query.normalized_query], "accumulated_papers": [], "paper_index": {}, "discoveries": [], "source_counts": {}, "source_errors": {}, "selected_sources": [], "coverage_report": None, "should_stop": False}  # 初始化后续节点所需的受控状态，并让来源路由器识别首轮。
+        return {"current_query": _query_for_round(query, retrieval_round=1), "run_state": run_state, "pending_subqueries": list(query.subqueries), "executed_subqueries": [query.normalized_query], "accumulated_papers": [], "paper_index": {}, "discoveries": [], "source_counts": {}, "source_errors": {}, "selected_sources": [], "candidate_results": [], "coverage_report": None, "should_stop": False}  # 初始化后续节点所需的受控状态，并让来源路由器识别首轮。
 
     async def _parallel_search(self, state: SearchWorkflowState) -> dict[str, object]:
-        """调用一轮多源搜索，内部故障时将状态安全转为可返回终态。"""
+        """调用一轮排序前候选生成，内部故障时将状态安全转为可返回终态。"""
         run_state = state["run_state"]  # 读取上一节点持久化的最新状态。
         next_round = run_state.current_round + 1  # 计算即将开始的合法轮次编号。
         self._executor.publish_event(state["event_publisher"], run_state, "node_started", "parallel_search", "开始执行一轮多源检索", current_round=next_round, progress=(next_round - 1) / run_state.max_rounds)  # 在来源调用前发布节点开始事件。
         try:  # 保护工作流免受服务层未预期异常影响。
-            round_result = await self._executor.recall_once(state["current_query"])  # 服务层继续隔离来源、模型和排序细节。
+            round_result = await self._executor.recall_candidates_once(state["current_query"])  # 每轮严格停在来源、融合和规则过滤边界。
         except Exception:  # 内部错误不得触发重试循环或泄露实现细节。
             logger.exception("LangGraph 多轮搜索召回节点失败：轮次=%d", next_round)  # 记录安全轮次和完整受控堆栈。
             failed_state = run_state.model_copy(update={"status": "failed", "current_round": next_round, "stop_reason": "搜索执行出现内部错误", "errors": [*run_state.errors, "搜索执行出现内部错误"], "latency_ms": _elapsed_latency_ms(state["started_at"])})  # 构造可恢复失败状态。
@@ -144,7 +151,7 @@ class MultiRoundSearchWorkflow:
         source_counts = state["source_counts"]  # 累计来源成功数量。
         source_errors = state["source_errors"]  # 累计来源安全错误摘要。
         selected_sources = state["selected_sources"]  # 记录实际参与的学术来源。
-        new_valid_count = _merge_round_papers(accumulated_papers, paper_index, round_result.papers)  # 合并论文并计算真实新增数量。
+        new_valid_count = _merge_round_papers(accumulated_papers, paper_index, round_result.papers)  # 合并排序前论文并计算真实新增候选数量。
         discoveries = [*state["discoveries"], *round_result.discoveries]  # 网页发现独立累积且不进入论文去重。
         _accumulate_source_counts(source_counts, round_result.source_counts)  # 合并每轮来源成功计数。
         source_errors.update(round_result.source_errors)  # 保留来源最后一次安全错误。
@@ -152,15 +159,15 @@ class MultiRoundSearchWorkflow:
         next_round = run_state.current_round + 1  # 当前轮次在评估成功后才正式写入状态。
         coverage_report = self._executor.analyze_coverage(state["query"], accumulated_papers, new_valid_count=new_valid_count, source_counts=source_counts, unavailable_sources=tuple(source_errors), current_round=next_round, max_rounds=run_state.max_rounds, budget_exhausted=state["budget_exhausted"], has_executable_query=True)  # 基于累计候选而非单轮结果判断覆盖。
         source_request_count = len(round_result.route_plan.academic_sources) + len(round_result.route_plan.web_discovery_sources)  # 统计本轮理论需要访问的来源数量。
-        updated_state = run_state.model_copy(update={"current_round": next_round, "selected_sources": selected_sources, "executed_subqueries": state["executed_subqueries"], "normalized_papers": accumulated_papers, "candidate_ids": [paper.paper_id for paper in accumulated_papers], "final_papers": accumulated_papers, "api_call_count": run_state.api_call_count + max(0, source_request_count - round_result.cache_hit_count), "token_usage": run_state.token_usage + round_result.llm_prompt_tokens + round_result.llm_completion_tokens, "estimated_cost_cny": round(run_state.estimated_cost_cny + round_result.llm_estimated_cost_cny, 8), "peak_pricing_applied": run_state.peak_pricing_applied or round_result.llm_peak_pricing_applied, "latency_ms": _elapsed_latency_ms(state["started_at"]), "cache_hits": run_state.cache_hits + round_result.cache_hit_count, "warnings": run_state.warnings, "errors": [*run_state.errors, *round_result.source_errors.values()], "degraded_sources": _degraded_sources(selected_sources, source_errors), "coverage_report": coverage_report})  # 写入可恢复统计、累计候选及本轮已发生的费用。
+        updated_state = run_state.model_copy(update={"current_round": next_round, "selected_sources": selected_sources, "executed_subqueries": state["executed_subqueries"], "normalized_papers": accumulated_papers, "candidate_ids": [paper.paper_id for paper in accumulated_papers], "final_papers": [], "api_call_count": run_state.api_call_count + max(0, source_request_count - round_result.cache_hit_count), "latency_ms": _elapsed_latency_ms(state["started_at"]), "cache_hits": run_state.cache_hits + round_result.cache_hit_count, "warnings": run_state.warnings, "errors": [*run_state.errors, *round_result.source_errors.values()], "degraded_sources": _degraded_sources(selected_sources, source_errors), "coverage_report": coverage_report})  # 中间快照只保存候选，不得将未排序论文伪装为最终结果或累计 LLM 用量。
         self._executor.persist_state(updated_state)  # 在每轮完整统计形成后保存轻量快照。
-        self._executor.publish_event(state["event_publisher"], updated_state, "node_completed", "assess_coverage", "本轮检索、核验和覆盖分析已完成", current_round=next_round, progress=next_round / updated_state.max_rounds, metrics={"new_valid_count": new_valid_count, "candidate_count": len(accumulated_papers), "source_error_count": len(source_errors)})  # 发布不含论文详情的轮次统计。
-        logger.info("LangGraph 多轮搜索完成一轮：轮次=%d，新增高质量论文=%d，累计论文=%d，来源错误=%d，是否建议继续=%s", next_round, new_valid_count, len(accumulated_papers), len(source_errors), coverage_report.should_continue)  # 仅记录计数与布尔控制状态。
+        self._executor.publish_event(state["event_publisher"], updated_state, "node_completed", "assess_coverage", "本轮候选生成和覆盖分析已完成", current_round=next_round, progress=next_round / updated_state.max_rounds, metrics={"new_candidate_count": new_valid_count, "candidate_count": len(accumulated_papers), "source_error_count": len(source_errors)})  # 发布不含论文详情的轮次候选统计。
+        logger.info("LangGraph 多轮候选生成完成：轮次=%d，新增候选=%d，累计候选=%d，来源错误=%d，是否建议继续=%s", next_round, new_valid_count, len(accumulated_papers), len(source_errors), coverage_report.should_continue)  # 排序和核验仅留待终态执行一次。
         if coverage_report.stop_reason is not None:  # 目标、预算、来源、边际收益或轮次上限触发时立即停止。
             completed_state = updated_state.model_copy(update={"status": "completed", "stop_reason": coverage_report.stop_reason})  # 保持当前最佳结果并设置可解释停止原因。
             self._executor.persist_state(completed_state)  # 保存正常终态供轮询、SSE 和恢复读取。
-            return {"run_state": completed_state, "accumulated_papers": accumulated_papers, "paper_index": paper_index, "discoveries": discoveries, "source_counts": source_counts, "source_errors": source_errors, "selected_sources": selected_sources, "coverage_report": coverage_report, "should_stop": True}  # 由条件边直接进入结果整理。
-        return {"run_state": updated_state, "accumulated_papers": accumulated_papers, "paper_index": paper_index, "discoveries": discoveries, "source_counts": source_counts, "source_errors": source_errors, "selected_sources": selected_sources, "coverage_report": coverage_report, "should_stop": False}  # 进入查询演化节点尝试补足缺口。
+            return {"run_state": completed_state, "accumulated_papers": accumulated_papers, "paper_index": paper_index, "discoveries": discoveries, "source_counts": source_counts, "source_errors": source_errors, "selected_sources": selected_sources, "candidate_results": [*state["candidate_results"], round_result], "coverage_report": coverage_report, "should_stop": True}  # 由条件边直接进入唯一终态排序节点。
+        return {"run_state": updated_state, "accumulated_papers": accumulated_papers, "paper_index": paper_index, "discoveries": discoveries, "source_counts": source_counts, "source_errors": source_errors, "selected_sources": selected_sources, "candidate_results": [*state["candidate_results"], round_result], "coverage_report": coverage_report, "should_stop": False}  # 进入查询演化节点尝试补足候选覆盖。
 
     async def _evolve_query(self, state: SearchWorkflowState) -> dict[str, object]:
         """生成下一轮唯一子查询；无法继续时重新计算准确停止原因。"""
@@ -190,11 +197,21 @@ class MultiRoundSearchWorkflow:
         return {"run_state": run_state, "current_query": _query_for_subquery(state["query"], next_subquery, retrieval_round=next_round, source_recall_count=next_source_recall_count), "pending_subqueries": pending_subqueries, "executed_subqueries": executed_subqueries, "should_stop": False}  # 回到召回节点执行唯一补充表达，并保留策略用量进入后续轮次。
 
     async def _compose_results(self, state: SearchWorkflowState) -> dict[str, object]:
-        """发布终态事件并构造不额外调用来源的稳定最终结果。"""
-        run_state = state["run_state"].model_copy(update={"latency_ms": _elapsed_latency_ms(state["started_at"])})  # 在终态事件与结果快照前更新完整端到端耗时。
+        """在候选累计结束后统一排序、核验并构造稳定最终结果。"""
+        if state["run_state"].status == "failed":  # 候选生成失败时不得错误触发本地模型或 DeepSeek。
+            final_papers: list[PaperRecord] = []  # 失败运行不伪造最终论文。
+            final_coverage = state["coverage_report"]  # 保留失败前最后一个安全覆盖摘要。
+            final_ranking: MultiSourceRecallResult | None = None  # 明确本路径没有终态排序审计。
+        else:
+            aggregated_candidates = _aggregate_candidate_results(state["query"], state["candidate_results"], state["accumulated_papers"], state["discoveries"])  # 按跨轮身份去重后的候选构造可校验终态排序输入。
+            final_ranking = await self._executor.finalize_candidates(aggregated_candidates)  # BGE、Cross Encoder 与 DeepSeek 只在此处各执行一次。
+            final_papers = final_ranking.papers  # 只将终态核验后的论文写入最终响应和 SQLite 快照。
+            preserve_hard_stop_reason = state["run_state"].stop_reason in {"搜索预算已达到上限", "已达到最大搜索轮次", "可用学术来源不足"}  # 预算、轮次和全部来源不可用已在候选阶段确认，终态核验不得改写为查询演化不足。
+            final_coverage = self._executor.analyze_coverage(state["query"], final_papers, new_valid_count=len(final_papers), source_counts=state["source_counts"], unavailable_sources=tuple(state["source_errors"]), current_round=state["run_state"].current_round, max_rounds=state["run_state"].max_rounds, budget_exhausted=state["budget_exhausted"], has_executable_query=preserve_hard_stop_reason)  # 使用最终高相关论文重算展示覆盖；已确认硬停止时不让“无新查询”抢占其原因。
+        run_state = state["run_state"].model_copy(update={"status": "completed" if state["run_state"].status != "failed" else "failed", "stop_reason": final_coverage.stop_reason if final_coverage is not None and final_coverage.stop_reason is not None else state["run_state"].stop_reason, "final_papers": final_papers, "token_usage": state["run_state"].token_usage + (0 if final_ranking is None else final_ranking.llm_prompt_tokens + final_ranking.llm_completion_tokens), "estimated_cost_cny": round(state["run_state"].estimated_cost_cny + (0.0 if final_ranking is None else final_ranking.llm_estimated_cost_cny), 8), "peak_pricing_applied": state["run_state"].peak_pricing_applied or (False if final_ranking is None else final_ranking.llm_peak_pricing_applied), "latency_ms": _elapsed_latency_ms(state["started_at"]), "coverage_report": final_coverage, "warnings": state["run_state"].warnings, "errors": state["run_state"].errors})  # 仅在终态合并一次 LLM 用量、成本、结果和最终覆盖报告。
         self._executor.persist_state(run_state)  # 将最终耗时写回 SQLite 快照供后续只读用量接口读取。
-        self._executor.publish_event(state["event_publisher"], run_state, "completed" if run_state.status == "completed" else "failed", "compose_results", run_state.stop_reason or "搜索已完成", progress=1.0, metrics={"final_paper_count": len(state["accumulated_papers"])})  # 统一发布一次终态事件。
-        result = MultiRoundSearchResult(run_state=run_state, query_intent=state["query"], papers=state["accumulated_papers"], discoveries=state["discoveries"], source_counts=state["source_counts"], source_errors=state["source_errors"], coverage_report=state["coverage_report"])  # 复用原 API 契约且不额外检索。
+        self._executor.publish_event(state["event_publisher"], run_state, "completed" if run_state.status == "completed" else "failed", "compose_results", run_state.stop_reason or "搜索已完成", progress=1.0, metrics={"final_paper_count": len(final_papers)})  # 统一发布一次终态事件，数量只使用最终核验论文。
+        result = MultiRoundSearchResult(run_state=run_state, query_intent=state["query"], papers=final_papers, discoveries=state["discoveries"], source_counts=state["source_counts"], source_errors=state["source_errors"], coverage_report=final_coverage)  # 复用原 API 契约且不额外检索。
         return {"result": result}  # 写入唯一最终结果供 run 方法读取。
 
     def _route_after_assessment(self, state: SearchWorkflowState) -> str:
@@ -210,3 +227,71 @@ def _elapsed_latency_ms(started_at: float) -> int:
     """返回从 HTTP 入口开始到当前节点的非负端到端耗时毫秒数。"""
 
     return max(0, int((perf_counter() - started_at) * 1000))  # 防御极少数计时精度边界，保持 API 契约非负。
+
+
+def _aggregate_candidate_results(query: QueryIntent, round_results: list[CandidateGenerationResult], papers: list[PaperRecord], discoveries: list[SupplementalDiscoveryItem]) -> CandidateGenerationResult:
+    """将各轮排序前候选合并为一次可校验的终态排序输入。
+
+    参数：
+        query：用于终态 BGE、Cross Encoder 和 LLM 核验的原始完整约束。
+        round_results：每轮已完成来源、融合和规则过滤的可审计候选结果。
+        papers：跨轮按身份去重后的最终排序输入候选。
+        discoveries：跨轮累积但始终不进入论文排序的网页发现项。
+    返回：
+        CandidateGenerationResult：保留跨轮来源审计且严格停在排序模型之前的聚合边界。
+    异常：
+        SearchWorkflowError：没有成功候选轮次时抛出，阻止构造虚假的路由计划。
+    """
+    if not round_results:  # 正常完成至少应含一轮候选生成，空集合只能来自编排错误。
+        raise SearchWorkflowError("搜索工作流未生成可供终态排序的候选")  # 不使用伪造来源或空计划掩盖节点状态错误。
+    academic_sources: list[PaperSource] = []  # 按首次参与顺序保留全部真实学术来源。
+    web_sources: list[str] = []  # 网页发现来源保持独立路由类别，最终只用于审计。
+    selection_reasons: dict[str, str] = {}  # 合并每轮可展示的来源选择理由。
+    unavailable_reasons: dict[str, str] = {}  # 合并每轮不启用来源的安全说明。
+    academic_source_counts: dict[str, int] = {}  # 累计每个真实学术来源映射的论文数量。
+    web_discovery_source_counts: dict[str, int] = {}  # 累计每个补充网页来源的发现数量。
+    academic_source_errors: dict[str, str] = {}  # 保留各学术来源最后一次安全错误摘要。
+    web_discovery_source_errors: dict[str, str] = {}  # 保留各网页来源最后一次安全错误摘要。
+    filter_reason_counts: dict[str, int] = {}  # 汇总各轮确定性过滤的首个失败原因。
+    cache_hit_count = 0  # 累计各轮来源响应缓存命中。
+    normalized_candidate_count = 0  # 累计各轮进入融合前的统一论文数量。
+    filtered_candidate_count = 0  # 累计各轮由确定性规则移除的论文数量。
+    for result in round_results:  # 保持轮次顺序汇总来源和阶段审计。
+        for source_name in result.route_plan.academic_sources:  # 学术来源可跨轮复用但终态计划只记录一次。
+            if source_name not in academic_sources:  # 首次出现决定稳定展示顺序。
+                academic_sources.append(source_name)  # 保留实际进入论文候选的来源。
+        for source_name in result.route_plan.web_discovery_sources:  # 网页来源也按首次出现顺序保留。
+            if source_name not in web_sources:  # 防止跨轮重复来源污染路由契约。
+                web_sources.append(source_name)  # 保留独立网页发现来源。
+        selection_reasons.update(result.route_plan.selection_reasons)  # 同名来源以最近实际轮次的理由为准。
+        unavailable_reasons.update(result.route_plan.unavailable_reasons)  # 保留可展示的未启用说明。
+        _accumulate_source_counts(academic_source_counts, result.academic_source_counts)  # 汇总学术来源数量且不混入网页发现。
+        _accumulate_source_counts(web_discovery_source_counts, result.web_discovery_source_counts)  # 汇总网页发现数量且不混入论文。
+        academic_source_errors.update(result.academic_source_errors)  # 保留最后一次安全学术来源错误。
+        web_discovery_source_errors.update(result.web_discovery_source_errors)  # 保留最后一次安全网页来源错误。
+        _accumulate_source_counts(filter_reason_counts, result.filter_reason_counts)  # 复用非负计数累加规则汇总过滤原因。
+        cache_hit_count += result.cache_hit_count  # 缓存命中按真实来源调用轮次累积。
+        normalized_candidate_count += result.normalized_candidate_count  # 保留供应商映射后的真实候选分母。
+        filtered_candidate_count += result.filtered_candidate_count  # 保留规则过滤审计分母。
+    deduplicated_candidate_count = filtered_candidate_count + len(papers)  # 跨轮身份去重后，候选只能进入规则过滤或终态排序输入二者之一。
+    merged_candidate_count = normalized_candidate_count - deduplicated_candidate_count  # 剩余数量恰为轮内与跨轮身份融合合并的记录。
+    if merged_candidate_count < 0:  # 防御未来统计字段改变导致无法解释的阶段数量关系。
+        raise SearchWorkflowError("跨轮候选统计无法满足融合边界")  # 阻止将不一致计数交给终态模型调用。
+    route_plan = SourceRoutePlan(academic_sources=academic_sources, web_discovery_sources=web_sources, selection_reasons=selection_reasons, unavailable_reasons=unavailable_reasons)  # 构造覆盖全部真实来源的终态可审计路由。
+    return CandidateGenerationResult(  # 继续复用统一候选契约，避免终态排序绕过阶段边界。
+        route_plan=route_plan,
+        query_intent=query,
+        papers=papers,
+        discoveries=discoveries,
+        academic_source_counts=academic_source_counts,
+        web_discovery_source_counts=web_discovery_source_counts,
+        academic_source_errors=academic_source_errors,
+        web_discovery_source_errors=web_discovery_source_errors,
+        cache_hit_count=cache_hit_count,
+        normalized_candidate_count=normalized_candidate_count,
+        deduplicated_candidate_count=deduplicated_candidate_count,
+        merged_candidate_count=merged_candidate_count,
+        filtered_candidate_count=filtered_candidate_count,
+        filter_reason_counts=filter_reason_counts,
+        work_family_count=len({paper.work_family_id for paper in papers if paper.work_family_id}),
+    )
