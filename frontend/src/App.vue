@@ -25,7 +25,7 @@ function scrollToBottom() { // 平滑滚动到页面文档底部。
   <!-- 根组件只负责全局应用框架，页面业务保持在独立组件中。 -->
   <div class="app-frame">
     <header class="topbar">
-      <a class="brand" href="http://localhost:5173/" aria-label="前往首页">
+      <a class="brand" href="http://127.0.0.1:30000/" aria-label="前往首页">
         <span class="brand-mark" aria-hidden="true">研</span>
       </a>
       <nav class="primary-nav" aria-label="主要功能">

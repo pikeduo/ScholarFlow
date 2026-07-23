@@ -47,6 +47,16 @@ class _PlannedQuery(BaseModel):
     complexity_score: float = Field(default=0.0, ge=0.0, le=1.0)  # 保存查询复杂度。
     subqueries: list[QuerySubquery] = Field(default_factory=list)  # 保存最多三条英文子查询。
 
+    @field_validator("year_range", mode="before")
+    @classmethod
+    def normalize_year_range(cls, value: object) -> object:
+        """兼容 DeepSeek 将年份闭区间表示为 start/end 对象的常见输出。"""
+        if not isinstance(value, dict):  # 列表、元组、空值与其他异常形状继续交由 Pydantic 严格校验。
+            return value  # 不改变已经符合领域契约或需要报错的值。
+        if "start" not in value or "end" not in value:  # 缺少任一边界不能猜测年份含义。
+            return value  # 保留原始对象以产生可定位的结构校验错误。
+        return [value["start"], value["end"]]  # 转换为 QueryIntent 使用的有序闭区间。
+
     @field_validator("paper_types", mode="before")
     @classmethod
     def normalize_paper_types(cls, value: object) -> object:
@@ -189,7 +199,7 @@ class DeepSeekQueryPlanningClient:
         )
 
 
-_SYSTEM_PROMPT = """你是学术检索 Query Agent。只输出 JSON，不输出 Markdown 或思维过程。将中文或英文问题解析为结构化计划；所有用于学术 API 的主题、方法、任务、数据集、领域和 normalized_query 必须使用规范、简洁的英文术语。不要把“优先”误作硬约束。只有用户明确限定论文类型时才填写 paper_types，不得因为普通“论文”或“研究”措辞推断 article；paper_types 只能使用 article、conference、preprint、review。must_include 只提取用户明确要求逐字包含的术语，方法、任务和数据集分别放入对应字段。complexity_score 必须是 0 到 1。subqueries 最多三条英文查询，每条必须包含 query、language='en' 和 purpose，purpose 只能是 method、dataset、citation。输出字段必须包含 normalized_query、query_language、research_topics、methods、tasks、datasets、authors、institutions、venues、paper_types、year_range、must_include、should_include、exclude、domains、complexity_score、subqueries。"""  # 定义稳定查询规划边界。
+_SYSTEM_PROMPT = """你是学术检索 Query Agent。只输出 JSON，不输出 Markdown 或思维过程。将中文或英文问题解析为结构化计划；所有用于学术 API 的主题、方法、任务、数据集、领域和 normalized_query 必须使用规范、简洁的英文术语。不要把“优先”误作硬约束。只有用户明确限定论文类型时才填写 paper_types，不得因为普通“论文”或“研究”措辞推断 article；paper_types 只能使用 article、conference、preprint、review。must_include 只提取用户明确要求逐字包含的术语，方法、任务和数据集分别放入对应字段。year_range 必须为 [起始年份, 结束年份] 数组或 null，不能使用 start/end 对象。complexity_score 必须是 0 到 1。subqueries 最多三条英文查询，每条必须包含 query、language='en' 和 purpose，purpose 只能是 method、dataset、citation。输出字段必须包含 normalized_query、query_language、research_topics、methods、tasks、datasets、authors、institutions、venues、paper_types、year_range、must_include、should_include、exclude、domains、complexity_score、subqueries。"""  # 定义稳定查询规划边界。
 
 
 def _merge_terms(first: list[str], second: list[str]) -> list[str]:

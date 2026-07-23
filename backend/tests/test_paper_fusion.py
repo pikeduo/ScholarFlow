@@ -75,6 +75,18 @@ def test_fusion_normalizes_arxiv_versions_and_uses_source_weights() -> None:
     assert result.papers[0].rrf_score == pytest.approx(2 / 11 + 0.5 / 13)  # 验证来源权重仅影响对应来源的 RRF 贡献。
 
 
+def test_fusion_merges_arxiv_doi_alias_without_erasing_source_identifiers() -> None:
+    """DataCite arXiv DOI 与显式 arXiv 可融合，DOI 和来源 ID 均应保留。"""
+    doi_record = _record("openalex", "W-alias", doi="10.48550/arXiv.1805.12152", openalex_id="W-alias")  # 构造没有显式 arXiv 字段的 DOI 记录。
+    arxiv_record = _record("semantic_scholar", "S2-alias", arxiv_id="1805.12152v1", semantic_scholar_id="S2-alias")  # 构造携带版本号的显式 arXiv 记录。
+    result = PaperFusionService().fuse([doi_record, arxiv_record])  # 运行生产身份融合。
+    fused = result.papers[0]  # 读取唯一融合结果。
+    assert result.fused_count == 1  # 验证 DOI 别名与 arXiv ID 确定性合并。
+    assert fused.doi == "10.48550/arXiv.1805.12152"  # 验证供应商 DOI 原值未被覆盖。
+    assert fused.arxiv_id == "1805.12152v1"  # 验证供应商 arXiv 原值未被规范化回写。
+    assert fused.openalex_id == "W-alias" and fused.semantic_scholar_id == "S2-alias"  # 验证两类平台 ID 同时保留。
+
+
 def test_fusion_uses_title_year_and_first_author_only_when_cross_source_ids_are_missing() -> None:
     """无跨源 ID 的相同标题、年份和首作者应融合；有 DOI 的记录不应被标题回退误合并。"""
     title_only_openalex = _record(  # 构造缺少 DOI、arXiv 和 PMID 的 OpenAlex 记录。

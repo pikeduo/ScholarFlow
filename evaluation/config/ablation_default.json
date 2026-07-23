@@ -1,0 +1,61 @@
+{
+  "matrix_id": "local-ranking-abcd",
+  "experiments": [
+    {
+      "experiment_id": "A",
+      "label": "RRF",
+      "ranking_config": {
+        "source_recall_count": 50,
+        "semantic_ranking_enabled": false,
+        "semantic_top_k": 40,
+        "cross_encoder_ranking_enabled": false,
+        "cross_encoder_top_k": 20,
+        "deepseek_enabled": false,
+        "target_paper_count": 20,
+        "evaluation_top_k": [5, 10, 20]
+      }
+    },
+    {
+      "experiment_id": "B",
+      "label": "RRF + BGE-M3",
+      "ranking_config": {
+        "source_recall_count": 50,
+        "semantic_ranking_enabled": true,
+        "semantic_top_k": 40,
+        "cross_encoder_ranking_enabled": false,
+        "cross_encoder_top_k": 20,
+        "deepseek_enabled": false,
+        "target_paper_count": 20,
+        "evaluation_top_k": [5, 10, 20]
+      }
+    },
+    {
+      "experiment_id": "C",
+      "label": "RRF + Cross Encoder",
+      "ranking_config": {
+        "source_recall_count": 50,
+        "semantic_ranking_enabled": false,
+        "semantic_top_k": 40,
+        "cross_encoder_ranking_enabled": true,
+        "cross_encoder_top_k": 20,
+        "deepseek_enabled": false,
+        "target_paper_count": 20,
+        "evaluation_top_k": [5, 10, 20]
+      }
+    },
+    {
+      "experiment_id": "D",
+      "label": "RRF + BGE-M3 + Cross Encoder",
+      "ranking_config": {
+        "source_recall_count": 50,
+        "semantic_ranking_enabled": true,
+        "semantic_top_k": 40,
+        "cross_encoder_ranking_enabled": true,
+        "cross_encoder_top_k": 20,
+        "deepseek_enabled": false,
+        "target_paper_count": 20,
+        "evaluation_top_k": [5, 10, 20]
+      }
+    }
+  ]
+}

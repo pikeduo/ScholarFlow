@@ -3,6 +3,7 @@
 import asyncio  # 在同步 pytest 用例中运行异步客户端方法。
 import json  # 加载本地 OpenAlex Work fixture。
 from pathlib import Path  # 定位测试 fixture 文件。
+from unittest.mock import patch  # 拦截日志调用以验证不会输出参数值。
 
 import httpx  # 使用 MockTransport 拦截 HTTP 请求。
 import pytest  # 提供异常断言工具。
@@ -78,6 +79,48 @@ def test_client_hides_http_error_details() -> None:
     )
     with pytest.raises(OpenAlexClientError, match="HTTP 429"):  # 断言返回已净化的状态错误。
         asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行异步搜索方法。
+
+
+def test_client_reports_supplier_hint_and_actual_parameter_names_without_leaking_values() -> None:
+    """400 应区分供应商提示和实际参数名，且不得回显参数值或供应商正文。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        """返回提到 select 的 400 响应以验证适配器只转发固定参数名。"""
+        return httpx.Response(400, json={"error": "Invalid select field: private query", "message": "provider-secret must not be exposed"}, request=request)  # 模拟供应商正文同时包含已知参数与敏感样例文本的边界。
+
+    client = OpenAlexClient(  # 使用 mock 400 响应构造客户端。
+        settings_override=_build_test_settings(),  # 注入隔离配置而不读取本地 .env。
+        transport=httpx.MockTransport(handler),  # 拦截真实网络访问。
+    )
+    with patch("backend.app.adapters.openalex.logger.error") as error_logger:  # 仅替换本模块日志方法，不改变 HTTP 或配置行为。
+        with pytest.raises(OpenAlexClientError) as captured_error:  # 获取净化后的领域错误以检查其稳定文本。
+            asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行只会命中本地 mock 的搜索。
+    error_text = str(captured_error.value)  # 读取调用方实际可见的错误信息。
+    assert error_text == "OpenAlex 请求参数无效（HTTP 400，供应商提示=select）"  # 验证 400 明确标记白名单名称仅来自供应商提示。
+    assert "private query" not in error_text  # 验证来源正文中的查询文本不会泄露。
+    assert "provider-secret" not in error_text  # 验证来源正文中的密钥样例不会泄露。
+    logged_template, logged_status, logged_category, logged_parameter_names = error_logger.call_args.args  # 读取日志模板及其安全实参，不经过实际日志输出。
+    assert logged_template == "OpenAlex 请求失败，状态码=%d，错误类别=%s，实际参数=%s"  # 验证日志格式明确区分错误类别和真实参数名。
+    assert logged_status == 400 and logged_category == "invalid_request:select"  # 验证安全分类仍保留状态码与供应商提示。
+    assert logged_parameter_names == "api_key,per_page,search,select"  # 验证日志准确列出实际发送的参数名而不依赖供应商提示。
+    logged_values = str(error_logger.call_args.args)  # 合并实际传入日志方法的全部安全实参。
+    assert "forecasting" not in logged_values and "test-api-key" not in logged_values  # 验证日志不包含查询文本或密钥值。
+
+
+def test_client_hides_unrecognized_bad_request_body() -> None:
+    """供应商未提到白名单参数时，400 不应猜测或回显其原始诊断。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        """返回不含白名单参数名的敏感样例 400 响应。"""
+        return httpx.Response(400, json={"error": "unexpected private query", "message": "provider-secret"}, request=request)  # 模拟无法安全归因参数的供应商错误。
+
+    client = OpenAlexClient(  # 使用 mock 400 响应构造客户端。
+        settings_override=_build_test_settings(),  # 注入隔离配置而不读取本地 .env。
+        transport=httpx.MockTransport(handler),  # 拦截真实网络访问。
+    )
+    with pytest.raises(OpenAlexClientError) as captured_error:  # 获取净化后的领域错误以检查其回退文本。
+        asyncio.run(client.search_works(QuerySchema(topic=["forecasting"])))  # 执行只会命中本地 mock 的搜索。
+    error_text = str(captured_error.value)  # 读取调用方实际可见的错误信息。
+    assert error_text == "OpenAlex 请求参数无效（HTTP 400）"  # 验证未命中白名单时保持泛化错误。
+    assert "private query" not in error_text and "provider-secret" not in error_text  # 验证任何未识别的供应商正文都不会泄露。
 
 
 def test_client_hides_missing_api_key_configuration() -> None:

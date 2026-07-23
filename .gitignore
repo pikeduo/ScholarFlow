@@ -12,6 +12,8 @@ venv/
 # ScholarFlow 运行期产物。
 logs/
 data/
+evaluation/results/
+evaluation/inputs/
 *.db
 *.sqlite3
 
@@ -19,7 +21,10 @@ data/
 frontend/node_modules/
 frontend/dist/
 
+# 本地 PowerPoint 测试演示文稿及其渲染检查产物。
+PPT/
+
 # 文档
-/ScholarWeave_Project_Plan_v1.1.md
-/docs/~$三：科研场景下复杂学术查询的智能论文搜索与推荐.docx
-/docs/赛题三：科研场景下复杂学术查询的智能论文搜索与推荐.docx
+/docs/
+/presentation/
+/node_modules/

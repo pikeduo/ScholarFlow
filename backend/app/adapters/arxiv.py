@@ -18,6 +18,22 @@ from backend.app.repositories.source_rate_limiter import SourceCooldownError, So
 ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"  # 声明 arXiv Atom 1.0 元素命名空间。
 ARXIV_NAMESPACE = "http://arxiv.org/schemas/atom"  # 声明 arXiv 扩展元数据命名空间。
 ARXIV_IDENTIFIER_VERSION_PATTERN = re.compile(r"v\d+$")  # 匹配现代与旧式 arXiv 标识末尾的版本号。
+_ARXIV_MAX_CONCEPT_COUNT = 2  # 限制前置召回仅使用两个核心概念组，避免过度收窄。
+_ARXIV_MAX_VARIANT_COUNT = 4  # 限制单个概念组中的别名数量，保持请求可审计。
+_ARXIV_LONG_TERM_WORD_LIMIT = 6  # 超过该词数的自然语言表达不得整体作为精确短语。
+_ARXIV_GENERIC_WORDS = frozenset({"recent", "latest", "paper", "papers", "study", "studies", "research", "researches"})  # 集中管理少量不应单独构成检索概念的通用修饰词。
+_ARXIV_CONNECTOR_PATTERN = re.compile(r"\b(?:for|using|with|on|in|about|regarding)\b", flags=re.IGNORECASE)  # 识别长子查询中可安全切分的常见英文连接词。
+_ARXIV_BOOLEAN_PATTERN = re.compile(r"\b(?:AND|OR|NOT)\b", flags=re.IGNORECASE)  # 移除用户提供的布尔词，防止其被误解为 arXiv 原始语法。
+_ARXIV_FIELD_PREFIX_PATTERN = re.compile(r"\b(?:all|ti|abs|au|cat)\s*:", flags=re.IGNORECASE)  # 移除常见 arXiv 字段前缀，确保字段选择始终由编译器控制。
+_ARXIV_TERM_TOKEN_PATTERN = re.compile(r"[^\W_]+(?:-[^\W_]+)*", flags=re.UNICODE)  # 提取可安全重组为短语的 Unicode 单词与连字符词。
+_ARXIV_ALIASES = {  # 只维护少量高频且语义明确的计算机领域别名。
+    "large language model": ("large language model", "large language models", "LLM"),
+    "large language models": ("large language model", "large language models", "LLM"),
+    "graph neural network": ("graph neural network", "graph neural networks", "GNN"),
+    "graph neural networks": ("graph neural network", "graph neural networks", "GNN"),
+}  # 别名顺序同时定义生成顺序，避免随机或模型推断。
+_ARXIV_HYPHENATED_PHRASES = ("time series", "zero shot", "few shot", "deep learning", "machine learning", "self supervised")  # 仅为常见稳定短语生成可读连字符变体。
+_ARXIV_PLURAL_PAIRS = {"model": "models", "models": "model", "network": "networks", "networks": "network", "transformer": "transformers", "transformers": "transformer"}  # 仅为语义明确的名词尾词生成单复数变体。
 
 
 class ArxivMappingError(ValueError):
@@ -36,22 +52,150 @@ def build_arxiv_search_params(query: QueryIntent) -> dict[str, str | int]:
     返回：
         dict[str, str | int]：不含密钥、可直接用于 `/query` 端点的请求参数。
     """
-    search_terms: list[str] = []  # 按确定顺序收集可由 arXiv 全字段搜索表达的词语。
-    for terms in (query.research_topics, query.methods, query.tasks, query.datasets, query.must_include):  # 合并主题、方法、任务、数据集与硬约束。
-        search_terms.extend(_normalize_search_term(term) for term in terms if _normalize_search_term(term))  # 规范化词语并跳过空白项。
-    if not search_terms:  # QueryIntent 可以只携带未拆分的规范化查询。
-        search_terms.append(_normalize_search_term(query.normalized_query))  # 使用必填规范化查询避免构造无约束检索。
-    clauses = [f'all:"{term}"' for term in search_terms]  # 将每项强制限定为全字段文本，不接受用户注入的 arXiv 语法。
-    if query.year_range:  # arXiv 只提供投稿日期过滤，因此以此作为发表年份的近似前置过滤。
-        start_year, end_year = query.year_range  # 解构已由 QueryIntent 校验的闭区间年份。
-        clauses.append(f"submittedDate:[{start_year}01010000 TO {end_year}12312359]")  # 使用官方要求的 GMT 分钟时间范围格式。
     return {  # 返回官方 Query API 使用的单页参数。
-        "search_query": " AND ".join(clauses),  # 使用 AND 保持结构化条件的确定性语义。
+        "search_query": compile_arxiv_search_query(query),  # 只使用 arXiv 专属的有限概念组编译表达。
         "start": 0,  # 首版仅请求每次搜索的第一页。
         "max_results": query.source_recall_count or query.target_paper_count,  # 使用独立来源召回规模并兼容旧调用。
         "sortBy": "relevance",  # 保留来源默认的相关性排序供后续融合使用。
         "sortOrder": "descending",  # 使用官方支持的降序排序取值。
     }
+
+
+def compile_arxiv_search_query(query: QueryIntent) -> str:
+    """将统一意图编译为只按研究主题宽松召回的安全 arXiv 表达。"""
+    variants = [variant for concept in select_arxiv_concepts(query) for variant in _expand_arxiv_aliases(concept)]  # 将最多两个研究主题的有限变体放入同一宽松 OR 组。
+    text_clauses = [f'all:"{variant}"' for variant in _distinct_arxiv_variants(variants)]  # 每个文本变体均由编译器包裹，用户文本不能注入来源语法。
+    clauses = [text_clauses[0] if len(text_clauses) == 1 else f"({' OR '.join(text_clauses)})"] if text_clauses else []  # 不同研究主题之间只使用 OR，避免来源召回阶段形成多个 AND 条件。
+    if query.year_range:  # arXiv 只提供投稿日期过滤，因此以此作为发表年份的近似前置过滤。
+        start_year, end_year = query.year_range  # 解构已由 QueryIntent 校验的闭区间年份。
+        clauses.append(f"submittedDate:[{start_year}01010000 TO {end_year}12312359]")  # 使用官方要求的 GMT 分钟时间范围格式。
+    return " AND ".join(clauses)  # 仅让主题 OR 组与年份过滤形成强制 AND 条件。
+
+
+def select_arxiv_concepts(query: QueryIntent) -> list[str]:
+    """只从研究主题选择最多两个 arXiv 宽松召回概念，必要时回退规范化查询。"""
+    selected_concepts = _select_arxiv_research_topic_concepts(query)  # 先且只从研究主题提取来源级候选。
+    if selected_concepts:  # 只要存在有效研究主题就禁止混入其他意图字段。
+        return selected_concepts  # 保持来源查询仅代表研究主题。
+    return _select_arxiv_concepts_from_terms([query.normalized_query])  # 主题完全缺失或无效时才回退规范化查询。
+
+
+def _select_arxiv_research_topic_concepts(query: QueryIntent) -> list[str]:
+    """从研究主题提取 arXiv 宽松召回概念，不读取其他 QueryIntent 条件。"""
+    return _select_arxiv_concepts_from_terms(query.research_topics)  # 让回退判断和实际选择使用同一确定性规则。
+
+
+def _select_arxiv_concepts_from_terms(terms: list[str]) -> list[str]:
+    """从给定文本项提取最多两个安全且不重复的 arXiv 概念。"""
+    selected_concepts: list[str] = []  # 保存保持输入顺序的最终核心概念。
+    for term in terms:  # 保持 Query Agent 或用户提供的稳定顺序。
+        for candidate in _split_arxiv_candidate(term):  # 长自然语言主题会压缩为有限短概念，避免整句精确短语。
+            _append_arxiv_concept(selected_concepts, candidate)  # 去重、替换更完整重叠概念或追加新概念。
+            if len(selected_concepts) >= _ARXIV_MAX_CONCEPT_COUNT:  # 达到最多两个研究主题的来源级上限后停止。
+                return selected_concepts  # 保持主题优先级和确定性选择。
+    return selected_concepts  # 所有输入无效时稳定返回空列表，调用方再按需要回退。
+
+
+def _append_arxiv_concept(selected_concepts: list[str], candidate: str) -> None:
+    """将一个有效候选以大小写无关去重和重叠替换规则加入概念列表。"""
+    normalized_candidate = _normalize_search_term(candidate)  # 先移除潜在原始语法并压缩空白。
+    if not _is_meaningful_arxiv_concept(normalized_candidate):  # 空白、年份或泛化词不能增加强制检索条件。
+        return  # 保留已选概念不受无效候选影响。
+    candidate_tokens = _arxiv_concept_tokens(normalized_candidate)  # 将候选转换为可比较的大小写无关语义词项。
+    for index, selected_concept in enumerate(selected_concepts):  # 逐个比较已有概念以避免重复 AND 条件。
+        selected_tokens = _arxiv_concept_tokens(selected_concept)  # 读取已有概念的稳定词项集合。
+        if not _arxiv_concepts_overlap(candidate_tokens, selected_tokens):  # 不重叠时继续寻找可能重复项。
+            continue  # 当前已有概念与候选可以共存。
+        if len(candidate_tokens) > len(selected_tokens):  # 更完整的同义短语优先保留更多语义限定。
+            selected_concepts[index] = normalized_candidate  # 原位替换以保持其字段优先级位置。
+        return  # 重叠概念只能保留一个，不能额外形成 AND 组。
+    selected_concepts.append(normalized_candidate)  # 新概念与已有概念语义独立时才追加。
+
+
+def _split_arxiv_candidate(value: str) -> list[str]:
+    """将普通术语保留为短语，并把长自然语言表达拆成有限概念。"""
+    normalized_value = _normalize_search_term(value)  # 先统一空白并移除用户提供的 arXiv 语法片段。
+    tokens = _arxiv_term_tokens(normalized_value)  # 以安全词项判断表达长度和通用修饰词。
+    if len(tokens) <= _ARXIV_LONG_TERM_WORD_LIMIT:  # 短主题即使含有 for 等语义连接词也可作为单一宽松主题保留。
+        return [normalized_value] if normalized_value else []  # 空白值不应产生空概念组。
+    segments = [_shorten_arxiv_segment(segment) for segment in _ARXIV_CONNECTOR_PATTERN.split(normalized_value)]  # 按常见连接词切分长子查询并将每段压缩为短语。
+    meaningful_segments = [segment for segment in segments if _is_meaningful_arxiv_concept(segment)]  # 丢弃 recent、paper 或年份等没有召回意义的片段。
+    if meaningful_segments:  # 可可靠切分时优先保留出现顺序中的短概念。
+        return meaningful_segments  # 上层仍会限制最多两个概念组。
+    shortened_value = _shorten_arxiv_segment(normalized_value)  # 无可靠连接结构时回退为前几个主要词项。
+    return [shortened_value] if _is_meaningful_arxiv_concept(shortened_value) else []  # 绝不将无法拆分的完整长句作为精确短语。
+
+
+def _shorten_arxiv_segment(value: str) -> str:
+    """移除小型通用修饰词集合，并将一个片段限制为六个词以内。"""
+    content_tokens = [token for token in _arxiv_term_tokens(value) if token.casefold() not in _ARXIV_GENERIC_WORDS and not _is_arxiv_year_token(token)]  # 只保留可能具有学术检索意义的词项。
+    return " ".join(content_tokens[:_ARXIV_LONG_TERM_WORD_LIMIT])  # 保持原词序并防止再次形成超长精确短语。
+
+
+def _expand_arxiv_aliases(concept: str) -> list[str]:
+    """返回一个概念的有限同义、连字符和单复数变体。"""
+    normalized_concept = _normalize_search_term(concept)  # 确保后续别名扩展只处理安全纯文本。
+    variants = list(_ARXIV_ALIASES.get(normalized_concept.casefold(), (normalized_concept,)))  # 已知缩写优先使用集中定义的稳定映射。
+    if normalized_concept.casefold() == "large language models for forecasting":  # 为常见完整主题补充不会改变主题语义的明确缩写表达。
+        variants.append("LLM forecasting")  # 避免将方法、任务等额外条件加入来源查询。
+    for phrase in _ARXIV_HYPHENATED_PHRASES:  # 为常见词组添加不改变含义的连字符变体。
+        if phrase in normalized_concept.casefold():  # 仅在原概念确实包含该词组时扩展。
+            variants.append(re.sub(re.escape(phrase), lambda matched_phrase: matched_phrase.group(0).replace(" ", "-"), normalized_concept, flags=re.IGNORECASE))  # 仅替换匹配片段中的空格，保持用户词形的大小写。
+    tokens = normalized_concept.split()  # 只检查末尾名词，避免对短语内部词做破坏语义的词干化。
+    if tokens and tokens[-1].casefold() in _ARXIV_PLURAL_PAIRS:  # 仅对集中定义的明确名词产生单复数。
+        variants.append(" ".join([*tokens[:-1], _preserve_arxiv_token_case(tokens[-1], _ARXIV_PLURAL_PAIRS[tokens[-1].casefold()])]))  # 使用与原末尾词相同大小写的对应词形。
+    return _distinct_arxiv_variants(variants)[:_ARXIV_MAX_VARIANT_COUNT]  # 去重后限制数量，避免单组膨胀。
+
+
+def _preserve_arxiv_token_case(source_token: str, replacement: str) -> str:
+    """以原始词项的全大写或首字母大写形式输出词形变体。"""
+    if source_token.isupper():  # 缩写或全大写术语不应在变体中丢失展示形式。
+        return replacement.upper()  # 保持全大写格式。
+    if source_token.istitle():  # 常见模型名或标题式术语应保持首字母大写。
+        return replacement.title()  # 保持标题式格式。
+    return replacement  # 其他情况使用定义中的小写词形。
+
+
+def _distinct_arxiv_variants(variants: list[str]) -> list[str]:
+    """对词形变体进行大小写无关去重并保持首次出现顺序。"""
+    distinct_variants: list[str] = []  # 保存可被安全包裹的最终变体。
+    seen: set[str] = set()  # 记录规范化后已出现的变体。
+    for variant in variants:  # 依次处理别名、连字符和单复数候选。
+        normalized_variant = _normalize_search_term(variant)  # 继续保证别名不会绕过文本清理边界。
+        variant_key = normalized_variant.casefold()  # 使用大小写无关键避免 LLM 与 llm 重复。
+        if normalized_variant and variant_key not in seen:  # 仅保留首个安全且非重复的变体。
+            distinct_variants.append(normalized_variant)  # 保留定义的展示大小写，例如 LLM。
+            seen.add(variant_key)  # 标记已使用的等价值。
+    return distinct_variants  # 返回稳定顺序的有限变体列表。
+
+
+def _is_meaningful_arxiv_concept(value: str) -> bool:
+    """判断候选是否包含非年份、非通用修饰词的实际检索词。"""
+    tokens = _arxiv_term_tokens(value)  # 提取清理后的可比较词项。
+    return any(token.casefold() not in _ARXIV_GENERIC_WORDS and not _is_arxiv_year_token(token) for token in tokens)  # 至少一个内容词才允许形成概念组。
+
+
+def _arxiv_concepts_overlap(first_tokens: set[str], second_tokens: set[str]) -> bool:
+    """用小型词项包含度规则识别不应重复形成 AND 组的概念。"""
+    if not first_tokens or not second_tokens:  # 空概念不能可靠比较且会在进入此处前被拒绝。
+        return False  # 保持防御性边界。
+    overlap_ratio = len(first_tokens & second_tokens) / min(len(first_tokens), len(second_tokens))  # 较短概念被较长概念包含时视为高度重复。
+    return overlap_ratio >= 0.75  # 保守阈值避免相近词偶然共享一个普通词就被合并。
+
+
+def _arxiv_concept_tokens(value: str) -> set[str]:
+    """提取概念重叠比较所需的大小写无关词项。"""
+    return {token.casefold() for token in _arxiv_term_tokens(value) if token.casefold() not in _ARXIV_GENERIC_WORDS and not _is_arxiv_year_token(token)}  # 忽略不会区分学术概念的泛化词与年份。
+
+
+def _arxiv_term_tokens(value: str) -> list[str]:
+    """从安全文本中提取保持连字符的词项序列。"""
+    return _ARXIV_TERM_TOKEN_PATTERN.findall(value)  # 不保留括号、引号、冒号或布尔操作符。
+
+
+def _is_arxiv_year_token(token: str) -> bool:
+    """判断单个词项是否是不能独立成为文本概念的四位年份。"""
+    return len(token) == 4 and token.isdigit()  # 年份过滤应仅由 submittedDate 子句表达。
 
 
 class ArxivClient(AcademicSearchAdapter):
@@ -86,6 +230,8 @@ class ArxivClient(AcademicSearchAdapter):
         异常：
             ArxivClientError：HTTP、Atom 解析或来源错误响应时抛出。
         """
+        concepts = select_arxiv_concepts(query)  # 仅提取将进入来源查询的研究主题或必要回退概念。
+        has_research_topics = bool(_select_arxiv_research_topic_concepts(query))  # 判断本次是否因主题缺失而使用规范化查询回退。
         params = build_arxiv_search_params(query)  # 构造不含用户密钥的可测试请求参数。
         try:  # 将 HTTP 层异常转换为不泄露响应正文的领域错误。
             async with httpx.AsyncClient(  # 为单次请求创建可自动关闭的异步客户端。
@@ -120,7 +266,7 @@ class ArxivClient(AcademicSearchAdapter):
                 papers.append(map_arxiv_entry(entry, raw_rank=raw_rank))  # 映射并保留来源原始排名。
             except ArxivMappingError:  # 仅跳过缺少必要标识或标题的条目。
                 skipped_count += 1  # 累加映射失败统计。
-        logger.info("arXiv 检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(entries), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
+        logger.info("来源检索完成：来源=arxiv，主题数=%d，查询词数=%d，使用年份=%s，回退规范化查询=%s，返回数量=%d，原始结果=%d，跳过=%d", len(concepts), sum(len(_arxiv_term_tokens(concept)) for concept in concepts), query.year_range is not None, not has_research_topics, len(papers), len(entries), skipped_count)  # 只记录安全统计，不记录完整用户问题或来源查询字符串。
         return papers  # 返回可直接进入多源融合的统一论文记录。
 
 def parse_arxiv_atom_feed(xml_text: str) -> list[ElementTree.Element]:
@@ -185,7 +331,10 @@ def _normalize_search_term(value: str) -> str:
     返回：
         str：压缩空白并移除双引号后的纯文本词语。
     """
-    return " ".join(value.replace('"', " ").split())  # 移除语法引号以防止用户文本改变字段或布尔表达式。
+    without_field_prefixes = _ARXIV_FIELD_PREFIX_PATTERN.sub(" ", value)  # 字段前缀只能由编译器生成，不能接受用户原始语法。
+    without_boolean_words = _ARXIV_BOOLEAN_PATTERN.sub(" ", without_field_prefixes)  # 布尔词不能影响概念组之间的固定连接结构。
+    safe_tokens = _arxiv_term_tokens(without_boolean_words.replace('"', " ").replace("(", " ").replace(")", " "))  # 移除引号和括号后仅保留可安全重组的词项。
+    return " ".join(safe_tokens)  # 统一空白并确保返回值不含 arXiv 查询语法。
 
 
 def _atom_tag(local_name: str) -> str:

@@ -1,6 +1,8 @@
 """将 OpenAlex Work JSON 响应转换为 ScholarFlow 的统一论文模型。"""
 
 from collections.abc import Mapping  # 安全识别嵌套 JSON 对象。
+import re  # 仅用于从供应商错误文本中匹配预定义的安全参数名。
+import unicodedata  # 将来源不稳定处理的兼容字符统一为确定性文本。
 
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
 
@@ -28,6 +30,22 @@ OPENALEX_WORK_FIELDS = (  # 声明映射器需要的最小 Work 字段集合。
     "ids",  # 兼容嵌套外部标识。
 )
 
+_OPENALEX_SAFE_ERROR_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (  # 仅允许向日志和调用方暴露的请求参数名称及其文本别名。
+    ("api_key", ("api_key", "api key")),  # API 密钥仅显示参数名，绝不显示任何值。
+    ("filter", ("filter",)),  # OpenAlex 常在 400 中报告过滤表达式问题。
+    ("sort", ("sort",)),  # 保留排序参数问题的安全定位能力。
+    ("group_by", ("group_by", "group by")),  # 兼容供应商可能使用的下划线和空格名称。
+    ("search", ("search",)),  # 仅显示参数名，不回显搜索词。
+    ("per_page", ("per_page", "per page")),  # 兼容分页大小参数的常见写法。
+    ("page", ("page",)),  # 保留基础页码参数的安全定位能力。
+    ("cursor", ("cursor",)),  # 保留深分页游标参数的安全定位能力。
+    ("sample", ("sample",)),  # 保留随机抽样参数的安全定位能力。
+    ("select", ("select",)),  # 保留字段选择参数的安全定位能力。
+)
+
+_OPENALEX_SEARCH_APOSTROPHE_TRANSLATION = str.maketrans("", "", "'‘’")  # 删除英文与智能撇号，避免将所有格分拆为无意义单字母。
+_OPENALEX_SEARCH_SEPARATOR_PATTERN = re.compile(r'["“”`´?¿¡!「」『』]+')  # 将引号和问号等非词语分隔符替换为空格，避免来源查询解析器误判。
+
 
 class OpenAlexMappingError(ValueError):
     """表示 OpenAlex 响应缺少生成统一论文所必需的数据。"""
@@ -53,11 +71,11 @@ def build_openalex_work_params(query: QuerySchema) -> dict[str, str | int]:
     if not search_terms:  # OpenAlex 搜索必须有至少一个明确检索词。
         raise ValueError("QuerySchema 至少需要一个主题、方法、数据集、领域或必须包含关键词")  # 避免发起无约束高成本搜索。
 
+    search_text = normalize_openalex_search_text(" ".join(search_terms))  # 仅在 OpenAlex 请求边界规范化兼容字符与分隔标点。
     params: dict[str, str | int] = {  # 初始化未来 HTTP 客户端所需的基础参数。
-        "search": " ".join(search_terms),  # 使用 OpenAlex 全文搜索表达结构化意图。
-        "sort": "relevance_score:desc",  # 优先返回与搜索词最相关的论文。
+        "search": search_text,  # 使用来源兼容的全文搜索文本表达结构化意图。
         "per_page": query.target_count,  # 将目标数量限制为 API 单页返回数量。
-        "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段。
+        "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求统一映射器实际需要的字段以减少响应负担。
     }
     if query.year_range:  # 仅在用户明确指定年份范围时添加 API 过滤。
         params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 年份范围过滤语法。
@@ -75,16 +93,36 @@ def build_openalex_search_params(query: QueryIntent) -> dict[str, str | int]:
     search_terms: list[str] = []  # 按来源无关的确定顺序收集可全文检索的约束词。
     for terms in (query.research_topics, query.methods, query.tasks, query.datasets, query.must_include):  # 合并主题、方法、任务、数据集与硬约束。
         search_terms.extend(term.strip() for term in terms if term.strip())  # 丢弃空白词并保留规划节点给出的顺序。
-    search_text = " ".join(search_terms) or query.normalized_query  # 缺少拆分词时退回已校验的规范化查询。
+    search_text = normalize_openalex_search_text(" ".join(search_terms) or query.normalized_query)  # 缺少拆分词时退回已校验查询，并仅在来源请求边界规范化兼容字符与分隔标点。
     params: dict[str, str | int] = {  # 初始化统一搜索所需的来源参数。
         "search": search_text,  # 使用 OpenAlex 全文检索承载统一意图。
-        "sort": "relevance_score:desc",  # 保持来源按相关性优先的原始排名。
         "per_page": query.source_recall_count or query.target_paper_count,  # 自然入口扩大召回，旧调用继续兼容最终数量。
         "select": ",".join(OPENALEX_WORK_FIELDS),  # 仅请求映射统一模型所需的最小字段。
     }
     if query.year_range:  # 用户明确给出年份范围时才添加来源过滤条件。
         params["filter"] = f"publication_year:{query.year_range[0]}-{query.year_range[1]}"  # 使用 OpenAlex 支持的发表年份范围语法。
     return params  # 不将来源无法可靠表达的排除词伪装成服务端过滤。
+
+
+def normalize_openalex_search_text(search_text: str) -> str:
+    """将 OpenAlex 搜索文本限定为不含易触发解析歧义的兼容标点。
+
+    该函数只在 OpenAlex 适配器构造请求时调用，不回写 QueryIntent、金标或评测输入。
+
+    参数：
+        search_text：由 QuerySchema 或 QueryIntent 汇总得到的原始来源检索文本。
+    返回：
+        str：已统一兼容字符、删除撇号、替换分隔标点并压缩空白的搜索文本。
+    异常：
+        ValueError：规范化后不含任何可搜索文本时抛出。
+    """
+    compatibility_text = unicodedata.normalize("NFKC", search_text)  # 统一全角问号等兼容字符，但不翻译或改写词语。
+    without_apostrophes = compatibility_text.translate(_OPENALEX_SEARCH_APOSTROPHE_TRANSLATION)  # 删除所有格撇号以保留相邻词干。
+    separated_text = _OPENALEX_SEARCH_SEPARATOR_PATTERN.sub(" ", without_apostrophes)  # 将问号和引号等查询分隔符安全转换为空格。
+    normalized_text = " ".join(separated_text.split())  # 压缩连续空白，构造稳定的来源请求文本。
+    if not normalized_text:  # 纯标点输入不能形成安全且可解释的来源搜索请求。
+        raise ValueError("OpenAlex 搜索文本在来源规范化后为空")  # 阻止向供应商发送无约束或无意义的请求。
+    return normalized_text  # 返回仅供当前来源请求使用的确定性文本。
 
 
 class OpenAlexClient(AcademicSearchAdapter):
@@ -192,8 +230,10 @@ class OpenAlexClient(AcademicSearchAdapter):
                 response.raise_for_status()  # 将非成功 HTTP 状态转换为异常。
                 payload = response.json()  # 解码 JSON 响应供后续结构校验。
         except httpx.HTTPStatusError as error:  # 单独记录安全的状态码而不记录含密钥 URL。
-            logger.error("OpenAlex 请求失败，状态码=%d", error.response.status_code)  # 输出可观测但不含敏感信息的错误。
-            raise OpenAlexClientError(f"OpenAlex 请求失败（HTTP {error.response.status_code}）") from None  # 隐藏原始请求 URL。
+            error_message, error_category = _map_openalex_http_error(error.response.status_code, error.response)  # 仅从供应商正文提取白名单参数名，绝不回显正文。
+            parameter_names = _safe_openalex_request_parameter_names(request_params)  # 仅保留真实发送的参数名称，排除所有参数值。
+            logger.error("OpenAlex 请求失败，状态码=%d，错误类别=%s，实际参数=%s", error.response.status_code, error_category, parameter_names)  # 输出可观测但不含查询、密钥和响应正文的分类信息。
+            raise OpenAlexClientError(error_message) from None  # 隐藏原始请求 URL、参数和供应商响应体。
         except httpx.RequestError as error:  # 捕获超时、连接和传输错误。
             logger.error("OpenAlex 网络请求失败，错误类型=%s", type(error).__name__)  # 仅记录安全的异常类型。
             raise OpenAlexClientError("OpenAlex 网络请求失败") from None  # 避免异常链泄露请求参数。
@@ -212,6 +252,79 @@ class OpenAlexClient(AcademicSearchAdapter):
             raise OpenAlexClientError("OpenAlex 响应缺少 results 数组")  # 阻止错误数据进入后续排序流程。
         await self._response_cache.set_list(cache_key, "openalex", "works", results)  # 仅缓存通过顶层结构校验的成功响应。
         return results  # 将单条映射和模型选择留给兼容入口或统一入口处理。
+
+
+def _map_openalex_http_error(status_code: int, response: httpx.Response | None = None) -> tuple[str, str]:
+    """将 OpenAlex HTTP 状态码转换为不含供应商正文的稳定诊断。
+
+    参数：
+        status_code：由 HTTP 客户端提供的响应状态码。
+        response：可选响应对象；仅在 400 时读取 JSON 顶层文本以提取安全参数名。
+    返回：
+        tuple[str, str]：面向调用方的安全错误文本与仅供日志使用的错误类别。
+    """
+    if status_code == 400:  # 400 表示请求形状或参数不被来源接受，不能安全回显响应正文。
+        parameter_hint = _extract_openalex_safe_parameter_hint(response)  # 从白名单中提取可安全展示的参数名。
+        if parameter_hint is not None:  # 仅在供应商错误文本明确提到已知参数时增加定位信息。
+            return f"OpenAlex 请求参数无效（HTTP 400，供应商提示={parameter_hint}）", f"invalid_request:{parameter_hint}"  # 明确该名称来自供应商提示，不将其误表述为已确认的实际参数。
+        return "OpenAlex 请求参数无效（HTTP 400）", "invalid_request"  # 无可靠安全提示时维持既有泛化错误。
+    if status_code in {401, 403}:  # 认证或授权问题需要用户在本机检查配置，但不得打印密钥。
+        return f"OpenAlex 认证或访问权限无效（HTTP {status_code}）", "authentication_or_authorization"  # 合并同类部署错误以避免泄露供应商细节。
+    if status_code == 404:  # /works 等固定端点不存在通常代表 API 基地址或端点配置错误。
+        return "OpenAlex 服务端点不存在（HTTP 404）", "endpoint_not_found"  # 提供可操作的配置排查类别。
+    if status_code == 429:  # 最终限流仍应保留来源受限语义，而非伪装成参数错误。
+        return "OpenAlex 请求受限（HTTP 429）", "rate_limited"  # 共享执行器已负责重试与冷却。
+    return f"OpenAlex 请求失败（HTTP {status_code}）", "http_error"  # 其他状态仅保留安全状态码。
+
+
+def _extract_openalex_safe_parameter_hint(response: httpx.Response | None) -> str | None:
+    """从 OpenAlex 400 JSON 中提取白名单参数名，不保留或输出原始错误正文。
+
+    参数：
+        response：可选 OpenAlex HTTP 响应对象。
+    返回：
+        str | None：预定义安全参数名；响应非 JSON、结构异常或未命中时返回空值。
+    """
+    if response is None:  # 没有响应对象时无法解析供应商诊断。
+        return None  # 保持调用方的安全泛化错误。
+    try:  # 供应商错误通常为 JSON，但不能假设所有代理错误都满足该结构。
+        response_data = _as_mapping(response.json())  # 只接受顶层对象，拒绝数组和其他 JSON 类型。
+    except ValueError:  # 非 JSON 或损坏 JSON 不应覆盖原始 HTTP 错误处理。
+        return None  # 不记录解析异常或原始正文。
+    if response_data is None:  # 顶层不是 JSON 对象时没有可信字段可读取。
+        return None  # 仅保留泛化错误。
+    diagnostic_texts = tuple(value.casefold() for field_name in ("error", "message") if isinstance((value := response_data.get(field_name)), str))  # 仅暂存供应商标准诊断字段用于内存匹配。
+    if not diagnostic_texts:  # 缺少文本诊断字段时不能猜测参数名。
+        return None  # 保持泛化错误而不暴露任何其他响应字段。
+    diagnostic_text = "\n".join(diagnostic_texts)  # 仅在函数局部组合文本，后续不会记录或返回该变量。
+    for parameter_name, aliases in _OPENALEX_SAFE_ERROR_PARAMETER_ALIASES:  # 按稳定白名单顺序检查已知参数。
+        if any(_contains_openalex_parameter_alias(diagnostic_text, alias) for alias in aliases):  # 命中只说明供应商文本提到了安全参数名。
+            return parameter_name  # 返回固定白名单名称而非供应商原文。
+    return None  # 未命中时拒绝猜测并继续隐藏供应商诊断正文。
+
+
+def _safe_openalex_request_parameter_names(params: Mapping[str, object]) -> str:
+    """返回实际请求参数的稳定名称列表，不暴露任何参数值。
+
+    参数：
+        params：已经注入认证信息、即将发送给 HTTP 客户端的参数映射。
+    返回：
+        str：按字典序排列、以逗号分隔的参数名称。
+    """
+    return ",".join(sorted(str(parameter_name) for parameter_name in params))  # 参数名可定位配置污染，排序保证日志和离线断言稳定。
+
+
+def _contains_openalex_parameter_alias(diagnostic_text: str, alias: str) -> bool:
+    """判断供应商诊断文本是否包含完整的预定义参数别名。
+
+    参数：
+        diagnostic_text：只在当前调用栈内存中存在的已小写化错误文本。
+        alias：预定义的安全参数别名。
+    返回：
+        bool：是否以完整词边界命中该别名。
+    """
+    alias_pattern = re.escape(alias.casefold())  # 转义白名单别名，避免参数名中的下划线等字符成为正则语法。
+    return re.search(rf"(?<![a-z0-9_]){alias_pattern}(?![a-z0-9_])", diagnostic_text) is not None  # 只接受完整参数名，避免把普通单词片段误判为参数。
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
@@ -369,6 +482,7 @@ def map_openalex_work_to_paper(work: Mapping[str, object]) -> Paper:
         year=publication_year if isinstance(publication_year, int) and not isinstance(publication_year, bool) else None,  # 忽略无效年份类型。
         venue=_extract_venue(work),  # 提取主发布位置的期刊或会议名称。
         doi=_optional_text(work.get("doi")) or (_optional_text(identifiers.get("doi")) if identifiers else None),  # 兼容顶层与 ids 中的 DOI。
+        arxiv_id=_optional_text(identifiers.get("arxiv")) if identifiers else None,  # 显式映射 OpenAlex ids.arxiv 而不覆盖来源原始 DOI。
         pmid=_optional_text(identifiers.get("pmid")) if identifiers else None,  # 保留 ids 中可选的 PubMed 标识。
         citation_count=max(cited_by_count, 0) if isinstance(cited_by_count, int) and not isinstance(cited_by_count, bool) else 0,  # 防御异常负数或类型。
         references=_extract_references(work),  # 保留 OpenAlex 提供的被引 Work ID。

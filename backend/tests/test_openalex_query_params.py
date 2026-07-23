@@ -21,9 +21,10 @@ def test_builder_converts_query_schema_to_openalex_params() -> None:
     )
     params = build_openalex_work_params(query)  # 构造不含密钥的 OpenAlex 参数。
     assert params["search"] == "large language model forecasting ETT time series benchmark"  # 验证关键词合并顺序。
+    assert "sort" not in params  # 验证全文搜索依赖 OpenAlex 默认相关性降序，不发送不兼容的冗余排序参数。
     assert params["filter"] == "publication_year:2022-2025"  # 验证年份范围转换。
     assert params["per_page"] == 30  # 验证目标数量映射为单页数量。
-    assert params["select"] == ",".join(OPENALEX_WORK_FIELDS)  # 验证字段选择与映射器一致。
+    assert params["select"] == ",".join(OPENALEX_WORK_FIELDS)  # 验证旧 QuerySchema 入口恢复最小字段选择以减少响应负担。
     assert "api_key" not in params  # 验证密钥只能由未来 HTTP 客户端注入。
     assert "survey" not in params["search"]  # 验证排除词不会被错误地作为正向搜索词。
 
@@ -32,3 +33,10 @@ def test_builder_rejects_query_without_search_terms() -> None:
     """缺少所有可搜索关键词时应拒绝构造无约束 API 请求。"""
     with pytest.raises(ValueError, match="至少需要一个"):  # 断言返回清晰的空查询错误。
         build_openalex_work_params(QuerySchema())  # 构造没有任何检索词的查询。
+
+
+def test_builder_normalizes_source_specific_apostrophes_and_question_marks() -> None:
+    """旧 QuerySchema 入口应只在 OpenAlex 请求边界规范化可能触发解析歧义的标点。"""
+    query = QuerySchema(topic=["neuron’s activation?"])  # 构造包含智能撇号与问号的来源兼容性边界输入。
+    params = build_openalex_work_params(query)  # 构造不会访问网络的来源参数。
+    assert params["search"] == "neurons activation"  # 验证撇号被删除、问号变为空格且不改变词语顺序。

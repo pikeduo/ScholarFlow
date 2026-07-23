@@ -1,0 +1,18 @@
+{
+  "evaluation_top_k": [5, 10, 20],
+  "efficiency_proxy": {
+    "academic_api_calls_per_query": {"target": 3, "limit": 12},
+    "tokens_per_query": {"target": 0, "limit": 40000},
+    "latency_p95_ms": {"target": 2000, "limit": 120000},
+    "weights": {
+      "academic_api_calls_per_query": 0.4,
+      "tokens_per_query": 0.3,
+      "latency_p95_ms": 0.3
+    }
+  },
+  "composite_weights": {
+    "retrieval": 0.7,
+    "efficiency": 0.2,
+    "structure": 0.1
+  }
+}

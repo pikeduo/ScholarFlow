@@ -6,7 +6,7 @@ from unittest.mock import patch  # 替换预期错误日志调用而不影响生
 import pytest  # 提供测试夹具与异常断言工具。
 from fastapi.testclient import TestClient  # 通过本地 ASGI 客户端验证 HTTP 响应。
 
-from backend.app.api.routes.search import get_multi_round_search_controller, get_multi_source_recall_coordinator, get_query_planning_service, get_search_run_state_store  # 覆盖生产协调器、控制器、查询规划与运行状态依赖。
+from backend.app.api.routes.search import get_candidate_generation_service, get_multi_round_search_controller, get_multi_source_recall_coordinator, get_query_planning_service, get_search_run_state_store  # 覆盖生产候选、协调器、控制器、查询规划与运行状态依赖。
 from backend.app.main import app  # 导入待测 FastAPI 应用实例。
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造稳定的多源响应结果。
 from backend.app.models.multi_round_search import MultiRoundSearchResult  # 构造稳定的多轮搜索响应结果。
@@ -109,6 +109,8 @@ def api_client() -> Iterator[TestClient]:
     app.dependency_overrides.pop(get_search_run_state_store, None)  # 清理搜索运行状态存储替身。
     app.dependency_overrides.pop(get_query_planning_service, None)  # 清理查询规划替身。
     get_multi_round_search_controller.cache_clear()  # 释放可能持有旧协调器的生产控制器缓存。
+    get_multi_source_recall_coordinator.cache_clear()  # 释放可能持有共享候选服务的生产协调器缓存。
+    get_candidate_generation_service.cache_clear()  # 释放真实来源适配器和限流状态引用。
 
 
 def _build_result() -> MultiSourceRecallResult:
@@ -117,7 +119,7 @@ def _build_result() -> MultiSourceRecallResult:
         route_plan=SourceRoutePlan(academic_sources=["openalex"], selection_reasons={"openalex": "固定主学术来源"}),  # 提供可审计的最小路由计划。
         papers=[PaperRecord(paper_id="W1", title="Fused Paper", source="openalex", rrf_score=0.02)],  # 提供一篇融合后的论文。
         source_counts={"openalex": 1},  # 提供来源级成功数量。
-        raw_paper_count=1,  # 提供融合前原始论文数量。
+        raw_paper_count=1,  # 提供适配器成功映射并进入融合的统一论文数量。
         merged_paper_count=0,  # 提供无重复时的合并数量。
         work_family_count=1,  # 提供可识别版本族数量。
     )
@@ -152,7 +154,7 @@ def test_multi_source_search_endpoint_returns_fused_result(api_client: TestClien
     payload = response.json()  # 解析公共 JSON 响应。
     assert payload["papers"][0]["paper_id"] == "W1"  # 验证返回融合论文列表。
     assert payload["papers"][0]["rrf_score"] == 0.02  # 验证 RRF 融合分数对前端可见。
-    assert payload["raw_paper_count"] == 1  # 验证返回融合前召回统计。
+    assert payload["raw_paper_count"] == 1  # 验证兼容返回融合前统一论文数量。
     assert payload["route_plan"]["academic_sources"] == ["openalex"]  # 验证返回可审计来源计划。
 
 
@@ -277,9 +279,14 @@ def test_search_run_state_endpoint_returns_latest_snapshot_and_404_when_missing(
 def test_production_coordinator_is_reused_within_process() -> None:
     """生产依赖应在同一进程复用协调器，避免每次请求重新加载本地模型。"""
     get_multi_source_recall_coordinator.cache_clear()  # 清除其他用例或导入过程可能留下的缓存实例。
+    get_candidate_generation_service.cache_clear()  # 清除其他用例可能留下的候选服务实例。
     try:  # 确保测试结束不保留生产依赖对象。
+        first_candidate_service = get_candidate_generation_service()  # 首次构造真实来源适配器和确定性候选服务。
+        second_candidate_service = get_candidate_generation_service()  # 再次获取应命中独立进程缓存。
         first_coordinator = get_multi_source_recall_coordinator()  # 首次构造全部懒加载适配器和排序服务。
         second_coordinator = get_multi_source_recall_coordinator()  # 再次获取应直接命中进程缓存。
+        assert first_candidate_service is second_candidate_service  # 验证来源限流和缓存适配器不会按请求重建。
         assert first_coordinator is second_coordinator  # 验证模型容器和来源限流状态不会按请求重建。
     finally:  # 清理缓存避免影响后续测试替身。
         get_multi_source_recall_coordinator.cache_clear()  # 释放当前测试创建的生产协调器引用。
+        get_candidate_generation_service.cache_clear()  # 释放当前测试创建的真实来源适配器引用。

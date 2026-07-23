@@ -2,7 +2,6 @@
 
 import hashlib  # 为版本族生成不暴露论文标题的稳定短标识。
 import math  # 校验可配置的 RRF 参数是否为有限数值。
-import re  # 清理 DOI、arXiv 与 PMID 的展示形式。
 import unicodedata  # 统一标题和作者名称的 Unicode 表示。
 from collections import defaultdict  # 按身份根节点收集论文记录。
 from collections.abc import Iterable, Mapping  # 声明可替换的输入集合和来源权重映射。
@@ -11,6 +10,7 @@ from datetime import datetime  # 合并来源记录的最近拉取时间。
 from backend.app.core.logging import logger  # 记录不包含完整查询和论文文本的融合统计。
 from backend.app.models.paper import PaperAuthor, PaperRecord, PaperSourceRecord  # 使用统一论文、作者和来源溯源模型。
 from backend.app.models.paper_fusion import PaperFusionResult  # 返回融合后的论文与数量统计。
+from backend.app.models.paper_identity import identifier_values, normalize_arxiv_id, normalize_doi, normalize_pmid  # 复用生产与评测共同的强标识规范化规则。
 
 
 DEFAULT_RRF_K = 60  # 使用业界常用的平滑常数，调用方可通过构造函数覆盖。
@@ -185,53 +185,29 @@ def _identity_keys(paper: PaperRecord) -> set[str]:
     """返回论文的稳定身份键；标题键只用于缺少 DOI、arXiv 与 PMID 的记录。"""
     keys = {f"source:{paper.source}:{_normalize_text(paper.paper_id)}"}  # 始终保留同源平台主标识以识别来源重复响应。
     cross_source_keys: set[str] = set()  # 保存可跨来源确认同一论文的稳定身份键。
-    if paper.doi and (normalized_doi := _normalize_doi(paper.doi)):  # DOI 是最高优先级的跨来源稳定标识。
+    normalized_identifiers = identifier_values(paper.model_dump(include={"doi", "arxiv_id", "pmid", "openalex_id", "semantic_scholar_id", "dblp_key"}))  # 统一生成生产与评测一致的强标识比较值。
+    if paper.doi and (normalized_doi := normalize_doi(paper.doi)):  # DOI 是最高优先级的跨来源稳定标识。
         cross_source_keys.add(f"doi:{normalized_doi}")  # 加入规范化 DOI 身份键。
-    if paper.arxiv_id and (normalized_arxiv_id := _normalize_arxiv_id(paper.arxiv_id)):  # arXiv 标识可确认同一预印本。
-        cross_source_keys.add(f"arxiv:{normalized_arxiv_id}")  # 加入忽略版本号的预印本身份键。
-    if paper.pmid and (normalized_pmid := _normalize_pmid(paper.pmid)):  # PMID 可确认同一生物医学论文。
+    for normalized_arxiv_id in normalized_identifiers["arxiv_id"]:  # 包含供应商 arXiv ID 与已知 DOI 派生别名。
+        cross_source_keys.add(f"arxiv:{normalized_arxiv_id}")  # 让 DOI 别名可与显式 arXiv ID 确定性合并。
+    if paper.pmid and (normalized_pmid := normalize_pmid(paper.pmid)):  # PMID 可确认同一生物医学论文。
         cross_source_keys.add(f"pmid:{normalized_pmid}")  # 加入规范化 PMID 身份键。
     for source_record in paper.source_records:  # 额外检查适配器已经保留的来源专有稳定标识。
         external_id = _normalize_text(source_record.external_id)  # 统一来源 ID 的空白与大小写表示。
         if external_id:  # 空白外部标识不应形成错误身份组。
             keys.add(f"source:{source_record.source}:{external_id}")  # 同一来源相同平台 ID 必须合并。
-    for source_name, source_id in (
-        ("openalex", paper.openalex_id),  # 显式检查 OpenAlex Work 标识。
-        ("semantic_scholar", paper.semantic_scholar_id),  # 显式检查 Semantic Scholar 论文标识。
-        ("dblp", paper.dblp_key),  # 显式检查 DBLP 出版物键。
+    for source_name, field_name in (
+        ("openalex", "openalex_id"),  # 显式检查已按共享规则规范化的 OpenAlex Work 标识。
+        ("semantic_scholar", "semantic_scholar_id"),  # 显式检查已按共享规则规范化的 Semantic Scholar 标识。
+        ("dblp", "dblp_key"),  # 显式检查已按共享规则规范化的 DBLP 出版物键。
     ):
-        if source_id and (normalized_source_id := _normalize_text(source_id)):  # 仅为非空显式来源 ID 建立键。
+        for normalized_source_id in normalized_identifiers[field_name]:  # 仅为有效且来源专有的标识建立键。
             keys.add(f"source:{source_name}:{normalized_source_id}")  # 兼容旧记录尚未写入 source_records 的情况。
     if not cross_source_keys:  # 缺少 DOI、arXiv 与 PMID 时才允许标题回退参与跨来源身份判断。
         title_key = _build_title_key(paper)  # 使用标题、年份和首作者组成保守回退键。
         if title_key is not None:  # 标题或年份或作者不足时不应凭空合并。
             keys.add(f"title:{title_key}")  # 将保守标题键加入当前身份集合。
     return keys | cross_source_keys  # 同时返回来源内和跨来源的稳定身份键。
-
-
-def _normalize_doi(doi: str) -> str:
-    """规范化 DOI 的 URL、前缀、大小写和无语义尾部标点。"""
-    normalized = doi.strip().casefold()  # 移除展示空白并消除 DOI 大小写差异。
-    normalized = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", normalized)  # 移除常见 DOI URL 前缀。
-    normalized = normalized.removeprefix("doi:").strip()  # 移除常见 DOI 标签并清理其后空白。
-    return normalized.rstrip("/.,;:)]}")  # 移除 URL 斜杠和引用文本常见尾部标点。
-
-
-def _normalize_arxiv_id(arxiv_id: str) -> str:
-    """规范化 arXiv 标识并忽略同一预印本的版本后缀。"""
-    normalized = arxiv_id.strip().casefold()  # 移除空白并统一大小写。
-    normalized = re.sub(r"^https?://arxiv\.org/(?:abs|pdf)/", "", normalized)  # 兼容 arXiv 摘要和 PDF URL。
-    normalized = normalized.removeprefix("arxiv:")  # 移除展示性 arXiv 前缀。
-    normalized = normalized.removesuffix(".pdf")  # 兼容 PDF URL 末尾扩展名。
-    return re.sub(r"v\d+$", "", normalized)  # 将同一预印本不同版本归为同一稳定标识。
-
-
-def _normalize_pmid(pmid: str) -> str:
-    """规范化 PMID 的 URL、前缀、空白与尾部斜杠。"""
-    normalized = pmid.strip().casefold()  # 移除空白并消除大小写差异。
-    normalized = re.sub(r"^https?://pubmed\.ncbi\.nlm\.nih\.gov/", "", normalized)  # 移除 PubMed URL 前缀。
-    normalized = normalized.removeprefix("pmid:").strip()  # 移除常见 PMID 标签。
-    return normalized.rstrip("/.,;:)]}")  # 忽略展示文本中无语义的尾部符号。
 
 
 def _normalize_text(value: str) -> str:
@@ -385,11 +361,11 @@ def _build_work_family_id(records: list[PaperRecord], canonical: PaperRecord) ->
     """根据来源明确提供的稳定标识生成保守、稳定且不泄露标题的版本族 ID。"""
     family_keys: list[str] = []  # 按稳定性优先级收集可解释的版本族依据。
     for record in records:  # 遍历同一身份组内的所有来源记录。
-        if record.doi and (doi := _normalize_doi(record.doi)):  # DOI 是正式版本最稳定的版本族依据。
+        if record.doi and (doi := normalize_doi(record.doi)):  # DOI 是正式版本最稳定的版本族依据。
             family_keys.append(f"doi:{doi}")  # 记录规范化 DOI。
-        if record.arxiv_id and (arxiv_id := _normalize_arxiv_id(record.arxiv_id)):  # arXiv 标识可关联同一预印本版本。
+        if record.arxiv_id and (arxiv_id := normalize_arxiv_id(record.arxiv_id)):  # arXiv 标识可关联同一预印本版本。
             family_keys.append(f"arxiv:{arxiv_id}")  # 记录忽略版本后缀的预印本 ID。
-        if record.pmid and (pmid := _normalize_pmid(record.pmid)):  # PMID 可关联生物医学版本元数据。
+        if record.pmid and (pmid := normalize_pmid(record.pmid)):  # PMID 可关联生物医学版本元数据。
             family_keys.append(f"pmid:{pmid}")  # 记录规范化 PMID。
     if not family_keys:  # 没有跨源稳定标识时退回当前规范记录的来源内稳定 ID。
         family_keys.append(f"source:{canonical.source}:{_normalize_text(canonical.paper_id)}")  # 仍为同源重复提供稳定族标识。

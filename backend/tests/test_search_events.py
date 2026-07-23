@@ -3,6 +3,7 @@
 import asyncio  # 在同步测试中执行异步多轮控制器。
 
 from backend.app.models.multi_source_recall import MultiSourceRecallResult  # 构造控制器所需的离线单轮结果。
+from backend.app.models.candidate_generation import CandidateGenerationResult  # 构造不触发模型的排序前候选。
 from backend.app.models.paper import PaperRecord  # 构造已核验的最终论文候选。
 from backend.app.models.query_intent import QueryIntent  # 构造最小多轮搜索意图。
 from backend.app.models.source_routing import SourceRoutePlan  # 构造可审计的离线来源计划。
@@ -12,10 +13,15 @@ from backend.app.services.multi_round_search import MultiRoundSearchController  
 class _StubCoordinator:
     """返回固定单轮结果且不访问来源、模型或网络。"""
 
-    async def recall(self, _: QueryIntent) -> MultiSourceRecallResult:
-        """返回一篇高相关论文，促使控制器因无新查询而完成。"""
+    async def recall_candidates(self, query: QueryIntent) -> CandidateGenerationResult:
+        """返回一篇排序前候选，促使控制器因无新查询而完成。"""
         paper = PaperRecord(paper_id="paper-1", title="Forecasting Paper", source="openalex", constraint_status="satisfied", llm_relevance_score=0.9)  # 构造可进入最终候选的论文。
-        return MultiSourceRecallResult(route_plan=SourceRoutePlan(academic_sources=["openalex"], selection_reasons={"openalex": "测试来源"}), papers=[paper], source_counts={"openalex": 1}, raw_paper_count=1, work_family_count=1)  # 返回已完成排序与核验的最小单轮响应。
+        route_plan = SourceRoutePlan(academic_sources=["openalex"], selection_reasons={"openalex": "测试来源"})  # 构造唯一来源的可审计候选路由。
+        return CandidateGenerationResult(route_plan=route_plan, query_intent=query, papers=[paper], academic_source_counts={"openalex": 1}, normalized_candidate_count=1, deduplicated_candidate_count=1, merged_candidate_count=0, filtered_candidate_count=0, work_family_count=0)  # 返回严格停在排序模型之前的最小候选边界。
+
+    async def finalize_candidates(self, candidate_result: CandidateGenerationResult) -> MultiSourceRecallResult:
+        """将唯一候选直接作为离线终态排序结果。"""
+        return MultiSourceRecallResult(route_plan=candidate_result.route_plan, query_intent=candidate_result.query_intent, papers=candidate_result.papers, source_counts=candidate_result.source_counts, raw_paper_count=candidate_result.normalized_candidate_count, work_family_count=candidate_result.work_family_count)  # 测试事件发布时不加载模型或调用 LLM。
 
 
 class _RecordingEventPublisher:

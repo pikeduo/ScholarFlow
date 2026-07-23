@@ -13,6 +13,10 @@ from backend.app.models.search_run_history import SearchRunHistoryItem  # 返回
 from backend.app.repositories.database import Base  # 注册到统一 SQLite 元数据。
 
 
+INTERRUPTED_SEARCH_STOP_REASON = "后端进程中断，搜索未完成"  # 为启动回收后的失败运行提供统一可展示原因。
+INTERRUPTED_SEARCH_ERROR = "搜索任务因服务进程中断而终止，请重新发起检索"  # 追加到轻量快照的安全错误说明。
+
+
 class SearchRunRow(Base):
     """映射 SQLite 中单次搜索运行的最新轻量状态快照。"""
 
@@ -77,6 +81,34 @@ class SearchRunRepository:
         """
         row = self._session.scalar(select(SearchRunRow).where(SearchRunRow.run_id == run_id))  # 通过主键语义读取单个最新运行。
         return SearchRunState.model_validate_json(row.state_json) if row is not None else None  # 统一从 JSON 恢复并重新校验领域状态。
+
+    def reconcile_interrupted_runs(self) -> int:
+        """将单进程上次遗留的 pending/running 运行原子标记为失败。
+
+        返回：
+            int：本次由运行中状态实际迁移为 failed 的记录数。
+        异常：
+            ValueError：任一待回收快照无法通过领域模型校验时抛出，事务不会部分提交。
+        """
+        rows = self._session.scalars(  # 只扫描冗余状态列明确为非终态的上次运行。
+            select(SearchRunRow).where(SearchRunRow.status.in_(("pending", "running")))  # completed、failed、cancelled 永不进入回收集合。
+        ).all()
+        if not rows:  # 多次启动或没有中断任务时无需写入。
+            return 0  # 保持幂等并避免无意义更新时间变化。
+        now = datetime.now(timezone.utc)  # 为同一批次迁移使用统一 UTC 更新时间。
+        for row in rows:  # 先完成全部状态 JSON 校验，再由事务统一提交。
+            state = SearchRunState.model_validate_json(row.state_json)  # 不信任冗余列，确保领域快照可被安全更新。
+            errors = list(state.errors)  # 复制历史安全错误，避免就地修改领域对象。
+            if INTERRUPTED_SEARCH_ERROR not in errors:  # 防止异常重试或旧数据造成相同错误重复追加。
+                errors.append(INTERRUPTED_SEARCH_ERROR)  # 给用户提供明确的重新检索行动提示。
+            recovered_state = state.model_copy(  # 同步修改 JSON 状态、停止原因和可展示错误摘要。
+                update={"status": "failed", "stop_reason": INTERRUPTED_SEARCH_STOP_REASON, "errors": errors}
+            )
+            row.status = recovered_state.status  # 同步冗余状态列，保证历史筛选与 JSON 状态一致。
+            row.state_json = recovered_state.model_dump_json(exclude_none=False)  # 覆盖为已校验且不含重复错误的状态快照。
+            row.updated_at = now  # 让历史列表按实际回收时间排序。
+        self._session.commit()  # 单次提交所有状态迁移；不读取、创建或修改 search_run_results。
+        return len(rows)  # 返回实际被回收的非终态运行数量。
 
     def save_result(self, result: MultiRoundSearchResult) -> None:
         """保存同次运行的完整最终结果，仅供 SSE 完成后的前端读取。

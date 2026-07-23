@@ -9,6 +9,8 @@ pydantic-settings==2.14.2
 SQLAlchemy==2.0.51
 # 异步学术数据源 HTTP 客户端。
 httpx==0.28.1
+# 用户显式执行的 Hugging Face gated 数据集选择性下载客户端。
+huggingface-hub==1.23.0
 # Redis 短期缓存、限流和跨进程事件协调客户端。
 redis==5.3.1
 # 多轮检索实际节点编排。

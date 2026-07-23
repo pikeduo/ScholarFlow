@@ -7,7 +7,7 @@ from pathlib import Path  # 定位测试 fixture 文件。
 import httpx  # 使用 MockTransport 拦截 HTTP 请求。
 
 from backend.app.adapters.base import AcademicSearchAdapter  # 验证客户端满足统一来源协议。
-from backend.app.adapters.openalex import OpenAlexClient, build_openalex_search_params  # 导入待测统一入口与纯参数构造器。
+from backend.app.adapters.openalex import OPENALEX_WORK_FIELDS, OpenAlexClient, build_openalex_search_params  # 导入待测统一入口、字段常量与纯参数构造器。
 from backend.app.core.config import Settings  # 构造不读取真实 .env 的隔离配置。
 from backend.app.models.query_intent import QueryIntent  # 构造统一来源协议要求的查询输入。
 
@@ -57,6 +57,17 @@ def test_search_params_fall_back_to_normalized_query() -> None:
     )
     params = build_openalex_search_params(query)  # 构造不含网络或密钥的来源参数。
     assert params["search"] == "复杂问题"  # 验证不会向来源发送空搜索参数。
+    assert "sort" not in params  # 验证统一入口依赖 OpenAlex 搜索默认相关性降序，不发送不兼容的冗余排序参数。
+    assert "filter" not in params  # 验证未指定年份范围时不会隐式加入来源过滤条件。
+
+
+def test_search_params_normalize_pasa_style_apostrophes_and_question_marks_only_for_openalex() -> None:
+    """QueryIntent 原文保持不变时，OpenAlex 请求文本应确定性兼容 PaSa 的智能标点。"""
+    original_query = "Who projected the first method for distinguishing the neurons’ ability based on the neuron’s activation value?"  # 固定复现 PaSa 开发集的实际来源兼容性边界。
+    query = QueryIntent(original_query=original_query, normalized_query=original_query, query_language="en")  # 保持 QueryIntent 中原始与规范化查询均未被来源适配器改写。
+    params = build_openalex_search_params(query)  # 构造不访问网络的 OpenAlex 参数。
+    assert query.original_query == original_query and query.normalized_query == original_query  # 验证领域契约和评测输入未被此来源规范化函数回写。
+    assert params["search"] == "Who projected the first method for distinguishing the neurons ability based on the neurons activation value"  # 验证仅删除撇号、替换问号并压缩空白。
 
 
 def test_client_implements_unified_adapter_and_maps_provenance() -> None:
@@ -67,6 +78,8 @@ def test_client_implements_unified_adapter_and_maps_provenance() -> None:
         """校验统一入口请求参数并返回本地成功响应。"""
         assert request.url.path == "/works"  # 验证客户端调用 OpenAlex 论文搜索端点。
         assert request.url.params["search"] == "forecasting Transformer"  # 验证查询意图按确定顺序映射为全文搜索词。
+        assert "sort" not in request.url.params  # 验证网络请求依赖 OpenAlex 搜索默认相关性降序，不发送不兼容的冗余排序参数。
+        assert request.url.params["select"] == ",".join(OPENALEX_WORK_FIELDS)  # 验证网络请求恢复最小字段选择参数。
         assert request.url.params["per_page"] == "5"  # 验证目标结果数量映射为来源单页限制。
         assert request.url.params["filter"] == "publication_year:2020-2024"  # 验证年份范围映射为来源过滤。
         return httpx.Response(200, json={"results": [fixture]}, request=request)  # 返回不依赖网络的 OpenAlex 响应。

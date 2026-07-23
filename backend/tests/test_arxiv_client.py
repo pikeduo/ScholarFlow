@@ -49,18 +49,22 @@ def _build_test_settings() -> Settings:
 
 
 def test_search_params_quote_terms_and_map_submitted_date_range() -> None:
-    """参数构造器应保护用户词语并将年份明确映射为提交日期近似过滤。"""
+    """参数构造器应只使用研究主题并将年份映射为提交日期近似过滤。"""
     params = build_arxiv_search_params(_build_query_intent())  # 构造不含网络或密钥的来源参数。
-    assert params["search_query"] == 'all:"forecasting" AND all:"Transformer" AND submittedDate:[202001010000 TO 202412312359]'  # 验证全字段短语、AND 语义和提交日期范围。
+    assert params["search_query"] == 'all:"forecasting" AND submittedDate:[202001010000 TO 202412312359]'  # 验证方法 Transformer 不会在来源召回阶段收窄研究主题与年份查询。
     assert params["max_results"] == 5  # 验证目标结果数量映射为来源单页限制。
+    assert params["start"] == 0 and params["sortBy"] == "relevance" and params["sortOrder"] == "descending"  # 验证宽松查询不改变既有分页和排序参数。
 
 
 def test_client_implements_unified_adapter_and_maps_atom_response() -> None:
     """客户端应满足协议、调用 Query API 并映射带来源溯源的论文记录。"""
     fixture = _load_arxiv_feed_fixture()  # 读取本地 Atom XML 响应。
+    request_count = 0  # 记录来源请求次数，防止宽松召回隐式增加第二次网络调用。
 
     def handler(request: httpx.Request) -> httpx.Response:
         """校验请求参数并返回本地成功 Atom 响应。"""
+        nonlocal request_count  # 更新闭包中的离线来源调用计数。
+        request_count += 1  # 记录当前唯一的一次 arXiv 请求。
         assert request.url.path == "/api/query"  # 验证基地址路径与 Query 端点被正确拼接。
         assert request.url.params["max_results"] == "5"  # 验证目标数量写入官方 max_results 参数。
         assert request.headers["user-agent"] == "ScholarWeave/0.1 (academic-search)"  # 验证来源请求携带可识别但不含用户数据的客户端标识。
@@ -74,6 +78,7 @@ def test_client_implements_unified_adapter_and_maps_atom_response() -> None:
     papers = asyncio.run(client.search(_build_query_intent()))  # 执行不访问网络的异步单页搜索。
     assert papers[0].source == "arxiv"  # 验证统一记录标记正确来源。
     assert papers[0].source_records[0].external_id == "2501.00001"  # 验证来源稳定标识保留无版本 arXiv ID。
+    assert request_count == 1  # 验证来源召回和 Atom 解析始终只使用原有的一次单页请求。
 
 
 def test_client_hides_http_error_details() -> None:
