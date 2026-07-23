@@ -34,7 +34,7 @@ ScholarFlow 是一个面向复杂科研问题的多源论文搜索与推荐系�
 
 ## LangGraph 检索工作流
 
-![LangGraph 多轮检索工作流](README/LangGraph 多轮检索工作流.png)
+![LangGraph 多轮检索工作流](README/LangGraph多轮检索工作流.png)
 
 系统采用有限轮次的候选生成策略：
 
