@@ -25,8 +25,6 @@ frontend/dist/
 PPT/
 
 # 文档
-/ScholarWeave_Project_Plan_v1.1.md
-/docs/~$三：科研场景下复杂学术查询的智能论文搜索与推荐.docx
-/docs/赛题三：科研场景下复杂学术查询的智能论文搜索与推荐.docx
+/docs/
 /presentation/
 /node_modules/
