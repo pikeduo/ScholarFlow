@@ -1,146 +1,57 @@
 # ScholarWeave（研索）协作规范
 
-本文件是 ScholarWeave（研索）的开发协作准则。处理任何任务前，先阅读根目录
-`AGENTS.md`、`docs/00_ScholarFlow_总体规划.md` 与相关模块的现有代码；如规则冲突，以用户最新指令为准。
-旧版 `ScholarFlow_项目规划书.md` 仅作历史参考。仓库目录名和已有 `SCHOLARFLOW_` 环境变量前缀暂不改名，除非用户明确发起专门迁移。
+## 1. 开始任务
 
-根目录仅保留项目 `README.md` 与本协作指令 `AGENTS.md` 两个文档入口；其他普通文档统一放入 `docs/`。`docs/` 已加入 `.gitignore`，因此新增或迁移到该目录的文档默认不纳入 Git；已被 Git 跟踪的既有文档不会因忽略规则自动取消跟踪。
+- 每次任务先阅读本文件、`docs/ScholarWeave_Project_Plan_v1.1.md`，再按任务读取最少必要的阶段规划和模块代码；用户最新指令优先。
+- 根目录只保留 `README.md` 与 `AGENTS.md`；其他文档放入 `docs/`。`docs/` 默认被 Git 忽略，已跟踪文件不会自动取消跟踪。
+- 项目品牌为 ScholarWeave（研索）；仓库名和既有 `SCHOLARFLOW_` 环境变量不作无关迁移。
+- 一次变更只完成一个可验收闭环；不混入无关重构、阶段或基础设施。
 
-## 1. 项目目标与边界
+## 2. 产品与架构边界
 
-ScholarWeave（研索）是面向复杂科研查询的多源智能论文搜索与推荐系统，而不是普通关键词搜索或简单 RAG。
+- ScholarWeave 是复杂科研查询的多源论文搜索与推荐系统，不是通用 RAG。前端为 Vue 3，后端为 FastAPI，检索由 LangGraph 编排。
+- 保持 Query、Search、Analysis、Ranking、Knowledge Management 职责分离；Codex 仅用于开发辅助，不进入生产链路。
+- 核心契约为 `QueryIntent`、`PaperRecord`、`SearchRunState`、`SearchResult`。网页发现必须使用 `SupplementalDiscoveryItem`，不得伪装成论文。
+- 身份去重优先 DOI、arXiv ID、PMID、来源 ID、标题+年份+作者；版本族与引用关系只使用已保存的事实，不得由 LLM 推断。
+- 存储职责固定：SQLite 保存业务与运行快照，Redis 用于可选缓存、限流和临时状态，FAISS 用于向量索引。
+- 排序顺序固定为规则过滤、BGE-M3、Cross Encoder、LLM 精排与理由生成；不得以微调或强化学习替代该分层。
 
-- 前端使用 Vue 3，后端使用 Python 与 FastAPI。
-- 检索编排使用轻量多 Agent + LangGraph 工作流，保持 Query、Search、Analysis、Ranking 与 Knowledge Management 职责分离。
-- Codex 仅用于受控开发辅助，不得成为生产运行链路、产品功能或部署依赖。
-- 当前核心检索源为 OpenAlex 与 Semantic Scholar；全部幂等学术 GET 调用（OpenAlex、Semantic Scholar、arXiv、DBLP、PubMed）必须通过共享执行器保留各来源独立 RPS，并统一处理 429、408、500、502、503、504、连接与读取超时：优先解析并上限截断 `Retry-After`，否则按 15、30、60 秒指数退避加抖动，默认最多三次重试。最终 429 必须为该来源启用不少于三十秒、默认六十秒的本地和 Redis 跨进程冷却；Redis 不可用时回退本地机制，不得影响其他来源。AI/计算机领域优先按需接入 arXiv、DBLP；医学/生命科学领域按需接入 PubMed，遵守匿名 E-utilities 每秒最多三次请求的来源级限制；Tavily 仅作为补充发现与网页证据来源，不能替代学术来源的论文身份与引用元数据。不要无条件调用所有数据源。
-- 持久化使用 SQLite，短期缓存、限流和工作流临时状态使用 Redis；语义向量索引使用 FAISS。
-- 排序遵循“规则过滤 → BGE-M3 粗排 → Cross Encoder 重排 → LLM 精排与理由生成”的分层设计。初期不得以模型微调或强化学习替代该方案。
-- 核心领域契约为 `QueryIntent`、`PaperRecord`、`SearchRunState` 与 `SearchResult`；补充网页发现使用独立的 `SupplementalDiscoveryItem`，不得伪装为论文记录。Python 模块可渐进兼容演进，但不得在没有迁移计划时随意改写已有公开字段。去重优先级为 DOI、arXiv ID、PMID、来源平台 ID、标题+年份+作者。
-- 前端优先实现“文献搜索”和“我的文献库”两大模块。搜索结果应能呈现查询解析、搜索过程、论文列表、推荐理由、收藏能力，以及引文关系图、技术路线分类等可视化入口。
-- 图谱体验可参考 PaperGraph：以论文为节点、以引文或语义关系为边，支持按关系、聚类或时间维度理解文献；但必须先完成可用的检索与文献库闭环。
+## 3. 来源、模型与搜索边界
 
-## 2. 实施与规划规则
+- OpenAlex 与已启用的 Semantic Scholar 是核心来源；AI/计算机按需加入 arXiv、DBLP，医学按需加入 PubMed；Tavily 仅在 `requires_web_evidence=true` 时作补充证据，不能参与论文身份、去重或引用元数据。
+- 所有幂等学术 GET 必须经共享执行器，保留来源独立 RPS，并处理 408、429、5xx 和连接/读取超时：优先受限的 `Retry-After`，否则 15、30、60 秒退避加抖动，最多三次重试。最终 429 必须同步本地与 Redis 冷却至少 30 秒；Redis 不可用时回退进程内机制。
+- 来源适配器独立封装认证、分页、映射、重试、限流和错误；LangGraph 只依赖统一协议。密钥和模型配置只从环境变量或配置读取，日志不得泄露。
+- 标准搜索最多三轮，每轮只调用一个学术来源；每轮只做候选生成、融合与规则过滤，终态后才对累计候选统一排序。达到目标、无新增高质量结果、约束覆盖或预算上限时停止。
+- 标准搜索必须有 DeepSeek 精排、约束核验和理由；BGE-M3 与 Cross Encoder 由用户选择且应提示耗时。论文精排每批 5–10 篇，默认最多 10 篇；单批失败只降级该批。
+- 历史、详情、比较、技术路线、引用图、综合报告和用量接口只读取同次 SQLite 终态快照，不触发来源、模型或 PDF。运行中记录不得清理；终态清理由用户明确确认。
 
-- 每次处理任务时，必须始终读取根目录 `AGENTS.md` 与 `docs/00_ScholarFlow_总体规划.md`，根据当前任务判断所属大阶段并在工作记录或交付说明中明确记录。
-- 在确定任务所属阶段后，只读取该阶段对应的一份规划书；不得默认加载全部阶段规划，以避免引入无关上下文和 Token 消耗。
-- 跨阶段任务仅读取确实涉及的最少规划文档，并在交付说明中说明跨阶段读取的原因。
-- 按阶段交付，优先顺序为：基础工程 → 多源检索与规范化/去重 → 排序系统 → 搜索页与文献库/图谱 → 缓存、成本统计与策略优化。
-- 当前实施顺序为：核心领域契约、自然语言 Query Agent、OpenAlex、Semantic Scholar、arXiv、DBLP、PubMed 与 Tavily 适配器、动态来源路由、多源召回协调、`PaperRecord` 规范化融合、身份去重、版本族关联、RRF、多源稳定 API、多源分层排序与约束核验、搜索结果页基础闭环、可编辑 `QueryIntent` 直接重搜，以及 SQLite 文献库前后端基础闭环、文献库 BGE-M3/FAISS 语义检索闭环均已完成；覆盖缺口分析、查询演化、多轮检索控制、停止原因服务闭环、稳定搜索 API、搜索页多轮过程展示、`SearchRunState` SQLite 轻量快照/读取接口、多轮检索 SSE 进度流、搜索页消费 SSE 并按运行标识读取同次最终结果、搜索页按 URL `run_id` 恢复 SQLite 状态与终态结果、恢复运行中的有限状态轮询回退、搜索结果本地筛选和分页，以及 LangGraph 初始化、召回、覆盖评估、查询演化和结果整理条件节点均已完成，临时直连循环已移除且工作流失败、预算停止分支已完成单测覆盖。搜索结果论文详情、2–5 篇论文比较和受限引用图的稳定读取 API、搜索页入口均已完成：三者只扫描 SQLite 已保存的最终结果快照；引用图仅展示集合内 `references` 和 `work_family_id` 支持的关系，不调用外部学术来源、PDF 或 LLM。下一步实现技术路线的保守分类 API 与搜索页入口；在该搜索闭环验收前，不再扩展文献库功能。自然语言入口必须先生成英文检索式和结构化 `QueryIntent`，并将来源召回规模与最终结果数量分离；用户编辑已有 `QueryIntent` 后应直接进入多源检索，避免重复调用 Query Agent。标准搜索允许最多三轮，每轮只调用一个按核心优先级和领域相关性排序的学术来源，避免同一运行重复消耗来源配额；两轮后高相关结果仍不足目标时，第三轮优先调用尚未使用的第三个领域相关来源；不存在第三候选时复用最相关已选来源，并将每源召回上限缩小为剩余目标篇数。文献库按 DOI、arXiv ID、PMID、来源平台 ID 和内部论文 ID 的顺序去重。OpenAlex 与已启用的 Semantic Scholar 为核心源；AI/计算机领域按需加入 arXiv 与 DBLP；医学/生命科学领域按需加入 PubMed；Tavily 仅在 `QueryIntent.requires_web_evidence=true` 且配置可用时启用。
-- 实施状态补充（优先于上条的历史“下一步”描述）：已完成技术路线保守分类 API 与搜索页入口；已完成 `GET /api/v1/usage/{run_id}` 用量读取 API、其离线测试和搜索页实际用量面板。二者均只读取 SQLite 已保存的同次搜索运行快照，不触发来源调用、模型调用或重新估算费用；每次 DeepSeek 成功响应均依据供应商 usage、模型价表和调用时北京时间峰谷系数冻结人民币费用估算，读取时只返回该已保存数值。已完成 `GET /api/v1/search/runs/{run_id}/papers` 稳定结果读取契约：只从 SQLite 同次最终结果快照执行来源、核验状态和年份筛选，支持相关性、年份与引用量展示排序及服务端分页；搜索页已切换为消费该接口。已完成本地搜索运行历史与终态清理边界：历史索引不返回查询正文和论文内容；清理必须由用户显式确认，且只原子删除终态运行的状态与同次结果快照，运行中记录稳定返回 409。文献搜索已具备阶段六计划内的主要交互闭环；端到端验收清单已写入 `docs/acceptance/文献搜索端到端验收清单.md`，并补齐技术路线只读 API 的离线测试。已完成 LLM 搜索策略子闭环：仅当覆盖缺口仍存在时，生产搜索工作流可调用一次 DeepSeek；策略只接收受限公开标题/摘要片段和覆盖缺口、最多生成两条英文子查询，仍经过硬约束、语言、重复和相似度保护，调用失败自动回退确定性 QueryEvolution，并将模型 Token 与降级摘要写入 `SearchRunState`。下一步由用户按清单完成真实环境验收并提供 `run_id`、终态状态和失败安全摘要；验收通过后再决定是否扩展文献库。
-- 实施状态补充（优先于上条的历史“下一步”描述）：已完成技术路线保守分类 API 与搜索页入口；已完成 `GET /api/v1/usage/{run_id}` 用量读取 API、其离线测试和搜索页实际用量面板。二者均只读取 SQLite 已保存的同次搜索运行快照，不触发来源调用、模型调用或重新估算费用；每次 DeepSeek 成功响应均依据供应商 usage、模型价表和调用时北京时间峰谷系数冻结人民币费用估算，读取时只返回该已保存数值。已完成 `GET /api/v1/search/runs/{run_id}/papers` 稳定结果读取契约：只从 SQLite 同次最终结果快照执行来源、核验状态和年份筛选，支持相关性、年份与引用量展示排序及服务端分页；搜索页已切换为消费该接口。已完成本地搜索运行历史与终态清理边界：历史索引不返回查询正文和论文内容；清理必须由用户显式确认，且只原子删除终态运行的状态与同次结果快照，运行中记录稳定返回 409。文献搜索已具备阶段六计划内的主要交互闭环；端到端验收清单已写入 `docs/acceptance/文献搜索端到端验收清单.md`，并补齐技术路线只读 API 的离线测试。已完成 LLM 搜索策略子闭环：仅当覆盖缺口仍存在时，生产搜索工作流可调用一次 DeepSeek；策略只接收受限公开标题/摘要片段和覆盖缺口、最多生成两条英文子查询，仍经过硬约束、语言、重复和相似度保护，调用失败自动回退确定性 QueryEvolution，并将模型 Token 与降级摘要写入 `SearchRunState`。已完成事实型搜索综合报告子闭环：`GET /api/v1/search/runs/{run_id}/synthesis` 仅汇总同次 SQLite 最终结果的数量、年份、来源、来源关键词、覆盖缺口和停止原因，搜索页异步展示且不调用模型、来源或 PDF。下一步由用户按清单完成真实环境验收并提供 `run_id`、终态状态和失败安全摘要；验收通过后再决定是否扩展文献库。
-- 搜索运行中断回收补充：当前仅按单后端进程运行；启动完成 SQLite 建表后，服务会在同一数据库事务中将遗留的 `pending`、`running` 轻量快照统一标记为 `failed`，写入“后端进程中断，搜索未完成”及一次性错误摘要，不创建结果快照、不调用控制器、学术来源或 LLM，也不尝试恢复 asyncio task。已完成、失败和取消运行不改写；终态清理仍只允许删除 `completed`、`failed`、`cancelled`，真实运行中的记录仍返回 409。默认 SQLite 相对 URL 固定解析到仓库 `data/scholarflow.db`，绝对 URL 保持不变。
-- Redis 分阶段实施状态补充：第一阶段已完成可选 Redis 生命周期基础设施，包括 `SCHOLARFLOW_REDIS_*` 配置、延迟导入的异步客户端管理器、启动 ping、关闭释放和健康检查状态；Redis 禁用或不可用时必须继续使用 SQLite 与进程内回退路径。Windows 本地 Redis 常只监听 IPv4，故默认地址和 `.env.example` 使用 `redis://127.0.0.1:6379/0`；为兼容已有的 `localhost` 配置，客户端仅会把精确主机名 `localhost` 规范化为 `127.0.0.1`，不改写远程或显式 IPv6 部署地址。Redis 仅供 ScholarFlow 使用且统一使用 DB 0，`SCHOLARFLOW_REDIS_KEY_PREFIX` 默认 `ScholarFlow`，所有键固定为 `ScholarFlow:<模块>:<子模块>:<唯一标识>`；当前来源响应缓存为 `ScholarFlow:source:cache:<来源>:<操作>:<适配器版本>:<SHA-256>`，跨进程来源限流为 `ScholarFlow:source:rate:<来源>:request` 与 `ScholarFlow:source:rate:<来源>:cooldown`。第二阶段的响应缓存与统一学术 API 韧性闭环已完成：五个学术适配器会以来源、操作、适配器版本和不含认证信息的规范化参数构造缓存键，成功结果才可写缓存；共享执行器在每次重试前重新通过 Redis `SET NX` 请求窗口和本地 RPS，最终 429 按不少于三十秒的冷却同步给其他进程。共享 Redis 不可用时继续使用进程内限流与冷却。已评估 Redis Stream：当前搜索任务仍与单个 SSE 请求同进程执行，SQLite 已承担刷新恢复和终态读取，且没有 `Last-Event-ID` 重放或跨实例任务边界，因此暂不替换内存队列；仅在后台任务解耦、多进程部署和按运行标识断线续传同时落地时单独实施。详见 `docs/decisions/2026-07-13_redis_stream_sse_评估.md`。新增 Redis 运行依赖后，用户需使用当前项目解释器安装根目录 `requirements.txt`，并手动保持本地 `.env` 与 `.env.example` 的 Redis 字段结构一致；不得提交 `.env`。
-- 排序模式策略：搜索页统一使用标准模式，必须启用 `SCHOLARFLOW_LLM_RANKING_ENABLED` 所控制的 DeepSeek 精排、约束核验和理由生成；用户可在标准搜索中分别选择 BGE-M3 粗排和 Cross Encoder 重排，默认均关闭，实际执行仍分别受 `SCHOLARFLOW_SEMANTIC_RANKING_ENABLED` 与 `SCHOLARFLOW_CROSS_ENCODER_RANKING_ENABLED` 控制。前端必须警告开启任一本地模型会显著增加耗时；任何主动跳过不得加载模型，且必须返回可展示摘要，不能伪装为模型故障或约束已满足。DeepSeek 论文精排必须按 5–10 篇小批次顺序调用，默认每批 10 篇、单批 30 秒和 4,000 输出 Token；单批失败只降级该批并继续其余批次，全部失败才完整降级，查询规划仍使用独立超时。搜索页展示总耗时时保留后端毫秒契约，并自动进位为 `ms`、秒或分钟。
-- 搜索可视化实施状态补充：搜索页的受限引用网络入口只请求 SQLite 已保存结果集合内的论文标识，默认最多 30 个节点；默认使用稳定的时间分层引用图，横轴按发表年份由旧到新，`A → B` 仅表示 `A` 引用了 `B`。默认“研究主干”仅在前端对真实 `cites` 做循环安全的保守传递约简、每节点出边和全图边数上限，完整网络可恢复当前响应中的全部真实引用事实；两种模式均使用确定性平滑贝塞尔曲线，初始显示当前视图的淡化边和淡化箭头。`selectedNodeId` 只决定侧栏、节点高亮和当前关系展示，`focusedPaperId` 只由“仅查看一阶邻域”改变并决定节点集合，`hoveredNodeId` 只提供临时视觉反馈；选中或悬浮后，无关边和箭头不进入 SVG 渲染。侧栏“查看引用”只显示选中论文的直接出边，“查看被引用”只显示直接入边；两者仅使用当前节点范围内真实 `cites`，不再提供引用路径分析或多层事实探索。布局仍按完整真实 `cites` 计算弱连通分量并默认折叠孤立论文，节点可按已保存 `work_family_id` 合并；默认不显示版本族边，用户展开版本族后才可显式显示黄色虚线 `same_work` 辅助关系。图不调用外部引文来源、模型或 PDF，也不得生成关键词、作者或 LLM 推断边。
-- 搜索页信息架构实施状态补充：已将原“检索过程”“多轮搜索状态”和“检索综合报告”收敛为单一检索概览。首屏只显示最终结论、停止原因和覆盖缺口对应的补充方向；过程/用量与年份、来源、来源关键词等结果洞察默认展开但可按需收起。过程区不再重复展示轮次、来源调用和累计候选；来源或模型的真实降级紧随实际用量显示，覆盖缺口和查询演化提示不再误报为黄色故障。
-- 一次变更以一个可验收的功能闭环为边界，可合并 2–4 个紧密相关的小任务（如实现、测试及必要配置/文档）；完成后立即停止并等待用户确认下一步。不得将无关模块、多个开发阶段或复杂基础设施一次性混入同一变更。
-- 规划或代码修改完成后，必须在交付说明中明确写出“下一步规划”，并检查本文件是否仍准确；若架构、目录、命令、依赖管理或协作流程发生变化，必须同时更新 `AGENTS.md`，否则说明“AGENTS.md 无需更新”。
-- 每次交付说明必须列出本轮新增或更新的文件，并使用可点击的本地文件链接；说明每个文件的主要变更，方便用户直接审阅。
-- 对话上下文达到 180k 时停止扩展范围并准备交接；达到 220k 时生成 `docs/handoffs/` 交接文档并建议新建会话；接近 272k 时不得继续常规开发。
-- 新模块先定义清晰的输入、输出、错误边界和可替换接口；第三方 API、模型、存储与缓存必须放在适配层或配置层，禁止散落在业务逻辑中。
-- 学术搜索 API 先封装为 `adapters/` 中可替换、可单测的客户端方法；仅当 LangGraph 工作流需要自主选择数据源时，才将客户端方法包装为 Agent Tool，Tool 不得直接承载 HTTP、鉴权或响应解析细节。
-- 密钥、令牌、数据库地址和模型配置必须从环境变量或配置文件读取。提交 `.env.example`，不得提交真实密钥、令牌、用户数据、下载模型、数据库、缓存文件或运行日志。
-- `.env` 必须与 `.env.example` 保持相同字段名、字段顺序、注释结构及非密钥默认值；仅 API Key、令牌等真实敏感值可以不同。每次新增或修改 `.env.example` 时，必须同步检查 `.env` 的结构并补齐缺失项；不得读取、输出、删除或覆盖 `.env` 中已有敏感值，且不得将 `.env` 纳入 Git 暂存或提交。
-- OpenAlex 适配器使用 `SCHOLARFLOW_OPENALEX_API_BASE_URL`、`SCHOLARFLOW_OPENALEX_API_KEY` 和 `SCHOLARFLOW_OPENALEX_TIMEOUT_SECONDS` 配置；调用前必须通过配置方法校验 API 密钥，日志中不得输出该密钥。
-- 每个来源适配器必须独立封装认证、字段映射、分页、超时、重试、限流、错误映射与健康状态；Tavily 必须实现独立的 `WebDiscoveryAdapter` 并返回不可合并的 `SupplementalDiscoveryItem`，不得进入论文去重、引用关系或学术元数据排序。LangGraph 只依赖统一适配器协议，不得依赖供应商字段。
-- 检索迭代必须设置停止条件：目标数量已满足、连续一轮无新增高质量论文、约束已覆盖，或 API/Token 预算达到上限。
-- 本地搜索运行历史仅面向当前用户的本地 SQLite 快照：每项返回原始搜索问题、运行状态、轮次、来源、停止原因、结果可用状态和明确 UTC 偏移的创建/更新时间，但不返回论文集合；搜索页将问题限制为一行省略显示，浏览器按本地时区展示时间。终态清理仍必须由用户显式确认。
+## 4. 工程规则
 
-## 3. Python 依赖与运行规则
+- 新模块先定义输入、输出、错误边界和可替换接口；第三方服务只能位于适配层或配置层。
+- Python 依赖写入根目录 `requirements.txt` 并精确锁定；开发依赖写入 `requirements-dev.txt`。前端依赖写入 `frontend/package.json`。不为规划预装依赖。
+- `.env` 必须与 `.env.example` 的字段、顺序、注释和非密钥默认值一致；不得读取、输出、覆盖、暂存或提交 `.env`。
+- 代码使用 UTF-8、类型标注、中文文档注释和必要的中文行内注释；稳定 API 需要明确的错误契约。日志同时写控制台和受忽略日志文件，异常记录堆栈但不暴露敏感数据。
+- 后端使用 `backend.app...` 绝对导入；从根目录以 `uvicorn backend.app.main:app --reload` 和 `pytest` 运行。测试使用 mock/fixture，不依赖网络、真实密钥、真实模型或用户数据。
 
-- 必须保留仓库根目录的 `requirements.txt`。其应记录运行时直接依赖及明确版本；开发工具统一记录在根目录 `requirements-dev.txt`，并通过 `-r requirements.txt` 继承运行时依赖。
-- 创建或修改 Python 代码且新增第三方依赖时，必须同步将“包名==版本号”加入 `requirements.txt`，去重并保持合理分组；交付时明确提醒用户执行 `pip install -r requirements.txt`。
-- 创建或修改 Vue/Node 代码且新增第三方依赖时，必须同步将依赖及精确版本写入 `frontend/package.json`；交付时明确提醒用户在 `frontend/` 执行 `npm install`，不得将 npm 包写入 Python 的 `requirements.txt`。
-- 不得仅因规划而预装 FastAPI、LangGraph、Redis、FAISS、模型库等依赖；仅在相关代码真正落地时加入。
-- 由用户负责实际运行服务、下载数据集和下载模型。助手可以进行静态检查或 `python -m compileall`，但不得主动启动服务、执行会访问网络的下载、调用外部 API、写入真实业务数据或运行长时任务。
-- 后端是根目录下的 `backend` Python 包。后端代码与测试统一使用 `backend.app...` 绝对导入；从仓库根目录使用 `uvicorn backend.app.main:app --reload` 启动、使用 `pytest` 运行测试，不得依赖 `--app-dir` 或 `pythonpath` 改写导入路径。
-- 后端测试直接使用当前项目解释器已安装的 `pytest`，例如 `pytest backend/tests/test_xxx.py`；不得为执行测试额外探测、切换或包装解释器，也不要求 Conda 预检命令。PyCharm 项目解释器应保持与用户当前可运行测试的解释器一致。
-- 提供可复制的运行、迁移、测试或模型下载命令，并说明其前置条件；不要声称未经用户执行验证的运行结果。
-- 每次交付必须明确列出用户应手动运行的具体文件或目标命令，例如指定的 `pytest backend/tests/test_xxx.py`、迁移脚本或服务入口；不得只笼统要求运行全部 `pytest`。
-- 仓库文本统一使用 UTF-8；Python 文本读写和文本子进程必须显式指定编码。Windows 入口应配置 UTF-8 输出，终端日志使用 `[OK]`、`[WARN]`、`[ERROR]` 等 ASCII 标记，JSON 需要可读中文时使用 `ensure_ascii=False`。
+## 5. 测试、交付与 Git
 
-## 4. 代码质量与中文注释
+- 每个可独立测试模块至少覆盖正常、空/边界和外部异常路径；变更后执行相称的静态检查、定向测试或 `python -m compileall`。
+- 交付说明写明阶段、变更文件链接、验证结果、用户应手动执行的精确命令、未验证项、下一步规划与本文件是否需要更新。
+- 提交前检查状态与差异，只包含本任务文件；不得提交 `.env`、密钥、日志、数据库、缓存、模型、构建产物或真实数据。未经用户明确要求，不提交、推送、建分支、建 PR 或改写历史。
+- 提交信息使用中文 Conventional Commits；每次产生文件变更时附上用户可手动执行的提交命令。
 
-- 新增或修改代码必须使用必要的中文注释。除极其简单、语义自明的语句外，每行代码都应有简短中文行尾注释；需要说明原因、边界或算法的长注释放在代码上一行。
-- 注释解释意图、数据含义、业务规则、边界条件和失败处理，不能机械复述代码。
-- 函数、类、接口和数据模型必须有中文文档注释，说明职责、参数、返回值与可能异常。
-- 保持模块低耦合，使用类型标注、输入校验和明确异常。对外 API 的响应和错误格式应稳定，方便 Vue 前端消费。
-- 不修改无关文件；保留用户现有改动。新增目录和文件名采用清晰、一致的英文命名。
+## 6. 评测与消融
 
-## 5. 日志、错误与可观测性
+- 评测与生产搜索分离。离线指标、Top-K、报告和排序消融只能读取既有候选快照与预测，不能重调学术 API。
+- 明确区分 `source_recall_count`、语义/交叉重排保留数、`target_paper_count` 与 `evaluation_top_k`。A/B/C/D 必须共享规范化、去重、RRF 和规则过滤后的排序前候选快照。
+- `snapshot-export` 是评测中唯一允许调用生产学术来源的入口：用户必须显式提供 `--allow-online-sources`、预先审阅的 `QueryIntent`、调用前 `usage-forecast` 及确认哈希；不得调用 Query Agent、DeepSeek、覆盖分析或多轮搜索。
+- 用户本地数据集和 PaSa 文件才可被导入；不得下载、猜测字段、补全或在线核验。AutoScholarQuery/dev 的原生导入仅接受已确认字段；RealScholarQuery 需独立确认格式。
+- 固定开发集子集必须由 `gold-subset-select` 显式封存数量、种子、选择标识、哈希和完整 `query_id` 列表。组装集合时只接受已校验、无来源降级警告的快照；多个重试由用户显式选择。
+- 本地 BGE-M3/Cross Encoder 仅接受用户提供且完整的模型目录，执行必须显式 `--allow-local-models`；构造和空候选不得加载模型或下载远程权重。
+- DeepSeek 评测独立于 A/B/C/D；每次真实调用前必须预估并确认，记录尝试批次、成功 usage、费用和降级，且不得调用学术来源。
+- 全部零命中先运行只读覆盖诊断；若需要 Query Agent 策略实验，只能以显式 `--query-id` 单独生成新快照，不能混入旧集合。
+- 真实数据下载、学术 API、LLM、本地模型与端到端 benchmark 均由用户显式执行；离线测试只使用合成 fixture，不读取 `.env` 或访问网络。
 
-- 使用 Python 标准 `logging` 建立统一日志配置，日志必须同时输出到控制台和受 Git 忽略的日志文件。日志目录建议为 `logs/`，使用按日期或大小滚动，避免无限增长。
-- `SCHOLARFLOW_LOG_DIR` 使用相对路径时，必须相对仓库根目录解析，不能随 pytest、IDE 或服务启动时的当前工作目录变化；绝对路径配置保持原样。
-- 记录阶段性完成信息：数据集下载/处理信息、模型下载/加载信息、索引构建信息、检索轮次、数据源调用结果、缓存命中、排序数量和关键耗时。
-- 记录运行输出中的关键统计信息，例如论文召回数、去重数、过滤数、最终返回数、Token/API 调用次数与错误信息。
-- 捕获异常时必须使用 `logger.exception` 或等效方式记录完整堆栈，并向调用方返回不泄露密钥、内部路径或原始响应的可理解错误。
-- 日志不得写入 API 密钥、访问令牌、完整用户敏感查询、受限论文全文或个人数据。
+## 7. 当前规划
 
-## 6. 测试与验收
-
-- 每个新增可独立测试的后端模块都应添加对应测试，至少覆盖正常路径、空结果/边界条件和外部服务异常。
-- 外部 API、Redis、模型与文件系统在单元测试中应使用可控的 mock 或测试替身；测试不能依赖真实密钥、网络或本地已下载模型。
-- 修改后至少执行与改动相符的静态检查、测试或 `python -m compileall`；若未执行，应明确说明原因和用户可执行的验证命令。
-- 完成汇报应说明：可点击的变更文件及其内容、实现结果、已执行验证、用户应手动运行的具体文件/命令、未验证项、依赖安装提醒（如适用）、下一步规划，以及 `AGENTS.md` 是否已检查/更新；每次产生文件变更后，必须附上由用户手动执行的 Git 提交命令。
-
-## 7. Git 提交规范
-
-- 提交前检查 `git status` 与差异，确认只包含本任务相关文件；不得覆盖或清理用户已有的无关改动。
-- 提交信息使用中文并遵循 Conventional Commits：`feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`，例如 `feat: 增加 OpenAlex 检索适配器`。
-- 一次提交只包含一个逻辑变更，并包含所需代码、测试、依赖清单和文档更新；不要将格式化、重构和功能改动无关混合。
-- 提交前不得包含 `.env`、密钥、`logs/`、SQLite 数据库、Redis 持久化文件、下载模型、构建产物、覆盖率文件或大体积数据集。必要时更新 `.gitignore`。
-- 未经用户明确要求，不执行提交、推送、创建分支、创建 Pull Request、变基、强制重置或任何会改写 Git 历史的操作；仅生成改动并报告建议的提交命令。
-
-## 8. 评测与消融规则
-
-- 评测模块必须与生产搜索分离；不得为了匹配评测文档而擅自修改生产 API，生产实现缺口应先记录并单独规划。
-- 必须明确区分 `source_recall_count`、BGE-M3 保留数量、Cross Encoder 保留数量、`target_paper_count` 与 `evaluation_top_k`，不得用一个含混的候选数量代替。
-- BGE-M3 与 Cross Encoder 本地排序消融必须复用同一份已规范化、去重的候选快照，不得为不同排序配置重复调用学术 API。
-- 排序前候选快照必须明确标记为规范化、身份去重、RRF 与确定性规则过滤后且 BGE-M3 前的阶段，并以内容哈希封存；去重前、去重后、规则过滤数和排序输入数必须分别记录，未观测的供应商原始条目数不得用规范化数量或零代替；现有 SQLite 最终结果快照不得冒充排序前候选快照。
-- 生产侧排序前候选生成必须统一复用 `CandidateGenerationService`：该服务只负责来源路由与调用、身份融合/RRF、确定性规则过滤和独立网页发现，不得依赖或调用 BGE-M3、Cross Encoder、DeepSeek 或覆盖分析；生产搜索继续在其输出上执行完整排序链。
-- `python -m evaluation snapshot-export` 是唯一允许评测模块调用生产学术来源的命令：必须由用户显式提供 `--allow-online-sources`、已准备好的第一轮 `QueryIntent` 和尚不存在的输出路径；输入必须明确设置 `source_recall_count`，关闭网页发现、BGE-M3 与 Cross Encoder。该入口不得调用 Query Agent、DeepSeek、覆盖分析或多轮搜索，助手不得自动执行。
-- `scripts/export_pasa_snapshot_batch.ps1` 仅是上述 `snapshot-export` 的用户显式批处理编排器：默认必须以 `-BatchSize 1` 处理 QueryIntent manifest 中下一条尚无有效快照的查询，导出后立即运行离线 `snapshot-check`，并跳过已校验且无“学术来源降级”警告的快照；失败必须立即停止，绝不自动跑完整开发集或绕过 `--allow-online-sources`。
-- `python -m evaluation snapshot-collection-assemble` 只允许在单查询快照已由用户完成后离线运行：必须按 `query-intent-manifest-v1` 的 `query_id_order` 组装唯一共享 JSONL 和集合 manifest，逐份复用快照哈希/去重校验，排除“学术来源降级”失败产物；多个有效重试必须由用户通过 `--snapshot-override` 显式选择。候选不足 `target_paper_count` 必须保留并审计，组装、指标、Top-K、消融计划和报告均不得重调学术 API。
-- `python -m evaluation dataset-gold-import` 只接受用户本地准备且字段版本已确认的评测金标 JSONL，转换为 `GoldQuery` 时必须保留数据集、切分、原始查询标识和转换版本；不得下载、猜测或自动兼容 PaSa、RealScholarQuery 等第三方原始格式，不得补全或在线核验论文元数据，且不得覆盖已有导入结果。
-- `scripts/download_pasa_dataset.py` 仅允许由用户显式执行：必须通过 `huggingface_hub.snapshot_download` 的有限 `allow_patterns` 下载 `CarlanLark/pasa-dataset` 的受支持文件，默认只取 `AutoScholarQuery/dev.jsonl`；认证只能使用本机 `hf auth login` 凭据，代码、参数、日志和错误中不得保存或输出 Token。脚本不得下载整个仓库，不得自动执行、解析原始字段或运行 benchmark。
-- `python -m evaluation pasa-gold-import` 仅支持已由用户本地样例确认的 `AutoScholarQuery/dev.jsonl`：严格读取 `qid`、`question`、`answer`、`answer_arxiv_id` 和 `source_meta`，按索引配对标题与 arXiv ID；若 PaSa 原始标注按统一身份规则重复，保留首次论文并将数量写入 `pasa_duplicate_answer_count`，再复用通用命名空间和新文件写入边界。此例外不得改变通用 `dataset-gold-import` 对重复金标的拒绝行为；不得调用论文数据库、学术 API、LLM 或模型，也不得将未确认格式的 RealScholarQuery 标记为兼容。
-- 生产融合与评测必须复用同一套确定性 DOI、arXiv（去版本）、`10.48550/arXiv.<id>` 别名、PMID、OpenAlex、Semantic Scholar 与 DBLP 规范化规则；普通 DOI 不得伪装为 arXiv，强标识冲突不得退回标题。PaSa Gold 缺少年份和作者时的完全规范化标题相等仅可作为单独的 PaSa 稀疏 Gold 审计分数，必须与通用确定性分数分别展示，绝不扩散到生产去重或通用评测。
-- `python -m evaluation gold-subset-select` 只允许从用户已验证的本地 `GoldQuery` 封存开发集子集：必须显式给出 `count`、`selection_id`、种子、新子集路径和新 manifest 路径；以固定 SHA-256 策略、源文件哈希、输出哈希及完整稳定 `query_id` 列表审计，且不得覆盖任何已封存输出。开发集“固定 20 条”是这种可复现子集的规模，不是原始 PaSa dev 文件总量；改变子集成员后重新生成候选仍必须由用户逐条显式授权，调整离线 Top-K、指标或报告不得调用学术 API。
-- 调整指标、评分 Top-K 或报告格式只读取既有预测和候选快照，不得重新调用学术 API；只有来源查询、来源召回规模、`QueryIntent` 或多轮策略改变时才重新生成在线候选。
-- DeepSeek 评测核验可用于任意用户明确选择的离线实验；每次真实调用前必须完成资源预估与确认，并单独记录调用数、Token、费用、批次数和降级信息。调用数按已尝试的 DeepSeek 小批次计，失败批次也必须留档；Token 与费用只累计供应商成功返回的 usage。它不得重调学术 API，且不能与未启用 DeepSeek 的报告混淆。
-- 若同一共享候选快照上的首轮配置均出现零检索命中，必须先运行只读候选覆盖诊断，区分金标—候选身份可比性与召回覆盖事实；局部 Query Agent 新快照只能通过显式 `--query-id` 诊断，报告必须冻结实际诊断范围，禁止复制进旧集合伪造同一 QueryIntent 来源；在诊断完成前不得为此启动 DeepSeek 或重建在线候选。
-- 若覆盖诊断后需要补足隐含检索术语，可由用户显式执行 `python -m evaluation query-agent-plan --allow-query-agent`，以既有 `query-intent-manifest-v1` 中的 `original_query` 和显式 QueryIntent 条件生成新的第一轮检索表达式；该入口严格不得读取 GoldQuery、Gold 标题、作者、arXiv ID、候选快照或报告，必须冻结每条调用的 Token、费用、耗时和输出哈希。它属于重新生成候选的查询策略实验，不得与既有共享快照的离线排序消融混用，也不改变“首轮排序消融关闭 DeepSeek”的规则。
-- 真实评测数据下载、学术 API、LLM、本地模型和完整 benchmark 必须由用户显式执行；离线测试只能使用合成 fixture 或 mock，不得读取 `.env`、访问网络或下载模型。
-- 评测真实 Query Agent 或学术来源调用前，必须先由 `python -m evaluation usage-forecast` 生成并审阅不含查询正文的 Token、费用或 API 次数上限预估；来源 RPS、429 冷却、重试、超时和显式授权属于供应商保护，不得以“解除用量限制”为由删除。
-- 评测 BGE-M3 适配器只能接受用户明确提供且已完整存在的本地模型目录（至少含 `config.json`），不得把远程仓库名交给模型库；构造和空候选评分不得加载模型，实际模型执行仍须由用户显式触发并以 `OfflineRankingScorer` 注入离线运行器。
-- `python -m evaluation ablation-execute` 只允许读取已有候选集合、矩阵和 `ablation-plan`，并以新 JSONL 与新 manifest 原子归档；执行 BGE-M3 或 Cross Encoder 的实验必须显式提供 `--allow-local-models` 与相应本地模型目录，D 同时需要两个目录；执行、评分和报告调整均不得重调学术 API。
-- `python -m evaluation ablation-score` 只允许读取已归档结果、配套执行 manifest、GoldQuery 与可选本地评分配置；必须先核验结果 SHA-256，再按实验独立写预测和报告。该命令不得加载本地模型、调用 DeepSeek 或重调学术 API，Top-K 与报告调整只需重新运行本命令。
-- 赛题未公开完整效率和结构化评分公式时，相关本地分数和综合分必须标记为代理分，不得宣称为官方得分。
-- 修改评测架构、目录、数据契约或执行命令时，必须同步更新评测规划、`docs/README.md` 与本节长期规则。
-
-## 9. 推荐目录演进
-
-在基础工程阶段，优先保持如下职责分层；可以按实际实现调整，但调整后同步更新本文件：
-
-```text
-backend/              # 可直接从仓库根目录导入的 Python 包
-  app/
-    api/            # FastAPI 路由与请求/响应模型
-    agents/         # LangGraph 节点及工作流
-    services/       # 查询、检索、去重、排序等业务服务
-    adapters/       # OpenAlex、Semantic Scholar、LLM、模型等外部适配器
-    repositories/   # SQLite、Redis、FAISS 的访问封装
-    models/         # 领域与持久化数据模型
-    core/           # 配置、日志、异常与通用基础设施
-  tests/           # Python 测试包，确保 pytest 从仓库根目录导入 backend
-frontend/           # Vue 3 应用
-evaluation/         # 与生产流程分离的评测契约、离线编排及显式授权候选快照导出
-scripts/            # 仅用户显式执行的数据准备、下载或维护脚本
-logs/                # 运行日志，不提交
-data/                # 本地数据、索引与数据库，不提交
-requirements.txt
-requirements-dev.txt # 测试等开发依赖，通过 requirements.txt 继承运行时依赖
-.env.example         # 可提交的环境变量配置示例
-pytest.ini            # 后端测试的导入路径和收集范围配置
-```
+文献搜索闭环、运行快照、SSE、只读结果分析、技术路线、引用图、用量和综合报告已完成。下一步是按 `docs/acceptance/文献搜索端到端验收清单.md` 完成真实环境验收；通过后再决定是否扩展文献库。
