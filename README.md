@@ -19,9 +19,7 @@ ScholarFlow 是一个面向复杂科研问题的多源论文搜索与推荐系�
 
 ## 系统架构
 
-<!-- TODO: 将 PPT 中修正后的系统架构图导出为 README/system-architecture.png，并在此处插入。 -->
-
-> 系统架构图待补充。建议图片路径：`README/system-architecture.png`
+![ScholarFlow系统架构图](README/ScholarFlow系统架构图.png)
 
 系统主要分为以下几层：
 
@@ -34,9 +32,7 @@ ScholarFlow 是一个面向复杂科研问题的多源论文搜索与推荐系�
 
 ## LangGraph 检索工作流
 
-<!-- TODO: 将 PPT 中修正后的 LangGraph 工作流图导出为 README/langgraph-workflow.png，并在此处插入。 -->
-
-> LangGraph 工作流图待补充。建议图片路径：`README/langgraph-workflow.png`
+![LangGraph 多轮检索工作流](README/LangGraph 多轮检索工作流.png)
 
 系统采用有限轮次的候选生成策略：
 
