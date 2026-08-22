@@ -19,6 +19,7 @@ from evaluation.runners.gold_subset import select_gold_subset_to_files  # 从完
 from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 按冻结顺序组装多份单查询快照而不访问外部资源。
 from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export, forecast_deepseek_ablation, validate_approved_forecast, validate_deepseek_ablation_forecast  # 在真实调用前生成并核验只读资源预估。
 from evaluation.runners.end_to_end import execute_online_plan, score_end_to_end, write_execution_plan  # 提供固定 PaSa 端到端计划、用户显式在线执行和完全离线报告。
+from evaluation.runners.longeval_audit import DEFAULT_OUTPUT_DIR as LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, DEFAULT_RAW_ROOT as LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, audit_longeval_dataset  # 只读审计已下载 LongEval 数据，不调用外部资源。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     fixture_parser.add_argument("--predictions", type=Path, required=True, help="本地预测 JSONL 路径")  # 要求显式预测文件。
     fixture_parser.add_argument("--output-dir", type=Path, required=True, help="本地报告输出目录")  # 要求显式输出目录。
     fixture_parser.add_argument("--config", type=Path, default=None, help="可选的本地评测 JSON 配置")  # 允许调整 Top-K 和代理阈值。
+    longeval_audit_parser = subparsers.add_parser("longeval-audit", help="只读审计本地 LongEval queries、qrels、documents 与 DOI 覆盖")  # 创建零网络、零模型 Phase 0 入口。
+    longeval_audit_parser.add_argument("--raw-root", type=Path, default=LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, help="LongEval 已解压根目录")  # 只读取用户已经解压的数据。
+    longeval_audit_parser.add_argument("--output-dir", type=Path, default=LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, help="必须不存在的审计输出目录")  # 输出 JSON、JSONL 与 Markdown。
     end_to_end_plan_parser = subparsers.add_parser("pasa-end-to-end-plan", help="仅生成固定 PaSa 20 条自然语言端到端执行计划")  # 创建零网络、零模型的固定集合计划入口。
     end_to_end_plan_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径")  # 要求显式的已封存金标。
     end_to_end_plan_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径")  # 要求核验封存 query_id 顺序。
@@ -141,6 +145,11 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         summary = run_fixture(args.gold, args.predictions, args.output_dir, args.config)  # 只读取本地文件并写本地报告。
         print(f"[OK] 离线评测完成：{summary.retrieval.query_count} 条查询，报告目录 {args.output_dir}")  # 输出不含查询正文的安全摘要。
         return 0  # 表示运行成功。
+    if args.command == "longeval-audit":  # 完整扫描用户已经下载的 LongEval 原始数据。
+        summary = audit_longeval_dataset(raw_root=args.raw_root, output_dir=args.output_dir)  # 严格只读 raw，不导入网络客户端、模型或生产服务。
+        split_summary = ", ".join(f"{item.split}={item.doi_eligible_query_count}/{item.query_count}" for item in summary.splits)  # 只输出资格数量。
+        print(f"[OK] LongEval 数据审计完成：Query={summary.total_query_count}，DOI-eligible={summary.total_doi_eligible_query_count}，{split_summary}，学术 API=0，LLM=0，本地模型=0")  # 明确资源边界。
+        return 0  # 表示审计输出完整发布。
     if args.command == "pasa-end-to-end-plan":  # 本次任务的零网络固定20条计划生成入口。
         count = write_execution_plan(args.gold, args.manifest, args.output)  # 只核验本地 Gold 与 manifest 并写计划。
         print(f"[OK] 固定 PaSa 端到端计划已生成：{count} 条，学术 API=0，LLM=0，本地模型=0")  # 明确该步骤不触发真实运行。
