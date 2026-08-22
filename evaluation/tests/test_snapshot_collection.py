@@ -6,6 +6,7 @@ from pathlib import Path  # 使用 pytest 临时目录隔离所有本地文件�
 
 import pytest  # 验证歧义重试和不安全覆盖边界。
 
+from backend.app.models.query_intent import QueryIntent  # 构造早期计划兼容场景的真实 QueryIntent 文件。
 from evaluation.contracts.snapshot import CandidatePaper, CandidateSnapshot, seal_snapshot  # 构造已封存的单查询候选快照。
 from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_collection, parse_snapshot_overrides  # 调用纯本地集合组装入口。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots  # 复核输出仍可被正式加载器消费。
@@ -49,16 +50,32 @@ def _write_snapshot(path: Path, snapshot: CandidateSnapshot) -> None:
     path.write_text(snapshot.model_dump_json() + "\n", encoding="utf-8")  # 仅为 pytest 临时 fixture 写入本地文件。
 
 
-def _write_query_intent_manifest(path: Path) -> None:
+def _write_query_intent_manifest(path: Path, *, include_counts: bool = True) -> None:
     """写入只包含集合组装所需字段的已确认 QueryIntent manifest fixture。"""
     payload = {  # 保持真实 manifest 的版本、参数、顺序与文件映射结构。
         "schema_version": "query-intent-manifest-v1",
-        "source_recall_count": 50,
-        "target_paper_count": 20,
         "query_id_order": [QUERY_ONE, QUERY_TWO],
         "query_intent_files": {QUERY_ONE: "q-001.json", QUERY_TWO: "q-002.json"},
     }
+    if include_counts:  # 默认覆盖当前 manifest 契约，也为早期计划兼容场景留出 fixture。
+        payload["source_recall_count"] = 50
+        payload["target_paper_count"] = 20
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")  # 不读取 .env、网络或真实评测数据。
+
+
+def _write_query_intents(path: Path) -> None:
+    """写入与快照边界一致的 QueryIntent，模拟早期 LongEval 计划的逐条冻结输入。"""
+    for filename in ("q-001.json", "q-002.json"):  # 每条冻结查询都必须有对应的本地意图文件。
+        query_intent = QueryIntent(  # 只提供集合兼容路径所需的最小合法字段。
+            original_query=filename,
+            normalized_query=filename,
+            query_language="en",
+            source_recall_count=50,
+            target_paper_count=20,
+            retrieval_round=1,
+            search_mode="standard",
+        )
+        (path.parent / filename).write_text(query_intent.model_dump_json(), encoding="utf-8")
 
 
 def test_assemble_collection_uses_explicit_retry_and_excludes_source_failure_artifact(tmp_path: Path) -> None:
@@ -110,6 +127,29 @@ def test_assemble_collection_rejects_multiple_successful_retries_without_overrid
             output_path=tmp_path / "collection.jsonl",
             manifest_path=tmp_path / "collection.manifest.json",
         )
+
+
+def test_assemble_collection_derives_counts_from_early_query_intent_plan(tmp_path: Path) -> None:
+    """早期计划缺少顶层汇总参数时，组装器应从已封存的逐条 QueryIntent 只读推导。"""
+    snapshot_directory = tmp_path / "snapshots"
+    snapshot_directory.mkdir()
+    _write_snapshot(snapshot_directory / "001.snapshot.jsonl", _snapshot(QUERY_ONE, "snapshot-q1"))
+    _write_snapshot(snapshot_directory / "002.snapshot.jsonl", _snapshot(QUERY_TWO, "snapshot-q2"))
+    query_manifest_path = tmp_path / "query-intents.manifest.json"
+    _write_query_intent_manifest(query_manifest_path, include_counts=False)
+    _write_query_intents(query_manifest_path)
+
+    manifest = assemble_candidate_snapshot_collection(
+        collection_id="pasa-auto-dev-ranking-v1",
+        query_intent_manifest_path=query_manifest_path,
+        snapshot_directory=snapshot_directory,
+        snapshot_overrides={},
+        output_path=tmp_path / "collection.jsonl",
+        manifest_path=tmp_path / "collection.manifest.json",
+    )
+
+    assert manifest.source_recall_count == 50
+    assert manifest.target_paper_count == 20
 
 
 def test_parse_snapshot_overrides_rejects_directory_escape() -> None:

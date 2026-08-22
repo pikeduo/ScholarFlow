@@ -79,6 +79,8 @@ def prepare_longeval_query_intents(*, gold_path: Path, subset_manifest_path: Pat
             "plan_id": normalized_plan_id,
             "source_gold_sha256": hashlib.sha256(gold_bytes).hexdigest(),
             "subset_manifest_sha256": hashlib.sha256(subset_bytes).hexdigest(),
+            "source_recall_count": source_recall_count,
+            "target_paper_count": target_paper_count,
             "query_id_order": query_ids,
             "query_intent_files": query_intent_files,
             "snapshot_export_plan": export_plan,

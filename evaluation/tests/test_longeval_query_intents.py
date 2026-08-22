@@ -40,6 +40,8 @@ def test_prepare_generates_direct_query_intents_and_valid_per_query_forecasts(tm
     manifest = prepare_longeval_query_intents(gold_path=gold_path, subset_manifest_path=subset_manifest_path, output_dir=output_dir, plan_id="longeval-dev20-v1", source_recall_count=50, target_paper_count=20)
 
     assert manifest["generation_strategy"] == "direct-longeval-query-v1"
+    assert manifest["source_recall_count"] == 50
+    assert manifest["target_paper_count"] == 20
     assert manifest["academic_api_calls_upper_bound"] == 2
     assert manifest["actual_http_request_upper_bound"] == 8
     for entry in manifest["snapshot_export_plan"]:

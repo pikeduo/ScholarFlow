@@ -7,6 +7,7 @@ from datetime import datetime, timezone  # 为集合 manifest 写入明确 UTC �
 from pathlib import Path  # 只读取用户明确指定的快照目录和 manifest，并写入新输出。
 from tempfile import NamedTemporaryFile  # 先写临时文件以避免半截 JSONL 作为正式输出出现。
 
+from backend.app.models.query_intent import QueryIntent  # 在旧计划缺少汇总参数时，只从已封存的 QueryIntent 推导边界。
 from evaluation.contracts.snapshot import CandidateSnapshot  # 保持集合 JSONL 使用既有排序前候选快照契约。
 from evaluation.contracts.snapshot_collection import CandidateSnapshotCollectionManifest  # 保存集合选择、哈希和候选数量审计。
 from evaluation.runners.snapshot_loader import load_candidate_snapshots, validate_snapshot_integrity  # 复用正式哈希、身份去重和重复快照校验。
@@ -111,13 +112,41 @@ def _load_query_intent_manifest(raw_bytes: bytes, source_path: Path) -> dict[str
         raise ValueError("QueryIntent manifest 的 query_id_order 无效")  # 返回明确字段边界。
     if len(set(query_id_order)) != len(query_id_order):  # 同一查询只允许对应一份候选快照。
         raise ValueError("QueryIntent manifest 的 query_id_order 包含重复 query_id")  # 防止集合输出重复评测分母。
+    if not isinstance(query_intent_files, dict) or set(query_intent_files) != set(query_id_order):  # 组装前确保每条冻结查询确有对应意图输入记录。
+        raise ValueError("QueryIntent manifest 的 query_intent_files 必须完整覆盖 query_id_order")  # 防止顺序与映射漂移。
+    if source_recall_count is None and target_paper_count is None:  # 兼容早期直接 QueryIntent 计划：参数已逐条封存，但未写入汇总 manifest。
+        source_recall_count, target_paper_count = _derive_counts_from_query_intents(  # 只读每个已声明的 QueryIntent，不猜测或改写历史计划。
+            query_intent_files=query_intent_files,
+            query_id_order=query_id_order,
+            manifest_path=source_path,
+        )
+    elif source_recall_count is None or target_paper_count is None:  # 半个汇总字段没有可靠的兼容含义，必须显式修复计划。
+        raise ValueError("QueryIntent manifest 的 source_recall_count 与 target_paper_count 必须同时提供")
     if not isinstance(source_recall_count, int) or isinstance(source_recall_count, bool) or not 1 <= source_recall_count <= 100:  # 与 CandidateSnapshot 契约保持相同范围。
         raise ValueError("QueryIntent manifest 的 source_recall_count 无效")  # 阻止在线规模不明确。
     if not isinstance(target_paper_count, int) or isinstance(target_paper_count, bool) or not 1 <= target_paper_count <= 100:  # 与 CandidateSnapshot 契约保持相同范围。
         raise ValueError("QueryIntent manifest 的 target_paper_count 无效")  # 阻止最终数量不明确。
-    if not isinstance(query_intent_files, dict) or set(query_intent_files) != set(query_id_order):  # 组装前确保每条冻结查询确有对应意图输入记录。
-        raise ValueError("QueryIntent manifest 的 query_intent_files 必须完整覆盖 query_id_order")  # 防止顺序与映射漂移。
     return {"query_id_order": list(query_id_order), "source_recall_count": source_recall_count, "target_paper_count": target_paper_count}  # 返回仅供离线组装所需的已验证字段。
+
+
+def _derive_counts_from_query_intents(*, query_intent_files: dict[object, object], query_id_order: list[str], manifest_path: Path) -> tuple[int, int]:
+    """从早期计划逐条冻结的 QueryIntent 推导统一候选边界。"""
+    derived_counts: set[tuple[int, int]] = set()  # 所有查询必须使用同一对边界，不能把不同在线实验混入一个集合。
+    for query_id in query_id_order:  # 严格按 manifest 的冻结顺序读取，错误也可定位到稳定 query_id。
+        configured_path = query_intent_files[query_id]  # 映射完整性已由调用方校验。
+        if not isinstance(configured_path, str) or not configured_path.strip():  # 不接受空或非文本路径。
+            raise ValueError(f"QueryIntent manifest 的 query_intent_files 路径无效: {query_id}")
+        query_intent_path = Path(configured_path)  # 计划可保存绝对路径，也可保存相对 manifest 的路径。
+        if not query_intent_path.is_absolute():
+            query_intent_path = manifest_path.parent / query_intent_path
+        try:
+            query_intent = QueryIntent.model_validate_json(query_intent_path.read_bytes())  # 只读本地 JSON，并以生产契约验证字段范围。
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"无法读取或校验 QueryIntent: {query_id}") from exc
+        derived_counts.add((query_intent.source_recall_count, query_intent.target_paper_count))  # 参数来自已封存的单查询意图。
+    if len(derived_counts) != 1:  # 缺少意图或参数不一致时都不允许推断出集合级边界。
+        raise ValueError("QueryIntent manifest 缺少统一候选边界，且逐条 QueryIntent 参数不一致")
+    return next(iter(derived_counts))  # 集合非空，因此此处必有唯一的已验证参数对。
 
 
 def _validate_overrides_against_manifest(overrides: dict[str, str], expected_query_ids: list[str]) -> None:
