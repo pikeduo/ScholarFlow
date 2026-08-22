@@ -8,20 +8,29 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from tempfile import mkstemp
 from typing import BinaryIO, Callable, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
+from zipfile import ZipFile
 
 
 TRAIN_ABSTRACT_URL = "https://researchdata.tuwien.ac.at/records/r643n-yc044/files/longeval_sci_training_2025_abstract.zip?download=1"
 TEST_ABSTRACT_URL = "https://researchdata.tuwien.ac.at/records/v8phe-g8911/files/longeval_sci_testing_2025_abstract.zip?download=1"
+TEST_QRELS_URL = "https://researchdata.tuwien.ac.at/records/v8phe-g8911/files/longeval_sci_test_qrels.zip?download=1"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "evaluation" / "longeval_2025" / "raw" / "archives"
+DEFAULT_EXTRACT_DIR = Path(__file__).resolve().parents[1] / "data" / "evaluation" / "longeval_2025" / "raw" / "extracted"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_CHUNK_SIZE = 1024 * 1024
+EXTRACTION_MANIFEST_NAME = ".scholarflow-longeval-extraction.json"
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,12 @@ ASSETS = {
         url=TEST_ABSTRACT_URL,
         md5="091cf1931a0b4b17358a580012183c5e",
     ),
+    "test-qrels": LongEvalAsset(
+        split="test-qrels",
+        filename="longeval_sci_test_qrels.zip",
+        url=TEST_QRELS_URL,
+        md5="48fb45104460820628df25241da1dadf",
+    ),
 }
 
 
@@ -65,14 +80,28 @@ class DownloadedAsset:
     reused_existing_file: bool
 
 
+@dataclass(frozen=True)
+class ExtractedAsset:
+    """保存已安全解压的单个 split 目录及其可复核统计。"""
+
+    split: str
+    path: Path
+    member_count: int
+    uncompressed_size_bytes: int
+    reused_existing_directory: bool
+
+
 UrlOpener = Callable[[Request, float], BinaryIO]
 
 
 def build_parser() -> argparse.ArgumentParser:
     """构建只允许 abstract 数据包和显式联网许可的命令行入口。"""
     parser = argparse.ArgumentParser(description="下载 LongEval 2025 CORE Sci-Retrieval abstract 数据包")
-    parser.add_argument("--split", action="append", choices=["train", "test", "all"], default=None, help="可重复指定 train、test；省略时只选择 train")
+    parser.add_argument("--split", action="append", choices=["train", "test", "test-qrels", "all"], default=None, help="可重复指定 train、test、test-qrels；省略时只选择 train")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="本地 ZIP 输出目录，默认 data/evaluation/longeval_2025/raw/archives/")
+    parser.add_argument("--extract", action="store_true", help="下载或复用已校验 ZIP 后，安全解压到 --extract-dir/<split>/")
+    parser.add_argument("--extract-only", action="store_true", help="只校验并解压已有 ZIP；不联网，也不需要 --allow-download")
+    parser.add_argument("--extract-dir", type=Path, default=DEFAULT_EXTRACT_DIR, help="解压根目录，默认 data/evaluation/longeval_2025/raw/extracted/")
     parser.add_argument("--allow-download", action="store_true", help="确认本次命令允许访问官方 TU Wien 数据仓库并下载大文件")
     parser.add_argument("--force", action="store_true", help="重新下载已有选择文件（包括校验失败文件）；下载成功后才原子替换")
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="单次 HTTP 连接与读取超时秒数，默认 60")
@@ -83,11 +112,11 @@ def resolve_assets(splits: Sequence[str] | None) -> list[LongEvalAsset]:
     """将用户选择展开为固定顺序、无重复的官方 abstract 资源。"""
     requested = list(splits) if splits else ["train"]
     if "all" in requested:
-        requested = ["train", "test"]
+        requested = ["train", "test", "test-qrels"]
     unknown = sorted(set(requested) - set(ASSETS))
     if unknown:
         raise ValueError(f"不支持的 LongEval split: {', '.join(unknown)}")
-    return [ASSETS[name] for name in ("train", "test") if name in requested]
+    return [ASSETS[name] for name in ("train", "test", "test-qrels") if name in requested]
 
 
 def download_longeval_dataset(
@@ -119,6 +148,38 @@ def download_longeval_dataset(
         _download_atomically(asset, target_path, timeout_seconds, active_opener)
         downloaded.append(DownloadedAsset(split=asset.split, path=target_path, size_bytes=target_path.stat().st_size, md5=asset.md5, reused_existing_file=False))
     return downloaded
+
+
+def extract_longeval_archives(
+    *,
+    splits: Sequence[str] | None = None,
+    archive_dir: Path = DEFAULT_OUTPUT_DIR,
+    extract_dir: Path = DEFAULT_EXTRACT_DIR,
+) -> list[ExtractedAsset]:
+    """校验已有 ZIP 后安全解压到按 split 隔离的目录。
+
+    该函数不联网。每个 archive 先解压到同文件系统临时目录，写入 manifest 后才发布；
+    已存在目录只有 manifest 与 archive MD5 均匹配时才复用，其他情况拒绝覆盖。
+    """
+    normalized_archive_dir = archive_dir.expanduser().resolve()
+    normalized_extract_dir = extract_dir.expanduser().resolve()
+    normalized_extract_dir.mkdir(parents=True, exist_ok=True)
+    extracted: list[ExtractedAsset] = []
+    for asset in resolve_assets(splits):
+        archive_path = normalized_archive_dir / asset.filename
+        if not archive_path.is_file():
+            raise LongEvalDownloadError(f"未找到已下载的 LongEval {asset.split} archive：{archive_path}；请先使用 --allow-download 下载")
+        if not _validate_existing_file(archive_path, asset, force=False):
+            raise AssertionError("已存在 archive 的无 force 校验失败应抛出异常")
+        destination = normalized_extract_dir / asset.split
+        existing = _load_verified_extraction(destination, asset)
+        if existing is not None:
+            extracted.append(existing)
+            continue
+        if destination.exists():
+            raise LongEvalDownloadError(f"解压目标已存在但不匹配当前 archive：{destination}；为保护现有数据，脚本不会覆盖，请人工检查后选择新的 --extract-dir")
+        extracted.append(_extract_atomically(asset, archive_path, destination))
+    return extracted
 
 
 def _validate_existing_file(path: Path, asset: LongEvalAsset, *, force: bool) -> bool:
@@ -153,6 +214,95 @@ def _download_atomically(asset: LongEvalAsset, target_path: Path, timeout_second
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def _load_verified_extraction(destination: Path, asset: LongEvalAsset) -> ExtractedAsset | None:
+    """仅复用带有匹配 manifest 的完整解压目录，避免半成品参与后续审计。"""
+    if not destination.exists():
+        return None
+    if not destination.is_dir():
+        raise LongEvalDownloadError(f"解压目标不是目录：{destination}")
+    manifest_path = destination / EXTRACTION_MANIFEST_NAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LongEvalDownloadError(f"无法读取解压 manifest：{manifest_path}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != "longeval-extraction-v1":
+        return None
+    if payload.get("split") != asset.split or payload.get("archive_filename") != asset.filename or payload.get("archive_md5") != asset.md5:
+        return None
+    member_count = payload.get("member_count")
+    uncompressed_size_bytes = payload.get("uncompressed_size_bytes")
+    if isinstance(member_count, bool) or not isinstance(member_count, int) or member_count < 0 or isinstance(uncompressed_size_bytes, bool) or not isinstance(uncompressed_size_bytes, int) or uncompressed_size_bytes < 0:
+        return None
+    return ExtractedAsset(split=asset.split, path=destination, member_count=member_count, uncompressed_size_bytes=uncompressed_size_bytes, reused_existing_directory=True)
+
+
+def _extract_atomically(asset: LongEvalAsset, archive_path: Path, destination: Path) -> ExtractedAsset:
+    """执行路径安全的 ZIP 解压，并在全部文件与 manifest 写入成功后发布目录。"""
+    temporary_dir = _create_extraction_temporary_dir(destination.parent, asset.split)
+    member_count = 0
+    uncompressed_size_bytes = 0
+    try:
+        with ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                relative_path = _safe_archive_member_path(member.filename)
+                _reject_symbolic_link(member.external_attr)
+                target_path = temporary_dir.joinpath(*relative_path.parts)
+                if member.is_dir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member, "r") as source, target_path.open("xb") as output:
+                    _copy_stream(source, output)
+                member_count += 1
+                uncompressed_size_bytes += member.file_size
+        manifest = {
+            "schema_version": "longeval-extraction-v1",
+            "split": asset.split,
+            "archive_filename": asset.filename,
+            "archive_md5": asset.md5,
+            "member_count": member_count,
+            "uncompressed_size_bytes": uncompressed_size_bytes,
+        }
+        (temporary_dir / EXTRACTION_MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary_dir, destination)
+    except Exception as exc:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+        if isinstance(exc, LongEvalDownloadError):
+            raise
+        raise LongEvalDownloadError(f"LongEval {asset.split} 解压失败；目标目录未发布，请检查 ZIP 完整性和可用磁盘空间") from exc
+    return ExtractedAsset(split=asset.split, path=destination, member_count=member_count, uncompressed_size_bytes=uncompressed_size_bytes, reused_existing_directory=False)
+
+
+def _create_extraction_temporary_dir(parent: Path, split: str) -> Path:
+    """在工作区父目录以常规 mkdir 创建临时目录，继承 Windows 可访问 ACL。"""
+    for _ in range(10):
+        temporary_dir = parent / f".{split}.{uuid4().hex}.tmp"
+        try:
+            temporary_dir.mkdir()
+        except FileExistsError:
+            continue
+        return temporary_dir
+    raise LongEvalDownloadError(f"无法为 LongEval {split} 创建唯一解压临时目录")
+
+
+def _safe_archive_member_path(filename: str) -> PurePosixPath:
+    """拒绝绝对路径、盘符和父目录跳转，防止 ZIP Slip 覆盖工作区外文件。"""
+    normalized = filename.replace("\\", "/")
+    relative_path = PurePosixPath(normalized)
+    if not normalized or relative_path.is_absolute() or not relative_path.parts or any(part in {"", ".", ".."} for part in relative_path.parts) or ":" in relative_path.parts[0]:
+        raise LongEvalDownloadError(f"ZIP 包含不安全路径：{filename}")
+    return relative_path
+
+
+def _reject_symbolic_link(external_attributes: int) -> None:
+    """拒绝 ZIP 中的符号链接，避免已通过路径检查后仍发生目录逃逸。"""
+    file_type = stat.S_IFMT(external_attributes >> 16)
+    if file_type == stat.S_IFLNK:
+        raise LongEvalDownloadError("ZIP 包含符号链接，已拒绝解压")
 
 
 def _open_url(request: Request, timeout_seconds: float) -> BinaryIO:
@@ -204,16 +354,25 @@ def main(argv: Sequence[str] | None = None, *, opener: UrlOpener | None = None) 
     """解析用户确认参数并执行下载；没有许可时在联网前失败。"""
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not args.allow_download:
+    if not args.extract_only and not args.allow_download:
         parser.error("下载 LongEval 数据需要显式提供 --allow-download；本脚本不会自动联网")
+    if args.extract_only and args.extract:
+        parser.error("--extract-only 与 --extract 不能同时使用")
     try:
-        assets = download_longeval_dataset(splits=args.split, output_dir=args.output_dir, force=args.force, timeout_seconds=args.timeout_seconds, opener=opener)
+        downloaded = [] if args.extract_only else download_longeval_dataset(splits=args.split, output_dir=args.output_dir, force=args.force, timeout_seconds=args.timeout_seconds, opener=opener)
+        extracted = extract_longeval_archives(splits=args.split, archive_dir=args.output_dir, extract_dir=args.extract_dir) if args.extract or args.extract_only else []
     except (LongEvalDownloadError, ValueError) as exc:
         parser.error(str(exc))
-    print(f"[OK] LongEval abstract 下载完成：{len(assets)} 个文件")
-    for asset in assets:
+    if downloaded:
+        print(f"[OK] LongEval abstract 下载完成：{len(downloaded)} 个文件")
+    for asset in downloaded:
         action = "复用已校验文件" if asset.reused_existing_file else "已下载并校验"
         print(f"[OK] {asset.split}: {action} {asset.path} ({_format_size(asset.size_bytes)}; md5={asset.md5})")
+    if extracted:
+        print(f"[OK] LongEval abstract 解压完成：{len(extracted)} 个 split")
+    for asset in extracted:
+        action = "复用已校验解压目录" if asset.reused_existing_directory else "已安全解压"
+        print(f"[OK] {asset.split}: {action} {asset.path} (文件={asset.member_count}; 解压大小={_format_size(asset.uncompressed_size_bytes)})")
     return 0
 
 
