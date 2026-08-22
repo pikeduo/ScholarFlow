@@ -27,6 +27,8 @@ class GoldSubsetManifest(BaseModel):
     selected_query_count: int = Field(ge=1)  # 保存被选择的开发集查询数。
     selected_gold_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")  # 保存输出 JSONL 规范化内容哈希。
     selected_query_ids: list[str] = Field(min_length=1)  # 保存可独立复核和重新生成的稳定查询标识列表。
+    exclusion_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # 可选记录从同源 Gold 中排除的既有子集 manifest 原始字节哈希。
+    excluded_query_count: int = Field(default=0, ge=0)  # 保存本次选择前明确排除的同源查询数量。
 
     @model_validator(mode="after")
     def validate_subset_boundary(self) -> "GoldSubsetManifest":
@@ -44,4 +46,8 @@ class GoldSubsetManifest(BaseModel):
             raise ValueError("selected_query_ids 不能包含空白标识")  # 保护后续快照和评分关联键。
         if len(set(normalized_query_ids)) != len(normalized_query_ids):  # 同一子集不得重复计入一个评测查询。
             raise ValueError("selected_query_ids 不能包含重复标识")  # 固定评测分母并避免多次来源调用。
+        if self.exclusion_manifest_sha256 is None and self.excluded_query_count != 0:  # 没有来源 manifest 时不得伪造排除规模。
+            raise ValueError("未提供 exclusion manifest 时 excluded_query_count 必须为零")
+        if self.exclusion_manifest_sha256 is not None and self.excluded_query_count < 1:  # 使用排除清单时必须形成可审计的非空排除边界。
+            raise ValueError("提供 exclusion manifest 时 excluded_query_count 必须为正数")
         return self  # 返回通过全部可复核边界校验的 manifest。

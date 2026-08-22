@@ -71,6 +71,37 @@ def test_subset_file_selection_protects_existing_manifest_before_reading_input(t
     assert manifest_path.read_text(encoding="utf-8") == "preserve\n"  # 已封存 manifest 内容不得被改写。
 
 
+def test_subset_file_selection_excludes_same_source_manifest_queries(tmp_path: Path) -> None:
+    """Validation 子集必须从同源 Dev manifest 的 query_id 列表中显式排除，避免开发集泄漏。"""
+    input_path = tmp_path / "full.gold.jsonl"
+    _write_gold_queries(input_path, [_gold_query("query-a"), _gold_query("query-b"), _gold_query("query-c"), _gold_query("query-d")])
+    dev_output = tmp_path / "dev.gold.jsonl"
+    dev_manifest_path = tmp_path / "dev.manifest.json"
+    dev_manifest = select_gold_subset_to_files(input_path, count=1, selection_id="synthetic-dev-v1", selection_seed="dev-seed", output_path=dev_output, manifest_path=dev_manifest_path)
+
+    validation_output = tmp_path / "validation.gold.jsonl"
+    validation_manifest_path = tmp_path / "validation.manifest.json"
+    validation_manifest = select_gold_subset_to_files(input_path, count=3, selection_id="synthetic-validation-v1", selection_seed="validation-seed", output_path=validation_output, manifest_path=validation_manifest_path, exclusion_manifest_path=dev_manifest_path)
+
+    assert set(validation_manifest.selected_query_ids).isdisjoint(dev_manifest.selected_query_ids)
+    assert validation_manifest.excluded_query_count == 1
+    assert validation_manifest.exclusion_manifest_sha256 == hashlib.sha256(dev_manifest_path.read_bytes()).hexdigest()
+
+
+def test_subset_file_selection_rejects_foreign_exclusion_manifest(tmp_path: Path) -> None:
+    """排除 manifest 必须绑定相同输入 Gold 哈希，不能跨 split 或替换源文件复用。"""
+    source = tmp_path / "source.gold.jsonl"
+    foreign = tmp_path / "foreign.gold.jsonl"
+    _write_gold_queries(source, [_gold_query("query-a"), _gold_query("query-b")])
+    _write_gold_queries(foreign, [_gold_query("query-x"), _gold_query("query-y")])
+    foreign_output = tmp_path / "foreign-subset.gold.jsonl"
+    foreign_manifest = tmp_path / "foreign-subset.manifest.json"
+    select_gold_subset_to_files(foreign, count=1, selection_id="foreign-v1", selection_seed="seed", output_path=foreign_output, manifest_path=foreign_manifest)
+
+    with pytest.raises(ValueError, match="source_gold_sha256"):
+        select_gold_subset_to_files(source, count=1, selection_id="validation-v1", selection_seed="seed", output_path=tmp_path / "validation.gold.jsonl", manifest_path=tmp_path / "validation.manifest.json", exclusion_manifest_path=foreign_manifest)
+
+
 def test_subset_cli_is_completely_offline(tmp_path: Path) -> None:
     """CLI 应只处理本地 GoldQuery 并输出不含查询正文的成功摘要。"""
     input_path = tmp_path / "full.gold.jsonl"  # 创建 CLI 使用的合成完整金标文件。

@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     subset_parser.add_argument("--count", type=int, required=True, help="本次子集查询数，例如开发集评测的 20")  # 保持开发集规模与候选和 Top-K 参数明确分离。
     subset_parser.add_argument("--selection-id", required=True, help="人工冻结的子集用途与版本标识")  # 要求用户明确区分不同实验子集。
     subset_parser.add_argument("--seed", required=True, help="参与稳定 SHA-256 排序的显式种子文本")  # 禁止隐式随机状态导致无法重现。
+    subset_parser.add_argument("--exclude-manifest", type=Path, default=None, help="可选：同源已封存 Gold subset manifest；其中 query_id 将被显式排除")  # 用于建立与 Dev 等集合不重叠的 Validation 分母。
     subset_parser.add_argument("--output", type=Path, required=True, help="必须尚不存在的子集 GoldQuery JSONL 路径")  # 禁止覆盖已用于候选快照的开发集。
     subset_parser.add_argument("--manifest", type=Path, required=True, help="必须尚不存在的子集审计 manifest JSON 路径")  # 要求单独封存算法、哈希和完整 query_id 列表。
     export_parser = subparsers.add_parser("snapshot-export", help="显式授权一次候选生成并导出排序前快照")  # 创建唯一受控在线入口。
@@ -306,7 +307,7 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         print(f"[OK] PaSa 金标已转换：{len(gold_queries)} 条查询，学术 API=0，LLM=0，本地模型=0")  # 输出不含 PaSa 查询或论文正文的安全摘要。
         return 0  # 表示本地 PaSa 导入成功。
     if args.command == "gold-subset-select":  # 第六阶段开发集 GoldQuery 子集的完全离线封存入口。
-        manifest = select_gold_subset_to_files(args.input, count=args.count, selection_id=args.selection_id, selection_seed=args.seed, output_path=args.output, manifest_path=args.manifest)  # 只处理本地金标并同时封存哈希和完整 ID 列表。
+        manifest = select_gold_subset_to_files(args.input, count=args.count, selection_id=args.selection_id, selection_seed=args.seed, output_path=args.output, manifest_path=args.manifest, exclusion_manifest_path=args.exclude_manifest)  # 只处理本地金标；可从同源已封存子集明确排除 query_id。
         print(f"[OK] GoldQuery 子集已封存：{manifest.selected_query_count}/{manifest.source_query_count} 条，SHA-256={manifest.selected_gold_sha256}，学术 API=0，LLM=0，本地模型=0")  # 输出不含查询正文，仅提供可复核规模与哈希。
         return 0  # 表示零网络子集封存成功。
     if args.command == "snapshot-export":  # 第三阶段唯一受控在线候选生成入口。

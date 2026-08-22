@@ -23,6 +23,7 @@ def select_gold_subset(
     count: int,
     selection_id: str,
     selection_seed: str,
+    excluded_query_ids: Sequence[str] = (),
 ) -> list[GoldQuery]:
     """从完整 GoldQuery 集合中按稳定 SHA-256 排名选择指定数量的查询。
 
@@ -42,8 +43,6 @@ def select_gold_subset(
         raise ValueError("GoldQuery 输入不能为空")  # 在计算哈希前提供明确离线错误。
     if count < 1:  # 子集大小必须形成非空评分分母。
         raise ValueError("count 必须为正整数")  # 不接受零或负数的隐式空实验。
-    if count > len(gold_queries):  # 禁止将全量不足误写为成功的固定规模子集。
-        raise ValueError(f"count 不能大于输入查询数: {len(gold_queries)}")  # 输出来源总量帮助用户修正命令。
     query_ids = [query.query_id.strip() for query in gold_queries]  # 统一读取稳定关联键并去除边界空白。
     if any(not query_id for query_id in query_ids):  # GoldQuery 契约虽已限制长度，仍保护纯空白边界。
         raise ValueError("GoldQuery 不能包含空白 query_id")  # 避免不可复现哈希输入。
@@ -51,8 +50,18 @@ def select_gold_subset(
         raise ValueError("GoldQuery query_id 不能包含前后空白")  # 防止哈希、输出和 manifest 对同一标识采用不同表示。
     if len(set(query_ids)) != len(query_ids):  # 同一源文件的重复查询会扩大评测分母。
         raise ValueError("GoldQuery 输入包含重复 query_id")  # 在选择前拒绝歧义的来源数据。
+    normalized_excluded_ids = _normalize_excluded_query_ids(excluded_query_ids)  # 只接受调用方从已确认 manifest 提供的明确排除集合。
+    unknown_excluded_ids = sorted(set(normalized_excluded_ids) - set(query_ids))  # 排除清单必须来自同一份完整 Gold，不允许悄悄忽略错配项。
+    if unknown_excluded_ids:
+        raise ValueError(f"排除清单包含输入 Gold 中不存在的 query_id: {unknown_excluded_ids[0]}")
+    excluded_set = set(normalized_excluded_ids)  # 仅建立当前本地选择所需的稳定集合，不写回输入。
+    eligible_queries = [query for query in gold_queries if query.query_id not in excluded_set]  # 在稳定排序前排除既有封存子集，确保验证集没有泄漏。
+    if count > len(eligible_queries):  # 禁止把排除后的可用数量不足伪装成完整固定子集。
+        if not normalized_excluded_ids:  # 保持既有调用方可复制的错误契约。
+            raise ValueError(f"count 不能大于输入查询数: {len(gold_queries)}")
+        raise ValueError(f"count 不能大于排除后可选查询数: {len(eligible_queries)}")
     ranked_queries = sorted(  # 使用 query_id 次级键消除极低概率哈希碰撞和输入顺序影响。
-        gold_queries,
+        eligible_queries,
         key=lambda query: (_selection_key(query.query_id, normalized_selection_id, normalized_selection_seed), query.query_id),
     )
     return ranked_queries[:count]  # 只返回用户明确请求的固定规模开发集子集。
@@ -66,6 +75,7 @@ def select_gold_subset_to_files(
     selection_seed: str,
     output_path: Path,
     manifest_path: Path,
+    exclusion_manifest_path: Path | None = None,
 ) -> GoldSubsetManifest:
     """从本地 GoldQuery JSONL 选择子集，并写入新的 JSONL 与独立 manifest。
 
@@ -78,11 +88,24 @@ def select_gold_subset_to_files(
     source_bytes = input_path.read_bytes()  # 读取原始字节以冻结输入内容而不是仅冻结解析后的对象。
     source_gold_sha256 = hashlib.sha256(source_bytes).hexdigest()  # 计算输入 GoldQuery 文件的可复核内容哈希。
     gold_queries = load_jsonl(input_path, GoldQuery)  # 使用正式 UTF-8 与行号边界解析输入金标。
+    excluded_query_ids: list[str] = []  # 默认不排除任何查询，保持既有选择器语义和 manifest 兼容。
+    exclusion_manifest_sha256: str | None = None  # 仅在用户明确提供同源 manifest 时冻结其原始字节哈希。
+    if exclusion_manifest_path is not None:  # Validation 等独立集合必须从已经封存的同源子集明确排除。
+        exclusion_manifest_bytes = exclusion_manifest_path.read_bytes()  # 冻结用户指定排除清单的原始内容。
+        try:
+            exclusion_manifest = GoldSubsetManifest.model_validate_json(exclusion_manifest_bytes)  # 仅接受已确认的 Gold subset manifest 契约。
+        except ValueError as exc:
+            raise ValueError(f"排除 Gold subset manifest 无效: {exclusion_manifest_path}") from exc
+        if exclusion_manifest.source_gold_sha256 != source_gold_sha256:  # 不允许把其他 split 或已变更 Gold 的 query_id 作为排除依据。
+            raise ValueError("排除 Gold subset manifest 的 source_gold_sha256 与输入 Gold 不一致")
+        excluded_query_ids = exclusion_manifest.selected_query_ids  # 使用已封存、完整有序的 query_id 列表，不接受自由文本排除。
+        exclusion_manifest_sha256 = hashlib.sha256(exclusion_manifest_bytes).hexdigest()  # 保存排除来源以支持后续审计。
     selected_gold_queries = select_gold_subset(  # 在内存中完成确定性选择，不写入或调用任何外部资源。
         gold_queries,
         count=count,
         selection_id=normalized_selection_id,
         selection_seed=normalized_selection_seed,
+        excluded_query_ids=excluded_query_ids,
     )
     selected_serialized = serialize_gold_queries(selected_gold_queries)  # 复用正式 JSONL 编码以保证输出哈希与文件一致。
     selected_gold_sha256 = hashlib.sha256(selected_serialized.encode("utf-8")).hexdigest()  # 在写入前冻结规范化输出内容哈希。
@@ -96,10 +119,22 @@ def select_gold_subset_to_files(
         selected_query_count=len(selected_gold_queries),
         selected_gold_sha256=selected_gold_sha256,
         selected_query_ids=[query.query_id for query in selected_gold_queries],
+        exclusion_manifest_sha256=exclusion_manifest_sha256,
+        excluded_query_count=len(excluded_query_ids),
     )
     _write_manifest(manifest, manifest_path)  # 先安全发布 manifest；后续 GoldQuery 写入失败时保留清单供用户审计失败输入。
     write_gold_queries(selected_gold_queries, output_path)  # 复用拒绝覆盖和同目录原子发布的 GoldQuery 写入器。
     return manifest  # 返回已与输出 GoldQuery 成对发布的审计清单。
+
+
+def _normalize_excluded_query_ids(query_ids: Sequence[str]) -> list[str]:
+    """校验排除 query_id 是非空、无重复的稳定关联键。"""
+    normalized_ids = [query_id.strip() if isinstance(query_id, str) else "" for query_id in query_ids]  # 不允许非文本或边界空白标识进入集合差集。
+    if any(not query_id for query_id in normalized_ids):
+        raise ValueError("排除清单不能包含空白 query_id")
+    if len(set(normalized_ids)) != len(normalized_ids):
+        raise ValueError("排除清单不能包含重复 query_id")
+    return normalized_ids
 
 
 def _selection_key(query_id: str, selection_id: str, selection_seed: str) -> str:

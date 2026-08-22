@@ -50,7 +50,7 @@ python -m evaluation ablation-plan `
 ## 推荐工作流
 
 1. 将用户已确认的本地金标导入为 `GoldQuery`；PaSa 原生导入当前只支持已确认字段的 `AutoScholarQuery/dev.jsonl`。
-2. 使用 `gold-subset-select` 封存开发集子集及 manifest；不得重抽样或替换零命中查询。
+2. 使用 `gold-subset-select` 封存开发集子集及 manifest；不得重抽样或替换零命中查询。建立独立 Validation 子集时，必须传入同源 Dev 的 `--exclude-manifest`，以 manifest 中的完整 query_id 列表显式排除 Dev 查询。
 3. 用户先以 `usage-forecast` 审阅调用上限，再以 `snapshot-export --allow-online-sources` 逐条生成并校验候选快照。该入口不调用 Query Agent、DeepSeek 或本地模型。
 4. 使用 `snapshot-collection-assemble` 将唯一有效的单查询快照组装为共享集合；有多个成功重试时，必须使用 `--snapshot-override` 选择。
 5. 对共享集合运行 `ablation-plan`，再按需运行 `ablation-execute` 和 `ablation-score`。B/D 需要 BGE-M3，C/D 需要 Cross Encoder；模型目录必须已存在且包含 `config.json`，并提供 `--allow-local-models`。
