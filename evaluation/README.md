@@ -67,6 +67,7 @@ python -m evaluation ablation-plan `
 
 - 真实数据放在受 Git 忽略的 `data/evaluation/`；不要提交数据、模型、密钥、运行日志或评测结果。
 - PaSa 下载需用户自行接受数据条款并完成本机认证；可手动运行 `python scripts/download_pasa_dataset.py`，默认仅下载 `AutoScholarQuery/dev.jsonl`。
+- LongEval 2025 CORE Sci-Retrieval 下载也只由用户手动执行。`python scripts/download_longeval_dataset.py --allow-download --split train` 仅下载官方 abstract 训练包；追加 `--split test` 下载测试 abstract 包。脚本校验官方 MD5，默认不下载 20 GiB 以上 fulltext，也不解压或启动任何评测。
 - 评测输出是本地代理分，不等同于赛事官方成绩。效率、结构化与可观测性字段不足时必须明确标记缺失。
 
 详细的评测口径与阶段计划见 `docs/ScholarFlow_评测与测试规划.md`。
