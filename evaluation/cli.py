@@ -21,6 +21,7 @@ from evaluation.runners.usage_forecast import forecast_query_agent, forecast_sna
 from evaluation.runners.end_to_end import execute_online_plan, score_end_to_end, write_execution_plan  # 提供固定 PaSa 端到端计划、用户显式在线执行和完全离线报告。
 from evaluation.runners.longeval_audit import DEFAULT_OUTPUT_DIR as LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, DEFAULT_RAW_ROOT as LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, audit_longeval_dataset  # 只读审计已下载 LongEval 数据，不调用外部资源。
 from evaluation.runners.longeval_import import DEFAULT_OUTPUT_DIR as LONGEVAL_GOLD_DEFAULT_OUTPUT_DIR, import_longeval_gold  # 将审计过的 LongEval 本地文件转换为 DOI-strict Gold，不访问外部资源。
+from evaluation.runners.doi_track_scoring import score_doi_track_to_files  # 只读取 DOI Gold 和已归档预测，执行严格 DOI 离线评分。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     longeval_gold_parser.add_argument("--raw-root", type=Path, default=LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, help="已由 longeval-audit 审阅的 LongEval 解压根目录")  # 导入时重新哈希，禁止使用变更后的 raw。
     longeval_gold_parser.add_argument("--audit-dir", type=Path, default=LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, help="已完成 longeval-audit 的报告目录")  # 要求输入哈希与 schema 已被审计冻结。
     longeval_gold_parser.add_argument("--output-dir", type=Path, default=LONGEVAL_GOLD_DEFAULT_OUTPUT_DIR, help="必须不存在的 DOI Gold 输出目录")  # 一次发布三份 split Gold、evidence、excluded 与 manifest。
+    doi_score_parser = subparsers.add_parser("doi-track-score", help="仅按 DOI-strict-v1 评分本地 GoldQuery 与 PredictionRecord")  # 创建禁用标题和其他标识回退的离线评分入口。
+    doi_score_parser.add_argument("--gold", type=Path, required=True, help="longeval-gold-import 输出的单个 split GoldQuery JSONL")  # 仅允许用户显式指定已封存金标。
+    doi_score_parser.add_argument("--predictions", type=Path, required=True, help="同一 query 集合的本地 PredictionRecord JSONL")  # 只读取既有预测，不触发排序或检索。
+    doi_score_parser.add_argument("--output-dir", type=Path, required=True, help="必须不存在的 DOI-strict 报告目录")  # 原子写入 JSON、JSONL 与 Markdown。
+    doi_score_parser.add_argument("--top-k", type=int, action="append", default=[], help="可重复的评分 Top-K；省略时使用 5、10、20")  # 明确评分截断，不借用目标返回数。
     end_to_end_plan_parser = subparsers.add_parser("pasa-end-to-end-plan", help="仅生成固定 PaSa 20 条自然语言端到端执行计划")  # 创建零网络、零模型的固定集合计划入口。
     end_to_end_plan_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径")  # 要求显式的已封存金标。
     end_to_end_plan_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径")  # 要求核验封存 query_id 顺序。
@@ -160,6 +166,12 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         split_summary = ", ".join(f"{split}={manifest.gold_query_count_by_split[split]}" for split in ("train", "heldout", "future"))  # 输出三个可评分 split 的实际分母。
         print(f"[OK] LongEval DOI Gold 导入完成：{split_summary}，排除={sum(manifest.excluded_query_count_by_split.values())}，学术 API=0，LLM=0，本地模型=0")  # 明确导入不触发任何外部资源。
         return 0  # 表示 Gold、evidence、excluded 与 manifest 已完整发布。
+    if args.command == "doi-track-score":  # 只按 DOI 交集评分，不构造来源、模型或搜索服务。
+        cutoffs = tuple(args.top_k) if args.top_k else (5, 10, 20)  # 使用显式截断或已冻结默认口径。
+        summary = score_doi_track_to_files(gold_path=args.gold, predictions_path=args.predictions, output_dir=args.output_dir, cutoffs=cutoffs)  # 读取本地输入并原子发布报告。
+        max_k = max(summary.cutoffs)
+        print(f"[OK] DOI-strict 离线评分完成：Query={summary.query_count}，Macro F1@{max_k}={summary.cutoffs[max_k].macro_f1:.4f}，学术 API=0，LLM=0，本地模型=0")  # 明确评分资源边界。
+        return 0  # 表示报告完整发布。
     if args.command == "pasa-end-to-end-plan":  # 本次任务的零网络固定20条计划生成入口。
         count = write_execution_plan(args.gold, args.manifest, args.output)  # 只核验本地 Gold 与 manifest 并写计划。
         print(f"[OK] 固定 PaSa 端到端计划已生成：{count} 条，学术 API=0，LLM=0，本地模型=0")  # 明确该步骤不触发真实运行。
