@@ -20,6 +20,7 @@ from evaluation.runners.snapshot_collection import assemble_candidate_snapshot_c
 from evaluation.runners.usage_forecast import forecast_query_agent, forecast_snapshot_export, forecast_deepseek_ablation, validate_approved_forecast, validate_deepseek_ablation_forecast  # 在真实调用前生成并核验只读资源预估。
 from evaluation.runners.end_to_end import execute_online_plan, score_end_to_end, write_execution_plan  # 提供固定 PaSa 端到端计划、用户显式在线执行和完全离线报告。
 from evaluation.runners.longeval_audit import DEFAULT_OUTPUT_DIR as LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, DEFAULT_RAW_ROOT as LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, audit_longeval_dataset  # 只读审计已下载 LongEval 数据，不调用外部资源。
+from evaluation.runners.longeval_import import DEFAULT_OUTPUT_DIR as LONGEVAL_GOLD_DEFAULT_OUTPUT_DIR, import_longeval_gold  # 将审计过的 LongEval 本地文件转换为 DOI-strict Gold，不访问外部资源。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
     longeval_audit_parser = subparsers.add_parser("longeval-audit", help="只读审计本地 LongEval queries、qrels、documents 与 DOI 覆盖")  # 创建零网络、零模型 Phase 0 入口。
     longeval_audit_parser.add_argument("--raw-root", type=Path, default=LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, help="LongEval 已解压根目录")  # 只读取用户已经解压的数据。
     longeval_audit_parser.add_argument("--output-dir", type=Path, default=LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, help="必须不存在的审计输出目录")  # 输出 JSON、JSONL 与 Markdown。
+    longeval_gold_parser = subparsers.add_parser("longeval-gold-import", help="从已审计 LongEval raw 生成 DOI-strict Gold、evidence 与 excluded ledger")  # 创建严格离线、不可覆盖的 LongEval 金标导入入口。
+    longeval_gold_parser.add_argument("--raw-root", type=Path, default=LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, help="已由 longeval-audit 审阅的 LongEval 解压根目录")  # 导入时重新哈希，禁止使用变更后的 raw。
+    longeval_gold_parser.add_argument("--audit-dir", type=Path, default=LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, help="已完成 longeval-audit 的报告目录")  # 要求输入哈希与 schema 已被审计冻结。
+    longeval_gold_parser.add_argument("--output-dir", type=Path, default=LONGEVAL_GOLD_DEFAULT_OUTPUT_DIR, help="必须不存在的 DOI Gold 输出目录")  # 一次发布三份 split Gold、evidence、excluded 与 manifest。
     end_to_end_plan_parser = subparsers.add_parser("pasa-end-to-end-plan", help="仅生成固定 PaSa 20 条自然语言端到端执行计划")  # 创建零网络、零模型的固定集合计划入口。
     end_to_end_plan_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径")  # 要求显式的已封存金标。
     end_to_end_plan_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径")  # 要求核验封存 query_id 顺序。
@@ -150,6 +155,11 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         split_summary = ", ".join(f"{item.split}={item.doi_eligible_query_count}/{item.query_count}" for item in summary.splits)  # 只输出资格数量。
         print(f"[OK] LongEval 数据审计完成：Query={summary.total_query_count}，DOI-eligible={summary.total_doi_eligible_query_count}，{split_summary}，学术 API=0，LLM=0，本地模型=0")  # 明确资源边界。
         return 0  # 表示审计输出完整发布。
+    if args.command == "longeval-gold-import":  # 仅将审计过的本地事实转为 DOI-strict 金标，不触碰来源或模型。
+        manifest = import_longeval_gold(raw_root=args.raw_root, audit_dir=args.audit_dir, output_dir=args.output_dir)  # 导入器重新核验 raw 哈希并原子发布全部证据文件。
+        split_summary = ", ".join(f"{split}={manifest.gold_query_count_by_split[split]}" for split in ("train", "heldout", "future"))  # 输出三个可评分 split 的实际分母。
+        print(f"[OK] LongEval DOI Gold 导入完成：{split_summary}，排除={sum(manifest.excluded_query_count_by_split.values())}，学术 API=0，LLM=0，本地模型=0")  # 明确导入不触发任何外部资源。
+        return 0  # 表示 Gold、evidence、excluded 与 manifest 已完整发布。
     if args.command == "pasa-end-to-end-plan":  # 本次任务的零网络固定20条计划生成入口。
         count = write_execution_plan(args.gold, args.manifest, args.output)  # 只核验本地 Gold 与 manifest 并写计划。
         print(f"[OK] 固定 PaSa 端到端计划已生成：{count} 条，学术 API=0，LLM=0，本地模型=0")  # 明确该步骤不触发真实运行。

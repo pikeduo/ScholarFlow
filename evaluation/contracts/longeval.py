@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 LongEvalSplit = Literal["train", "heldout", "future"]
+LongEvalGoldEvidenceStatus = Literal["included", "missing_document", "missing_doi", "invalid_doi", "conflicting_doi"]
 
 
 class LongEvalQueryDoiEligibility(BaseModel):
@@ -64,3 +65,39 @@ class LongEvalAuditSummary(BaseModel):
     total_doi_eligible_query_count: int = Field(ge=0)
     total_excluded_no_doi_gold_query_count: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
+
+
+class LongEvalGoldEvidence(BaseModel):
+    """保存一个正相关 qrels 判断进入或退出 DOI Gold 的可复核证据。"""
+
+    query_id: str = Field(min_length=1)
+    split: LongEvalSplit
+    document_id: str = Field(min_length=1)
+    relevance: int = Field(gt=0)
+    status: LongEvalGoldEvidenceStatus
+    normalized_doi: str | None = None
+
+
+class LongEvalExcludedQuery(BaseModel):
+    """保存没有可用 DOI Gold 的查询及其原始证据状态。"""
+
+    query_id: str = Field(min_length=1)
+    split: LongEvalSplit
+    positive_judgment_count: int = Field(ge=0)
+    positive_document_count: int = Field(ge=0)
+    exclusion_reasons: list[LongEvalGoldEvidenceStatus] = Field(min_length=1)
+
+
+class LongEvalGoldImportManifest(BaseModel):
+    """冻结 LongEval DOI Gold 导入的审计输入、输出哈希和严格匹配规则。"""
+
+    schema_version: Literal["longeval-doi-gold-import-v1"] = "longeval-doi-gold-import-v1"
+    matching_policy: Literal["doi-strict-v1"] = "doi-strict-v1"
+    positive_relevance_rule: Literal["relevance > 0"] = "relevance > 0"
+    audit_schema_version: Literal["longeval-audit-v1"] = "longeval-audit-v1"
+    audit_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    raw_root: str = Field(min_length=1)
+    source_input_sha256_by_split: dict[LongEvalSplit, str]
+    gold_query_count_by_split: dict[LongEvalSplit, int]
+    excluded_query_count_by_split: dict[LongEvalSplit, int]
+    output_sha256: dict[str, str]
