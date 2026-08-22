@@ -22,6 +22,7 @@ from evaluation.runners.end_to_end import execute_online_plan, score_end_to_end,
 from evaluation.runners.longeval_audit import DEFAULT_OUTPUT_DIR as LONGEVAL_AUDIT_DEFAULT_OUTPUT_DIR, DEFAULT_RAW_ROOT as LONGEVAL_AUDIT_DEFAULT_RAW_ROOT, audit_longeval_dataset  # 只读审计已下载 LongEval 数据，不调用外部资源。
 from evaluation.runners.longeval_import import DEFAULT_OUTPUT_DIR as LONGEVAL_GOLD_DEFAULT_OUTPUT_DIR, import_longeval_gold  # 将审计过的 LongEval 本地文件转换为 DOI-strict Gold，不访问外部资源。
 from evaluation.runners.doi_track_scoring import score_doi_track_to_files  # 只读取 DOI Gold 和已归档预测，执行严格 DOI 离线评分。
+from evaluation.runners.longeval_query_intents import prepare_longeval_query_intents  # 从已封存 Dev 子集生成待审阅的直接 QueryIntent 与逐条来源预估。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
     doi_score_parser.add_argument("--predictions", type=Path, required=True, help="同一 query 集合的本地 PredictionRecord JSONL")  # 只读取既有预测，不触发排序或检索。
     doi_score_parser.add_argument("--output-dir", type=Path, required=True, help="必须不存在的 DOI-strict 报告目录")  # 原子写入 JSON、JSONL 与 Markdown。
     doi_score_parser.add_argument("--top-k", type=int, action="append", default=[], help="可重复的评分 Top-K；省略时使用 5、10、20")  # 明确评分截断，不借用目标返回数。
+    longeval_prepare_parser = subparsers.add_parser("longeval-query-intent-prepare", help="从封存 LongEval Gold 子集生成待审阅 QueryIntent 和逐条 snapshot-export 预估")  # 创建零来源、零模型的 Dev 调用前准备入口。
+    longeval_prepare_parser.add_argument("--gold", type=Path, required=True, help="已封存的 LongEval Dev GoldQuery JSONL")  # 只读取用户明确指定的 Dev 分母。
+    longeval_prepare_parser.add_argument("--subset-manifest", type=Path, required=True, help="与 Gold 配套的 gold-subset-manifest-v1")  # 核验完整 query_id 顺序与 Gold SHA-256。
+    longeval_prepare_parser.add_argument("--output-dir", type=Path, required=True, help="必须不存在的 QueryIntent 审阅计划目录")  # 一次发布 QueryIntent、forecast 与 manifest。
+    longeval_prepare_parser.add_argument("--plan-id", required=True, help="本次 Dev 快照计划的稳定小写标识")  # 作为逐条 snapshot_id 的固定前缀。
+    longeval_prepare_parser.add_argument("--source-recall-count", type=int, required=True, help="每条单轮候选快照的显式来源召回上限")  # 不允许隐式默认调用预算。
+    longeval_prepare_parser.add_argument("--target-paper-count", type=int, required=True, help="每条运行的显式最终论文目标数")  # 与来源召回规模严格分离。
     end_to_end_plan_parser = subparsers.add_parser("pasa-end-to-end-plan", help="仅生成固定 PaSa 20 条自然语言端到端执行计划")  # 创建零网络、零模型的固定集合计划入口。
     end_to_end_plan_parser.add_argument("--gold", type=Path, required=True, help="固定 PaSa 20 条 GoldQuery JSONL 路径")  # 要求显式的已封存金标。
     end_to_end_plan_parser.add_argument("--manifest", type=Path, required=True, help="固定 PaSa 20 条 subset manifest 路径")  # 要求核验封存 query_id 顺序。
@@ -172,6 +180,10 @@ def main(argv: list[str] | None = None, *, candidate_service_factory: Callable[[
         max_k = max(summary.cutoffs)
         print(f"[OK] DOI-strict 离线评分完成：Query={summary.query_count}，Macro F1@{max_k}={summary.cutoffs[max_k].macro_f1:.4f}，学术 API=0，LLM=0，本地模型=0")  # 明确评分资源边界。
         return 0  # 表示报告完整发布。
+    if args.command == "longeval-query-intent-prepare":  # 仅生成直接查询和调用前预估，不构造生产来源服务。
+        manifest = prepare_longeval_query_intents(gold_path=args.gold, subset_manifest_path=args.subset_manifest, output_dir=args.output_dir, plan_id=args.plan_id, source_recall_count=args.source_recall_count, target_paper_count=args.target_paper_count)  # 重新核验 Dev Gold，冻结单条 snapshot ID、预估与确认哈希。
+        print(f"[OK] LongEval QueryIntent 审阅计划已生成：Query={len(manifest['query_id_order'])}，学术 API 上限={manifest['academic_api_calls_upper_bound']}，HTTP 上限={manifest['actual_http_request_upper_bound']}，LLM=0，本地模型=0")  # 明确这一步未触发真实来源调用。
+        return 0  # 表示计划包完整发布，等待用户逐条审阅和授权。
     if args.command == "pasa-end-to-end-plan":  # 本次任务的零网络固定20条计划生成入口。
         count = write_execution_plan(args.gold, args.manifest, args.output)  # 只核验本地 Gold 与 manifest 并写计划。
         print(f"[OK] 固定 PaSa 端到端计划已生成：{count} 条，学术 API=0，LLM=0，本地模型=0")  # 明确该步骤不触发真实运行。

@@ -70,6 +70,7 @@ python -m evaluation ablation-plan `
 - LongEval 2025 CORE Sci-Retrieval 下载也只由用户手动执行。`python scripts/download_longeval_dataset.py --allow-download --split train` 仅下载官方 abstract 训练包；`--split test` 下载测试 abstract 包，`--split test-qrels` 下载单独发布的测试 qrels 包，`--split all` 获取三者。脚本校验官方 MD5，默认不下载 20 GiB 以上 fulltext。已下载 ZIP 可通过 `python scripts/download_longeval_dataset.py --extract-only --split all` 在零网络条件下安全解压到 `data/evaluation/longeval_2025/raw/extracted/<split>/`。
 - LongEval 下载和解压完成后，运行 `python -m evaluation longeval-audit` 扫描全部本地 Train、Held-out、Future 的 queries、qrels 与 documents，并写出 DOI 覆盖、`excluded_no_doi_gold` 和逐 query eligibility 审计；该命令不调用学术 API、LLM 或本地模型。审计完成后运行 `python -m evaluation longeval-gold-import`：它会重新核验 raw SHA-256，生成每个 split 的 DOI-strict GoldQuery、正相关 evidence、排除/冲突 ledger 与 manifest；任何重复 document ID 的 DOI 冲突均不会进入 Gold。
 - 对已有 LongEval Gold 和本地 `PredictionRecord` 运行 `python -m evaluation doi-track-score --gold <gold.jsonl> --predictions <predictions.jsonl> --output-dir <new-report-dir>`。该命令严格只匹配有效 DOI，缺 DOI、非法 DOI 与重复 DOI 都不会命中或扩大 Precision 分母；不加载模型，也不会重调来源。
+- LongEval Dev 真实来源调用前，先运行 `longeval-query-intent-prepare`，显式传入封存 Gold、subset manifest、`--source-recall-count` 和 `--target-paper-count`。该命令直接封装数据集原始 query（不调用 Query Agent），为每条 `snapshot-export` 生成独立 forecast 与确认哈希；用户审阅后仍必须逐条显式运行 `snapshot-export --allow-online-sources`。
 - 评测输出是本地代理分，不等同于赛事官方成绩。效率、结构化与可观测性字段不足时必须明确标记缺失。
 
 详细的评测口径与阶段计划见 `docs/ScholarFlow_评测与测试规划.md`。
