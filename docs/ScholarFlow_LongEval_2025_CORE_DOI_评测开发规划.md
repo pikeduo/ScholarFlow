@@ -387,3 +387,5 @@ Future20 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 �
 Future20 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256 为 `cac1fc01c36d17a58e6f5c44f262411e454ec39eaee37ce131b4becc0ad6e280`，与 Heldout65 的 D 配置一致：`source_recall_count=50`、语义保留 40、Cross Encoder 保留 20、最终输出 20、评测 K=5/10/20。计划仅绑定 Future20 的 20 个冻结快照，共 20 个任务；计划生成新增学术 API=0、DeepSeek=0、本地模型=0。下一步如需执行，用户必须显式授权 BGE-M3 与 Cross Encoder 的本地排序。
 
 用户已授权执行 Future20 的 D 组本地排序。CPU、batch size 8 下的 BGE-M3 与 Cross Encoder 已完成 20/20 个任务并原子归档，结果 SHA-256 为 `42f09eebdac6dcff792e70f8d0e73012007b05108f291de12284ee779d24d33a`。执行新增学术 API=0、DeepSeek=0；结果与计划的 20 条任务一一对应。下一步仅需对该已归档预测运行 DOI-strict 离线评分，评分不得重新加载模型或调用来源。
+
+Future20 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学术 API=0、DeepSeek=0、本地模型=0）：Macro F1@5=0.0468、@10=0.0432、@20=0.0251；Micro F1@20=0.0254；Mean MRR=0.0733；Mean nDCG@20=0.0553。报告中的“学术 API 逻辑调用数=20”是候选快照导出的历史观测，不是本次评分调用。Future20 的候选覆盖与排序结果允许下一阶段进行 Future100 的**离线准备**，但 20 条试点不足以支持全量 Future455 导出或泛化结论；Future100 仍须重新封存子集、生成 forecast、显式确认后导出候选，并先运行覆盖诊断。

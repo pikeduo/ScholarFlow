@@ -81,3 +81,9 @@ Future DOI Gold 有 455 条查询，规模约为 Heldout65 的 7 倍。若不改
 Future20 已按上述流程完成候选快照导出、共享集合封存和 DOI-strict 覆盖诊断。集合 SHA-256 为 `336d4019e3b11515eb1e90c625f377ff6360c41775c9d87f58d24fe6fea1f4c7`；20 条查询有 73 篇 Gold DOI、998 篇排序前候选，其中 8 篇 Gold DOI 命中候选（10.96%），15 条查询零命中（75.00%）。
 
 该覆盖率高于 Validation100（4.37%）和 Heldout65（1.46%），因此足以执行一次受限的 D 排序试点以获得时间泛化观测；但它不是此前未定义的“覆盖门阈值”自动通过，也不能支持直接扩展到全量 Future455。D 试点完成后仍须先审阅 DOI-strict 报告，再决定是否进行任何更大规模的来源调用。
+
+### Future20 D 组评分与后续决策
+
+Future20 的 D 组已完成 CPU、batch size 8 排序及 DOI-strict 离线评分：Macro F1@5=0.0468、@10=0.0432、@20=0.0251；Micro F1@20=0.0254；Mean MRR=0.0733；Mean nDCG@20=0.0553。评分 manifest 记录评分阶段新增学术 API=0、DeepSeek=0、本地模型=0；报告中的逻辑学术 API=20 是候选快照导出的历史观测。
+
+这说明本试点的候选覆盖能够让冻结的 D 策略产生可观测的 DOI-strict 命中，故**允许进入 Future100 的离线准备阶段**。但 Future20 只有 20 条确定性子集查询，不足以支持 Future455 全量导出或对时间泛化做总体结论。Future100 仍应先封存 Gold 子集、生成逐条 forecast 并获得新的显式 confirmation；先完成其覆盖诊断，再决定是否运行本地排序。
