@@ -93,3 +93,23 @@ def test_client_implements_unified_adapter_and_maps_provenance() -> None:
     assert papers[0].openalex_id == "https://openalex.org/W1234567890"  # 验证 OpenAlex 主标识被显式保留。
     assert papers[0].source_records[0].raw_rank == 1  # 验证首条结果写入 RRF 所需的来源排名。
     assert papers[0].authors[0].source_author_ids["openalex"] == "https://openalex.org/A1234567890"  # 验证来源作者标识被保留。
+
+
+def test_client_skips_invalid_work_and_preserves_following_raw_rank() -> None:
+    """单条 Work 违反 Paper 契约时，不应阻断同页其余有效论文。"""
+    invalid_fixture = _load_openalex_work_fixture()  # 基于已有合法样例构造最小异常来源记录。
+    invalid_fixture["publication_year"] = 1739  # 复现 OpenAlex 返回早于统一论文模型下限的年份。
+    valid_fixture = _load_openalex_work_fixture()  # 保留紧随异常条目的合法 Work。
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """返回一条契约异常记录和一条合法记录，不访问真实网络。"""
+        return httpx.Response(200, json={"results": [invalid_fixture, valid_fixture]}, request=request)  # 固定模拟同页混合响应。
+
+    client = OpenAlexClient(  # 通过 mock 传输层隔离来源调用。
+        settings_override=_build_test_settings(),  # 注入测试配置。
+        transport=httpx.MockTransport(handler),  # 禁止真实 HTTP 请求。
+    )
+    papers = asyncio.run(client.search(_build_query_intent()))  # 执行统一入口并验证异常隔离行为。
+    assert len(papers) == 1  # 验证仅跳过不满足 Paper 契约的单条 Work。
+    assert papers[0].openalex_id == "https://openalex.org/W1234567890"  # 验证合法 Work 仍可被映射。
+    assert papers[0].source_records[0].raw_rank == 2  # 验证后续 Work 保留原始来源排名，不因跳过而重排。

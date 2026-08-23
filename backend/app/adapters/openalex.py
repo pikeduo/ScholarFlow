@@ -5,6 +5,7 @@ import re  # 仅用于从供应商错误文本中匹配预定义的安全参数�
 import unicodedata  # 将来源不稳定处理的兼容字符统一为确定性文本。
 
 import httpx  # 提供异步 HTTP 客户端和可注入测试传输层。
+from pydantic import ValidationError  # 将单条不满足统一论文契约的来源记录隔离在当前响应内。
 
 from backend.app.core.config import Settings, settings  # 读取 OpenAlex 地址、密钥和超时配置。
 from backend.app.core.logging import logger  # 记录不含敏感信息的调用统计和错误。
@@ -170,8 +171,9 @@ class OpenAlexClient(AcademicSearchAdapter):
                 continue  # 继续处理其余结果。
             try:  # 单条 Work 失败不应丢弃整页有效结果。
                 papers.append(map_openalex_work_to_paper(work))  # 映射并保存旧入口所需的基础论文。
-            except OpenAlexMappingError:  # 仅跳过缺失必要字段的 Work。
+            except (OpenAlexMappingError, ValidationError):  # 跳过缺失必要字段或违反论文契约的单条 Work。
                 skipped_count += 1  # 记录映射失败数量。
+                logger.warning("OpenAlex 兼容检索跳过无法映射的单条 Work")  # 不记录来源原始字段，避免异常数据进入日志。
         logger.info("OpenAlex 兼容检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(results), len(papers), skipped_count)  # 记录旧入口检索统计。
         return papers  # 返回旧服务层可继续消费的基础论文模型。
 
@@ -195,8 +197,9 @@ class OpenAlexClient(AcademicSearchAdapter):
                 continue  # 继续处理同页其余结果。
             try:  # 单条映射失败不能影响同页其他有效论文。
                 papers.append(map_openalex_work_to_record(work, raw_rank=raw_rank))  # 映射并写入来源溯源与排名。
-            except OpenAlexMappingError:  # 仅跳过缺少主标识或标题的无效 Work。
+            except (OpenAlexMappingError, ValidationError):  # 跳过缺少主字段或违反论文契约的单条 Work。
                 skipped_count += 1  # 累加映射失败数量。
+                logger.warning("OpenAlex 统一检索跳过无法映射的单条 Work：来源排名=%d", raw_rank)  # 仅记录安全的来源排名，保留问题定位能力。
         logger.info("OpenAlex 统一检索完成：原始结果=%d，映射成功=%d，跳过=%d", len(results), len(papers), skipped_count)  # 记录不含完整查询的阶段统计。
         return papers  # 返回可直接进入多源融合的论文记录。
 
