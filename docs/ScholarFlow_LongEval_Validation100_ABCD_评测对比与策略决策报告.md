@@ -77,6 +77,8 @@ D 的平均耗时约为 C 的 1.64 倍，P95 约为 C 的 2.14 倍；相应换�
 
 下一阶段必须由项目方在 C 与 D 中明确固定一个主策略；随后才能生成独立 Held-out 或 Future 的执行计划。执行计划应先离线生成并审阅，不得隐式调用学术来源；若需要新候选快照，仍须逐条完成 `usage-forecast` 和确认哈希授权。
 
+2026-08-23，项目方要求继续下一阶段，故以 **D** 作为本次独立 Held-out 评测的指标优先主策略。该决定只固定后续离线重排配置，并不改变已冻结的 Validation100 结果，也不等同于将 D 部署为生产默认策略。
+
 ## 8. 证据产物
 
 - `data/evaluation/longeval_2025/reports/longeval-validation100-baseline-a/A/report.md`

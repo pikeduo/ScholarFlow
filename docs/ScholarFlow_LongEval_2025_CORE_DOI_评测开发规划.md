@@ -363,3 +363,5 @@ Validation100 的 C（RRF + 本地 Cross Encoder）已在 CPU、batch size 8 下
 Validation100 的 D（本地 BGE-M3 + Cross Encoder）已在 CPU、batch size 8 下完成两阶段执行并评分，新增学术 API=0、DeepSeek=0。D 的 DOI-strict 结果：Macro F1@5=0.0104、@10=0.0115、@20=0.0111；Micro F1@20=0.0127；Mean MRR=0.0248；Mean nDCG@20=0.0169。D 为当前 A/B/C/D 的指标最佳配置，但相对 C 的提升较小：F1@5 和 F1@10 持平，F1@20 提升 0.0008、MRR 提升约 0.0007、nDCG@20 提升约 0.0009；最终默认策略应在该增益与额外 BGE-M3 成本之间权衡。所有四组共享同一 Validation100 候选快照，均未调用 DeepSeek。
 
 Validation100 的 A/B/C/D 对比与策略决策已单独归档于 `docs/ScholarFlow_LongEval_Validation100_ABCD_评测对比与策略决策报告.md`。其中将 D 推荐为指标优先配置、C 推荐为常规成本/时延优先配置、A 保留为无模型降级基线；B 被 C 在列示检索指标和本轮耗时观测上同时超过。独立 Held-out/Future 评测前，项目方须在 C 与 D 中明确固定一个主策略；如需新候选快照，仍需生成 forecast 并获得用户对确认哈希的显式授权。
+
+项目方随后确认继续下一阶段，本次独立评测按 D（指标优先）固定主策略。Heldout65 已完整封存（65/65，Gold SHA-256 `fa412ccae9fdd6058c380fec2415cc2c2693cf6dbb0ac74f8ec138aa4630e7a1`），并生成 `longeval-heldout65-direct-v1` 的 65 份直接 QueryIntent、65 份逐条 `snapshot-export` forecast 和 65 个 confirmation SHA-256。该准备步骤新增学术 API=0、DeepSeek=0、本地模型=0；待审阅在线预算为逻辑学术 API 最多 65 次、实际 HTTP 最多 260 次。只有用户以 manifest 中全部 confirmation SHA-256 显式确认后，才可逐条导出 Heldout65 候选快照。
