@@ -381,3 +381,5 @@ Validation100 与 Heldout65 的跨 split 对比及 Future 决策已归档于 `do
 Future20 试点已从 455 条 Future DOI Gold 中离线封存（Gold SHA-256 `8d7b02bf84911d7acc542ecac0c9ff4792cb257c4ba4ff4cb139bcec13a5010d`），并生成 `longeval-future20-direct-v1` 的 20 份直接 QueryIntent、20 份逐条 `snapshot-export` forecast 和 20 个 confirmation SHA-256。该步骤新增学术 API=0、DeepSeek=0、本地模型=0；待审阅在线预算为逻辑学术 API 最多 20 次、实际 HTTP 最多 80 次。只有用户显式确认使用 manifest 中全部 confirmation SHA-256，才可逐条导出 Future20 候选快照。
 
 用户已确认使用 Future20 manifest 中全部 confirmation SHA-256。`snapshot-export` 按冻结顺序完成 20/20：20 个唯一 snapshot ID、20 个唯一 query ID、排序前候选共 998 篇，且无学术来源降级告警。实际逻辑学术 API=20，DeepSeek=0，本地模型=0；每条输出后已立即通过离线 `snapshot-check`，随后完成集合级只读计数复核。下一步仅可离线组装共享候选集合并运行 DOI-strict 覆盖诊断，在覆盖门结论前不得加载 BGE-M3 或 Cross Encoder。
+
+Future20 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 为 `336d4019e3b11515eb1e90c625f377ff6360c41775c9d87f58d24fe6fea1f4c7`。DOI-strict 覆盖诊断读取 20 条查询、73 篇 Gold DOI 与 998 篇排序前候选：8 篇 Gold DOI 命中候选（10.96%），15 条查询零命中（75.00%）。该结果优于 Validation100 与 Heldout65 的候选覆盖，因此允许作为受限 D 排序试点；但此前未定义自动通过阈值，且仍有多数查询零命中，故不得据此扩大到 Future455。下一步可先离线生成 Future20 的 D-only 消融任务计划；实际 BGE-M3/Cross Encoder 执行仍需用户显式授权。

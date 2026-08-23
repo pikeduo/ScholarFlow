@@ -75,3 +75,9 @@ Future DOI Gold 有 455 条查询，规模约为 Heldout65 的 7 倍。若不改
 - `data/evaluation/longeval_2025/processed/longeval-doi-gold/manifest.json`
 
 真实评测数据位于 Git 忽略的 `data/` 目录；本文仅保存可复核的汇总结果与决策依据。
+
+## 7. Future20 覆盖试点状态（2026-08-23）
+
+Future20 已按上述流程完成候选快照导出、共享集合封存和 DOI-strict 覆盖诊断。集合 SHA-256 为 `336d4019e3b11515eb1e90c625f377ff6360c41775c9d87f58d24fe6fea1f4c7`；20 条查询有 73 篇 Gold DOI、998 篇排序前候选，其中 8 篇 Gold DOI 命中候选（10.96%），15 条查询零命中（75.00%）。
+
+该覆盖率高于 Validation100（4.37%）和 Heldout65（1.46%），因此足以执行一次受限的 D 排序试点以获得时间泛化观测；但它不是此前未定义的“覆盖门阈值”自动通过，也不能支持直接扩展到全量 Future455。D 试点完成后仍须先审阅 DOI-strict 报告，再决定是否进行任何更大规模的来源调用。
