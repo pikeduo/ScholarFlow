@@ -371,3 +371,5 @@ Validation100 的 A/B/C/D 对比与策略决策已单独归档于 `docs/ScholarF
 Heldout65 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 为 `49a6b2c9e2c59c77c89bd423eb9df094337f10675c219275216e041cea2b37c0`。随后的 DOI-strict 覆盖诊断读取 65 条查询、206 篇 Gold DOI 与 3,204 篇排序前候选：仅 3 篇 Gold DOI 命中候选，62 条查询零命中。诊断新增学术 API=0、DeepSeek=0、本地模型=0；零命中仅表示当前冻结候选没有覆盖相应 judged DOI，不可据此单独归因于来源、QueryIntent、规范化或排序。候选快照现已冻结，下一步可生成 D 的离线消融任务计划；不得先运行本地模型。
 
 Heldout65 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256 为 `cac1fc01c36d17a58e6f5c44f262411e454ec39eaee37ce131b4becc0ad6e280`，仅包含 D（RRF + BGE-M3 + Cross Encoder），冻结 `source_recall_count=50`、语义保留 40、Cross Encoder 保留 20、最终输出 20、评测 K=5/10/20。计划绑定全部 65 个快照及其哈希，共 65 个任务；计划生成新增学术 API=0、DeepSeek=0、本地模型=0。下一步如需执行，用户必须再次显式授权本地模型，并提供已确认的 BGE-M3 与 Cross Encoder 本地目录。
+
+用户已授权执行 Heldout65 的 D 组本地排序。CPU、batch size 8 下的 BGE-M3 与 Cross Encoder 已完成 65/65 个任务并原子归档，结果 SHA-256 为 `40886bd1ac41ff659c4cd038db9137975ed97226ac1529ff7faa5d0eb00cbdb1`。执行新增学术 API=0、DeepSeek=0；结果与计划的 65 条任务一一对应。下一步仅需对该已归档预测运行 DOI-strict 离线评分，评分不得重新加载模型或调用来源。
