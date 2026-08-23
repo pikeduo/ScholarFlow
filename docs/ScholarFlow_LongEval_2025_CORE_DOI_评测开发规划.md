@@ -379,3 +379,5 @@ Heldout65 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学
 Validation100 与 Heldout65 的跨 split 对比及 Future 决策已归档于 `docs/ScholarFlow_LongEval_Validation100_Heldout65_对比与Future决策.md`。结论为：保持 D 作为冻结的排序配置，但不立即执行全量 455 条 Future 快照导出；先以 Future20 完成独立的候选覆盖试点。Future20 的查询、QueryIntent 与 forecast 准备可以完全离线执行；任何候选快照导出仍须另行审阅 forecast 并以对应 confirmation SHA-256 显式确认。
 
 Future20 试点已从 455 条 Future DOI Gold 中离线封存（Gold SHA-256 `8d7b02bf84911d7acc542ecac0c9ff4792cb257c4ba4ff4cb139bcec13a5010d`），并生成 `longeval-future20-direct-v1` 的 20 份直接 QueryIntent、20 份逐条 `snapshot-export` forecast 和 20 个 confirmation SHA-256。该步骤新增学术 API=0、DeepSeek=0、本地模型=0；待审阅在线预算为逻辑学术 API 最多 20 次、实际 HTTP 最多 80 次。只有用户显式确认使用 manifest 中全部 confirmation SHA-256，才可逐条导出 Future20 候选快照。
+
+用户已确认使用 Future20 manifest 中全部 confirmation SHA-256。`snapshot-export` 按冻结顺序完成 20/20：20 个唯一 snapshot ID、20 个唯一 query ID、排序前候选共 998 篇，且无学术来源降级告警。实际逻辑学术 API=20，DeepSeek=0，本地模型=0；每条输出后已立即通过离线 `snapshot-check`，随后完成集合级只读计数复核。下一步仅可离线组装共享候选集合并运行 DOI-strict 覆盖诊断，在覆盖门结论前不得加载 BGE-M3 或 Cross Encoder。
