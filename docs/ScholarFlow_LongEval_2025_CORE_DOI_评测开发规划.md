@@ -367,3 +367,5 @@ Validation100 的 A/B/C/D 对比与策略决策已单独归档于 `docs/ScholarF
 项目方随后确认继续下一阶段，本次独立评测按 D（指标优先）固定主策略。Heldout65 已完整封存（65/65，Gold SHA-256 `fa412ccae9fdd6058c380fec2415cc2c2693cf6dbb0ac74f8ec138aa4630e7a1`），并生成 `longeval-heldout65-direct-v1` 的 65 份直接 QueryIntent、65 份逐条 `snapshot-export` forecast 和 65 个 confirmation SHA-256。该准备步骤新增学术 API=0、DeepSeek=0、本地模型=0；待审阅在线预算为逻辑学术 API 最多 65 次、实际 HTTP 最多 260 次。只有用户以 manifest 中全部 confirmation SHA-256 显式确认后，才可逐条导出 Heldout65 候选快照。
 
 用户已确认使用 Heldout65 manifest 中全部 confirmation SHA-256。`snapshot-export` 按冻结顺序完成 65/65：65 个唯一 snapshot ID、65 个唯一 query ID、排序前候选共 3,204 篇，且无学术来源降级告警。实际逻辑学术 API=65，DeepSeek=0，本地模型=0；每条输出后已立即通过离线 `snapshot-check`，随后完成集合级只读计数复核。下一步仅可离线组装共享候选集合，并先运行 DOI-strict 候选覆盖诊断；在候选快照冻结前不得加载 BGE-M3 或 Cross Encoder。
+
+Heldout65 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 为 `49a6b2c9e2c59c77c89bd423eb9df094337f10675c219275216e041cea2b37c0`。随后的 DOI-strict 覆盖诊断读取 65 条查询、206 篇 Gold DOI 与 3,204 篇排序前候选：仅 3 篇 Gold DOI 命中候选，62 条查询零命中。诊断新增学术 API=0、DeepSeek=0、本地模型=0；零命中仅表示当前冻结候选没有覆盖相应 judged DOI，不可据此单独归因于来源、QueryIntent、规范化或排序。候选快照现已冻结，下一步可生成 D 的离线消融任务计划；不得先运行本地模型。
