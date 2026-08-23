@@ -377,3 +377,5 @@ Heldout65 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256
 Heldout65 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学术 API=0、DeepSeek=0、本地模型=0）：Macro F1@5=0、@10=0、@20=0.0012；Micro F1@20=0.0013；Mean MRR=0.0013；Mean nDCG@20=0.0014。报告中的“学术 API 逻辑调用数=65”是候选快照导出的历史观测，不是本次评分调用。该低分与此前 3/206 Gold DOI 候选覆盖、62/65 查询零命中的诊断一致；它不构成对排序模型、来源或查询策略任一单独环节的因果归因。下一步应离线生成 Validation100 与 Heldout65 的独立对比/决策报告，确认是否在不改善候选覆盖的前提下推进 Future。
 
 Validation100 与 Heldout65 的跨 split 对比及 Future 决策已归档于 `docs/ScholarFlow_LongEval_Validation100_Heldout65_对比与Future决策.md`。结论为：保持 D 作为冻结的排序配置，但不立即执行全量 455 条 Future 快照导出；先以 Future20 完成独立的候选覆盖试点。Future20 的查询、QueryIntent 与 forecast 准备可以完全离线执行；任何候选快照导出仍须另行审阅 forecast 并以对应 confirmation SHA-256 显式确认。
+
+Future20 试点已从 455 条 Future DOI Gold 中离线封存（Gold SHA-256 `8d7b02bf84911d7acc542ecac0c9ff4792cb257c4ba4ff4cb139bcec13a5010d`），并生成 `longeval-future20-direct-v1` 的 20 份直接 QueryIntent、20 份逐条 `snapshot-export` forecast 和 20 个 confirmation SHA-256。该步骤新增学术 API=0、DeepSeek=0、本地模型=0；待审阅在线预算为逻辑学术 API 最多 20 次、实际 HTTP 最多 80 次。只有用户显式确认使用 manifest 中全部 confirmation SHA-256，才可逐条导出 Future20 候选快照。
