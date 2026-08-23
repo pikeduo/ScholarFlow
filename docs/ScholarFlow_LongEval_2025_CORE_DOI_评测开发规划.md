@@ -373,3 +373,5 @@ Heldout65 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 
 Heldout65 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256 为 `cac1fc01c36d17a58e6f5c44f262411e454ec39eaee37ce131b4becc0ad6e280`，仅包含 D（RRF + BGE-M3 + Cross Encoder），冻结 `source_recall_count=50`、语义保留 40、Cross Encoder 保留 20、最终输出 20、评测 K=5/10/20。计划绑定全部 65 个快照及其哈希，共 65 个任务；计划生成新增学术 API=0、DeepSeek=0、本地模型=0。下一步如需执行，用户必须再次显式授权本地模型，并提供已确认的 BGE-M3 与 Cross Encoder 本地目录。
 
 用户已授权执行 Heldout65 的 D 组本地排序。CPU、batch size 8 下的 BGE-M3 与 Cross Encoder 已完成 65/65 个任务并原子归档，结果 SHA-256 为 `40886bd1ac41ff659c4cd038db9137975ed97226ac1529ff7faa5d0eb00cbdb1`。执行新增学术 API=0、DeepSeek=0；结果与计划的 65 条任务一一对应。下一步仅需对该已归档预测运行 DOI-strict 离线评分，评分不得重新加载模型或调用来源。
+
+Heldout65 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学术 API=0、DeepSeek=0、本地模型=0）：Macro F1@5=0、@10=0、@20=0.0012；Micro F1@20=0.0013；Mean MRR=0.0013；Mean nDCG@20=0.0014。报告中的“学术 API 逻辑调用数=65”是候选快照导出的历史观测，不是本次评分调用。该低分与此前 3/206 Gold DOI 候选覆盖、62/65 查询零命中的诊断一致；它不构成对排序模型、来源或查询策略任一单独环节的因果归因。下一步应离线生成 Validation100 与 Heldout65 的独立对比/决策报告，确认是否在不改善候选覆盖的前提下推进 Future。
