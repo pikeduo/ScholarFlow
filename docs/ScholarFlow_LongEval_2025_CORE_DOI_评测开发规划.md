@@ -399,3 +399,5 @@ Future100 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 
 Future100 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256 为 `cac1fc01c36d17a58e6f5c44f262411e454ec39eaee37ce131b4becc0ad6e280`，与 Future20、Heldout65 的 D 配置一致：`source_recall_count=50`、语义保留 40、Cross Encoder 保留 20、最终输出 20、评测 K=5/10/20。计划仅绑定 Future100 的 100 个冻结快照，共 100 个任务；计划生成新增学术 API=0、DeepSeek=0、本地模型=0。下一步如需执行，用户必须显式授权 BGE-M3 与 Cross Encoder 的本地排序。
 
 用户已授权执行 Future100 的 D 组本地排序。CPU、batch size 8 下的 BGE-M3 与 Cross Encoder 已完成 100/100 个任务并原子归档，结果 SHA-256 为 `63c2872464343dc1275d0dbba1c14d40f813f55519d11213d2bb87a4ea30334c`。执行新增学术 API=0、DeepSeek=0；结果与计划的 100 条任务一一对应。下一步仅需对该已归档预测运行 DOI-strict 离线评分，评分不得重新加载模型或调用来源。
+
+Future100 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学术 API=0、DeepSeek=0、本地模型=0）：Macro F1@5=0.0096、@10=0.0139、@20=0.0121；Micro F1@20=0.0127；Mean MRR=0.0337；Mean nDCG@20=0.0242。报告中的“学术 API 逻辑调用数=100”与平均耗时均是此前候选快照导出及本地排序的历史观测，非本次评分调用。结果表明冻结 D 策略可在 Future100 的少数可覆盖查询上产生 DOI-strict 命中；但 84/100 查询的候选零命中和仅 5.46% Gold DOI 候选覆盖仍限制了整体结论，不能据此自动扩大至 Future455。下一步应仅离线汇总 Validation100、Heldout65、Future20 与 Future100 的独立结果，形成阶段性决策报告；不得合并为单一主分数或调用任何外部服务。
