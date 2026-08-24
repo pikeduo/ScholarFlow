@@ -89,3 +89,9 @@ Future20 的 D 组已完成 CPU、batch size 8 排序及 DOI-strict 离线评分
 这说明本试点的候选覆盖能够让冻结的 D 策略产生可观测的 DOI-strict 命中，故**允许进入 Future100 的离线准备阶段**。但 Future20 只有 20 条确定性子集查询，不足以支持 Future455 全量导出或对时间泛化做总体结论。Future100 仍应先封存 Gold 子集、生成逐条 forecast 并获得新的显式 confirmation；先完成其覆盖诊断，再决定是否运行本地排序。
 
 Future100 已从 Future20 之外的 435 条 DOI Gold 中稳定封存 100 条：与 Future20 的 query_id 交集为 0，Gold SHA-256 为 `01020ea362e42ff264f255b7d255740de996e606307e335ca05ac945ab546731`。其 100 份直接 QueryIntent、100 份 `snapshot-export` forecast 及 100 个 confirmation SHA-256 均已离线生成；任何导出仍须由项目方对该新 manifest 单独确认。
+
+### Future100 覆盖状态（2026-08-24）
+
+Future100 已完成快照导出、共享集合封存与 DOI-strict 覆盖诊断。集合 SHA-256 为 `3a73c25a5ce6969359363a90f68e4bd762db6ad3dddbe964e8bafd1c0c9ea22a`；100 条查询有 366 篇 Gold DOI、4,955 篇排序前候选，其中 20 篇 Gold DOI 命中候选（5.46%），84 条查询零命中（84.00%）。
+
+覆盖略高于 Validation100（4.37%），且 16 条查询含有至少一个 judged DOI 候选，足以进行受限的 D 排序试点并观察较大样本的时间泛化；但绝大多数查询仍无可重排命中，Future455 全量导出继续暂缓。Future100 的 D 报告须与 Validation100、Heldout65、Future20 分开呈现，不能合并为单一主分数。
