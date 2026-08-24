@@ -87,3 +87,5 @@ Future20 已按上述流程完成候选快照导出、共享集合封存和 DOI-
 Future20 的 D 组已完成 CPU、batch size 8 排序及 DOI-strict 离线评分：Macro F1@5=0.0468、@10=0.0432、@20=0.0251；Micro F1@20=0.0254；Mean MRR=0.0733；Mean nDCG@20=0.0553。评分 manifest 记录评分阶段新增学术 API=0、DeepSeek=0、本地模型=0；报告中的逻辑学术 API=20 是候选快照导出的历史观测。
 
 这说明本试点的候选覆盖能够让冻结的 D 策略产生可观测的 DOI-strict 命中，故**允许进入 Future100 的离线准备阶段**。但 Future20 只有 20 条确定性子集查询，不足以支持 Future455 全量导出或对时间泛化做总体结论。Future100 仍应先封存 Gold 子集、生成逐条 forecast 并获得新的显式 confirmation；先完成其覆盖诊断，再决定是否运行本地排序。
+
+Future100 已从 Future20 之外的 435 条 DOI Gold 中稳定封存 100 条：与 Future20 的 query_id 交集为 0，Gold SHA-256 为 `01020ea362e42ff264f255b7d255740de996e606307e335ca05ac945ab546731`。其 100 份直接 QueryIntent、100 份 `snapshot-export` forecast 及 100 个 confirmation SHA-256 均已离线生成；任何导出仍须由项目方对该新 manifest 单独确认。
