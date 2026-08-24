@@ -391,3 +391,5 @@ Future20 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256 
 Future20 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学术 API=0、DeepSeek=0、本地模型=0）：Macro F1@5=0.0468、@10=0.0432、@20=0.0251；Micro F1@20=0.0254；Mean MRR=0.0733；Mean nDCG@20=0.0553。报告中的“学术 API 逻辑调用数=20”是候选快照导出的历史观测，不是本次评分调用。Future20 的候选覆盖与排序结果允许下一阶段进行 Future100 的**离线准备**，但 20 条试点不足以支持全量 Future455 导出或泛化结论；Future100 仍须重新封存子集、生成 forecast、显式确认后导出候选，并先运行覆盖诊断。
 
 Future100 已完成离线准备。为保持与 Future20 试点的独立性，封存时已显式排除 Future20 manifest 中的 20 个 query_id；Future100 从其余 435 条 Future DOI Gold 中稳定选择 100 条（Gold SHA-256 `01020ea362e42ff264f255b7d255740de996e606307e335ca05ac945ab546731`，交集=0）。`longeval-future100-direct-v1` 已生成 100 份直接 QueryIntent、100 份逐条 `snapshot-export` forecast 和 100 个 confirmation SHA-256；准备步骤新增学术 API=0、DeepSeek=0、本地模型=0。待审阅在线预算为逻辑学术 API 最多 100 次、实际 HTTP 最多 400 次。只有用户显式确认使用该 manifest 的全部 confirmation SHA-256，才可逐条导出 Future100 候选快照。
+
+用户已确认使用 Future100 manifest 中全部 confirmation SHA-256。`snapshot-export` 按冻结顺序完成 100/100：100 个唯一 snapshot ID、100 个唯一 query ID、排序前候选共 4,955 篇，且无学术来源降级告警。实际逻辑学术 API=100，DeepSeek=0，本地模型=0；每条输出后已立即通过离线 `snapshot-check`，随后完成集合级只读计数复核。下一步仅可离线组装共享候选集合并运行 DOI-strict 覆盖诊断，在覆盖诊断完成前不得加载 BGE-M3 或 Cross Encoder。
