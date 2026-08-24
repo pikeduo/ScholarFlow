@@ -397,3 +397,5 @@ Future100 已完成离线准备。为保持与 Future20 试点的独立性，封
 Future100 共享候选集合已按 manifest 顺序离线封存，集合 SHA-256 为 `3a73c25a5ce6969359363a90f68e4bd762db6ad3dddbe964e8bafd1c0c9ea22a`。DOI-strict 覆盖诊断读取 100 条查询、366 篇 Gold DOI 与 4,955 篇排序前候选：20 篇 Gold DOI 命中候选（5.46%），84 条查询零命中（84.00%）。覆盖略高于 Validation100，且有 16 条查询具备可观察的 DOI-strict 重排空间，故允许作为受限 D 排序试点；但多数查询仍零命中，Future455 全量导出继续暂缓。下一步可先离线生成 Future100 的 D-only 消融任务计划；实际 BGE-M3/Cross Encoder 执行仍需用户显式授权。
 
 Future100 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256 为 `cac1fc01c36d17a58e6f5c44f262411e454ec39eaee37ce131b4becc0ad6e280`，与 Future20、Heldout65 的 D 配置一致：`source_recall_count=50`、语义保留 40、Cross Encoder 保留 20、最终输出 20、评测 K=5/10/20。计划仅绑定 Future100 的 100 个冻结快照，共 100 个任务；计划生成新增学术 API=0、DeepSeek=0、本地模型=0。下一步如需执行，用户必须显式授权 BGE-M3 与 Cross Encoder 的本地排序。
+
+用户已授权执行 Future100 的 D 组本地排序。CPU、batch size 8 下的 BGE-M3 与 Cross Encoder 已完成 100/100 个任务并原子归档，结果 SHA-256 为 `63c2872464343dc1275d0dbba1c14d40f813f55519d11213d2bb87a4ea30334c`。执行新增学术 API=0、DeepSeek=0；结果与计划的 100 条任务一一对应。下一步仅需对该已归档预测运行 DOI-strict 离线评分，评分不得重新加载模型或调用来源。
