@@ -403,3 +403,5 @@ Future100 的 D-only 离线消融矩阵与任务计划已生成。矩阵 SHA-256
 Future100 的 D 组 DOI-strict 离线评分已完成（评分 manifest 新增学术 API=0、DeepSeek=0、本地模型=0）：Macro F1@5=0.0096、@10=0.0139、@20=0.0121；Micro F1@20=0.0127；Mean MRR=0.0337；Mean nDCG@20=0.0242。报告中的“学术 API 逻辑调用数=100”与平均耗时均是此前候选快照导出及本地排序的历史观测，非本次评分调用。结果表明冻结 D 策略可在 Future100 的少数可覆盖查询上产生 DOI-strict 命中；但 84/100 查询的候选零命中和仅 5.46% Gold DOI 候选覆盖仍限制了整体结论，不能据此自动扩大至 Future455。下一步应仅离线汇总 Validation100、Heldout65、Future20 与 Future100 的独立结果，形成阶段性决策报告；不得合并为单一主分数或调用任何外部服务。
 
 四个已完成 split 的覆盖、D 组 DOI-strict 结果、query_id 交集边界和阶段性决策已归档于 `docs/ScholarFlow_LongEval_2025_四分割阶段性评测结论.md`。结论为：D 保持冻结基线，Future455 全量快照导出继续暂缓；Future100 与 Future20 互斥，但与 Validation100/Heldout65 存在少量 `query_id` 重叠，故不得将其描述为对两者完全独立的查询样本或汇总为总分。下一步应对既有 `query_diagnostics.jsonl` 做只读的代表性零命中模式审阅，再决定是否提出带明确 `query_id` 的候选生成实验；任何新的在线快照仍须重新 forecast 和显式确认。
+
+四个 split 的 `query_diagnostics.jsonl` 已完成只读模式审阅，结论与代表性 `query_id` 已归档于 `docs/ScholarFlow_LongEval_2025_零命中候选覆盖模式审阅.md`。285 个快照均为无告警的 OpenAlex 单源、直接透传 QueryIntent；大多数零命中查询仍有 49–50 篇候选且 DOI 无交集，少数非英语或长查询出现候选不足。下一步不应直接重建候选，而应先由项目方选择一个明确 `query_id` 与单一可观察变量（语言规范化、术语规范化或澄清/主题扩展）形成受控实验设计；真实快照仅可在新 forecast 和用户显式 confirmation SHA-256 确认后导出。
