@@ -115,7 +115,7 @@ def compare_strong_identifiers(left: Mapping[str, str | None], right: Mapping[st
             continue  # 不能将不同 scheme 视为已确认冲突。
         if current_left & current_right:  # 任一规范值交集即可确认同一论文。
             if scheme == "arxiv_id" and (arxiv_id_from_doi(left.get("doi")) or arxiv_id_from_doi(right.get("doi"))):  # 标注 DOI 派生的 arXiv 证据。
-                return True, "arxiv_doi_alias"  # 供 PaSa 审计单独展示可验证别名。
+                return True, "arxiv_doi_alias"  # 供身份审计单独展示可验证别名。
             return True, scheme  # 返回稳定 scheme 证据。
         return False, scheme  # 同一优先级强标识不相同，禁止标题强行合并。
     return None, None  # 没有同 scheme 强标识可比较时允许调用方执行保守标题回退。

@@ -55,7 +55,7 @@ Query Agent 在 LangGraph 启动前执行。多轮过程中的 DeepSeek 查询�
 - **前端**：Vue 3、TypeScript、Vite、D3
 - **数据与索引**：SQLite、FAISS，可选 Redis
 - **模型**：DeepSeek、BGE-M3、BGE Reranker
-- **测试与评测**：Pytest、Node.js Test Runner、tsx、vue-tsc、PaSa AutoScholarQuery 开发集适配
+- **测试**：Pytest、Node.js Test Runner、tsx、vue-tsc
 
 ## 快速开始
 
@@ -174,31 +174,6 @@ python -c "from FlagEmbedding import FlagReranker; FlagReranker('BAAI/bge-rerank
 
 首次执行会从模型托管服务下载并缓存模型。离线部署时，应预先准备模型缓存，或者将模型名称替换为本地模型目录。
 
-## 离线评测
-
-`evaluation/` 是与生产搜索流程分离的评测模块，详细说明见 [`evaluation/README.md`](evaluation/README.md)。
-
-当前能力包括：
-
-- 统一论文标识规范化和保守匹配
-- Precision、Recall、F1、MRR 和二元 nDCG
-- Micro、Macro 和效率指标汇总
-- 排序前候选快照校验、集合组装和哈希审计
-- 基于同一封存候选快照比较 RRF、BGE-M3 和 Cross Encoder
-- DeepSeek 对照实验复用同一候选快照，但必须由用户显式授权在线调用
-- 查询覆盖诊断、结构诊断和报告生成
-- PaSa `AutoScholarQuery/dev.jsonl` 的本地金标导入与稳定子集封存
-- 完整自然语言入口的受控端到端计划、执行和离线评分
-
-评测模块默认只读取用户明确提供的本地文件。以下操作属于显式在线例外，不会被普通测试或离线评分命令自动触发：
-
-- `snapshot-export --allow-online-sources`：调用真实学术来源生成候选快照；
-- `query-agent-plan --allow-query-agent`：调用真实 Query Agent；
-- 经用户确认的 DeepSeek 对照实验；
-- `pasa-end-to-end-execute --allow-online-end-to-end`：通过生产入口执行完整搜索。
-
-PaSa 原始数据应由用户自行获取并保存在 Git 忽略目录中。当前只支持已经确认字段结构的 AutoScholarQuery 开发集，不对尚未确认格式的 RealScholarQuery 数据进行推测性解析。
-
 ## 项目结构
 
 ```text
@@ -209,10 +184,9 @@ ScholarFlow/
 ├─ frontend/
 │  ├─ src/                 # Vue 3 前端应用
 │  └─ tests/               # 前端测试与引用图测试
-├─ evaluation/             # 离线评测、PaSa 导入、消融实验与报告
-├─ scripts/                # 数据准备、PaSa 下载与候选快照导出脚本
+├─ scripts/                # 项目维护脚本
 ├─ README/                 # README 使用的图片资源
-├─ data/                   # SQLite、FAISS 与本地评测数据，不提交
+├─ data/                   # SQLite、FAISS 与本地运行数据，不提交
 ├─ logs/                   # 运行日志，不提交
 ├─ .env.example            # 环境变量模板
 ├─ requirements.txt        # 后端运行依赖
@@ -227,12 +201,6 @@ ScholarFlow/
 
 ```powershell
 pytest backend/tests -q
-```
-
-离线评测模块：
-
-```powershell
-pytest evaluation/tests -q
 ```
 
 前端：
